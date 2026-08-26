@@ -1,0 +1,185 @@
+name: CI
+
+# Runs on every push to main and every pull request. Three independent jobs so a
+# frontend failure does not hide a backend failure, and vice versa.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A new push to the same branch cancels the previous run - no point testing stale code.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Lint and type checks. Fast, so it runs first and gives quick feedback.
+  # ---------------------------------------------------------------------------
+  quality:
+    name: Lint & types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: ruff format (check only)
+        run: ruff format --check --diff .
+
+      - name: ruff lint
+        run: ruff check --output-format=github .
+
+      - name: mypy
+        run: mypy libs services
+
+  # ---------------------------------------------------------------------------
+  # Python tests. Unit tests need nothing; integration tests need the real
+  # TimescaleDB and Redis, so both are provided as service containers.
+  # ---------------------------------------------------------------------------
+  test:
+    name: Python tests
+    runs-on: ubuntu-latest
+
+    services:
+      timescaledb:
+        image: timescale/timescaledb:2.17.2-pg16
+        env:
+          POSTGRES_DB: aiops
+          POSTGRES_USER: aiops
+          POSTGRES_PASSWORD: aiops_ci_password
+          TIMESCALEDB_TELEMETRY: "off"
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U aiops -d aiops"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 12
+
+      redis:
+        image: redis:7.4-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: aiops
+      POSTGRES_USER: aiops
+      POSTGRES_PASSWORD: aiops_ci_password
+      REDIS_HOST: localhost
+      REDIS_PORT: "6379"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Apply database schema
+        # Service containers cannot mount docker-entrypoint-initdb.d, so the same SQL
+        # the compose stack runs on first boot is applied here by hand, in order.
+        env:
+          PGPASSWORD: aiops_ci_password
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-client
+          for file in infra/timescaledb/init/*.sql; do
+            echo "applying $file"
+            psql -h localhost -U aiops -d aiops -v ON_ERROR_STOP=1 -f "$file"
+          done
+
+      - name: Unit tests
+        run: pytest tests -q
+
+      - name: Unit + integration tests
+        env:
+          AIOPS_RUN_INTEGRATION: "1"
+        run: pytest tests -q
+
+  # ---------------------------------------------------------------------------
+  # Dashboard: types must check and the production bundle must build.
+  # ---------------------------------------------------------------------------
+  dashboard:
+    name: Dashboard build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+  # ---------------------------------------------------------------------------
+  # PowerShell scripts must parse under Windows PowerShell 5.1 and stay ASCII.
+  # A non-ASCII character in a .ps1 has already broken this repo once: BOM-less
+  # UTF-8 is decoded as Windows-1252 and an em dash becomes a string delimiter.
+  # ---------------------------------------------------------------------------
+  scripts:
+    name: PowerShell scripts
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse check and ASCII check
+        shell: powershell
+        run: |
+          $failed = $false
+          Get-ChildItem scripts\*.ps1 | ForEach-Object {
+              $errors = $null
+              [System.Management.Automation.Language.Parser]::ParseFile(
+                  $_.FullName, [ref]$null, [ref]$errors) | Out-Null
+              if ($errors) {
+                  Write-Host "::error file=scripts/$($_.Name)::$($errors.Count) parse error(s)"
+                  $errors | ForEach-Object { Write-Host "  line $($_.Extent.StartLineNumber): $($_.Message)" }
+                  $failed = $true
+              }
+              $text = [System.IO.File]::ReadAllText($_.FullName)
+              $nonAscii = $text.ToCharArray() | Where-Object { [int]$_ -gt 126 } | Sort-Object -Unique
+              if ($nonAscii) {
+                  Write-Host "::error file=scripts/$($_.Name)::non-ASCII characters found: $($nonAscii -join ' ')"
+                  $failed = $true
+              }
+              if (-not $failed) { Write-Host "OK $($_.Name)" }
+          }
+          if ($failed) { exit 1 }

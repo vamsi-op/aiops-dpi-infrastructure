@@ -1,0 +1,70 @@
+name: Bug report
+description: Something behaves incorrectly
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you observed, and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: Exact commands. A reproduction someone else can run is worth ten descriptions.
+      placeholder: |
+        1. .\scripts\stack.ps1 up
+        2. python scripts\seed_demo_data.py --days 1
+        3. Open http://localhost:5173 -> Incidents
+        4. Incident list is empty
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Foundation / shared library
+        - Observability stack
+        - Metrics agent
+        - Anomaly detection
+        - Traffic prediction
+        - Self-healing
+        - Root cause analysis
+        - API gateway
+        - Dashboard
+        - Chaos agent
+        - Setup / scripts / CI
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or error output
+      description: Relevant output. Services log structured JSON, so paste the whole line.
+      render: text
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: |
+        OS: Windows 11
+        Python: 3.12.4
+        Docker: 29.7.2
+        Branch / commit: main @ abc1234
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: "`.\\scripts\\healthcheck.ps1` output is included above, or the bug is unrelated to the stack"
+        - label: I searched existing issues for a duplicate

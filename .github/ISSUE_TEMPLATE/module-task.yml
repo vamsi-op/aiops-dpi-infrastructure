@@ -1,0 +1,94 @@
+name: Module task
+description: A build task for one of the numbered modules in docs/MODULES.md
+title: "[Module N] "
+labels: ["module"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        One issue per module. Before starting, read that module's section in
+        `docs/MODULES.md` — it states what the module owns, what it does **not** own, and
+        the command that proves it works. `CONTRIBUTING.md` covers the house rules.
+
+  - type: input
+    id: module
+    attributes:
+      label: Module
+      description: Number and name, e.g. "3 - Metrics collection agent"
+      placeholder: "3 - Metrics collection agent"
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: What this module must deliver. Copy from docs/MODULES.md and refine.
+      placeholder: |
+        - Scheduled PromQL collection against the observability plane
+        - Normalisation into MetricSample
+        - Batch write to TimescaleDB, publish to aiops.metrics
+    validations:
+      required: true
+
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Explicitly out of scope
+      description: What another module owns. Prevents overlap and merge pain.
+      placeholder: |
+        - Detection thresholds (module 4)
+        - Anything that decides what to do about a metric
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: How a reviewer confirms this is done. Must include a runnable command.
+      placeholder: |
+        - [ ] `SELECT count(*) FROM service_metrics` grows every 15s
+        - [ ] `service_metrics_1m` populates
+        - [ ] Agent /metrics exposes collection latency and error counters
+        - [ ] Unit tests for the normalisation logic
+        - [ ] `pytest tests -q` and `ruff check .` pass
+    validations:
+      required: true
+
+  - type: textarea
+    id: files
+    attributes:
+      label: Files you will likely touch
+      placeholder: |
+        - services/metrics_agent/            (new)
+        - docker-compose.aiops.yml           (add the service)
+        - docs/MODULES.md                    (tick the module off)
+
+  - type: textarea
+    id: shared-contracts
+    attributes:
+      label: Shared contract changes
+      description: >
+        Anything in libs/aiops_common/schemas.py, constants.py, or
+        infra/timescaledb/init/. These affect every module, so flag them here first.
+      placeholder: "None expected. / Needs a new field on MetricSample: ..."
+
+  - type: input
+    id: depends-on
+    attributes:
+      label: Depends on
+      description: Issue numbers that must land first, if any.
+      placeholder: "#2"
+
+  - type: checkboxes
+    id: ground-rules
+    attributes:
+      label: Ground rules
+      options:
+        - label: I have read CONTRIBUTING.md
+          required: true
+        - label: I will use `get_settings()` for config and `utc_now()` for timestamps
+          required: true
+        - label: I will add tests for new behaviour, including any bug I fix along the way
+          required: true

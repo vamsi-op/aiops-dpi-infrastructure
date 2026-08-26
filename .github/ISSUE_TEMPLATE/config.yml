@@ -1,0 +1,6 @@
+# Force contributors through a template rather than filing an empty issue.
+#
+# Deliberately no contact_links: those require absolute URLs, which would mean hardcoding
+# the repository owner/name and shipping links that break the moment the repo is forked
+# or renamed. The templates point at docs/ by path instead.
+blank_issues_enabled: false

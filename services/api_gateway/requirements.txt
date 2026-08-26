@@ -1,0 +1,3 @@
+# API gateway runtime dependencies.
+# The shared library brings fastapi, uvicorn, pydantic, redis, SQLAlchemy and asyncpg.
+-e ../../libs/aiops_common

@@ -1,0 +1,38 @@
+# Normalise line endings so Windows, macOS and Linux contributors don't fight over
+# whitespace-only diffs. Text files are stored as LF in the repository.
+* text=auto eol=lf
+
+# PowerShell scripts stay CRLF on checkout. Windows PowerShell 5.1 is the target shell
+# and CRLF is what it expects; see docs/SETUP.md for the related encoding constraint
+# (these files must also stay ASCII-only).
+*.ps1 text eol=crlf working-tree-encoding=UTF-8
+
+# Explicitly text, regardless of heuristics
+*.py    text diff=python
+*.sql   text
+*.md    text diff=markdown
+*.ts    text
+*.tsx   text
+*.json  text
+*.yml   text
+*.yaml  text
+*.css   text
+*.html  text
+*.toml  text
+Dockerfile text
+.env.example text
+
+# Binary: never diff or normalise
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.joblib binary
+*.pkl binary
+
+# Generated or vendored: collapse in PR diffs and exclude from language stats
+package-lock.json  linguist-generated=true -diff
+dashboard/dist/**  linguist-generated=true -diff
+LICENSE            linguist-vendored=true

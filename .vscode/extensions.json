@@ -1,0 +1,13 @@
+{
+  "// note": "VS Code offers these when someone opens the repo. Nothing is installed automatically.",
+  "recommendations": [
+    "ms-python.python",
+    "ms-python.vscode-pylance",
+    "charliermarsh.ruff",
+    "ms-azuretools.vscode-docker",
+    "ms-ossdata.vscode-pgsql",
+    "dbaeumer.vscode-eslint",
+    "editorconfig.editorconfig",
+    "redhat.vscode-yaml"
+  ]
+}

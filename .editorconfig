@@ -1,0 +1,30 @@
+# Keeps formatting consistent across editors. Works alongside ruff (Python) and the
+# dashboard's TypeScript config; this file just stops editors fighting them.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.{ts,tsx,js,jsx,json,css,html,yml,yaml}]
+indent_size = 2
+
+[*.md]
+# Trailing whitespace is meaningful in Markdown (two spaces = line break)
+trim_trailing_whitespace = false
+
+[*.ps1]
+# Windows PowerShell 5.1 is the target shell. Keep these ASCII-only: a BOM-less UTF-8
+# em dash is decoded as Windows-1252 and becomes a character PowerShell treats as a
+# string delimiter, which breaks parsing outright.
+end_of_line = crlf
+
+[*.sql]
+indent_size = 4
+
+[Makefile]
+indent_style = tab

@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aiops-common"
+version = "0.1.0"
+description = "Shared configuration, logging, event bus, storage and schemas for the DPI AIOps platform"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+
+dependencies = [
+    "pydantic==2.9.2",
+    "pydantic-settings==2.5.2",
+    "structlog==24.4.0",
+    "orjson==3.10.7",
+    "prometheus-client==0.21.0",
+    "redis==5.1.1",
+    "SQLAlchemy==2.0.35",
+    "asyncpg==0.30.0",
+    "psycopg[binary]==3.2.3",
+    "greenlet==3.1.1",
+    "httpx==0.27.2",
+    "tenacity==9.0.0",
+    "fastapi==0.115.2",
+    "uvicorn[standard]==0.31.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.3",
+    "pytest-asyncio==0.24.0",
+    "ruff==0.6.9",
+    "mypy==1.11.2",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+aiops_common = ["py.typed"]

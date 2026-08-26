@@ -1,0 +1,168 @@
+<#
+.SYNOPSIS
+    Verifies the running stack: container health, database schema, Redis connectivity.
+
+.DESCRIPTION
+    Read-only. Run it after `.\scripts\stack.ps1 up` to confirm module 1 is working
+    before moving on. Exits with code 1 if any check fails.
+
+.EXAMPLE
+    .\scripts\healthcheck.ps1
+#>
+[CmdletBinding()]
+param()
+
+$ErrorActionPreference = 'Continue'
+$repoRoot = Split-Path -Parent $PSScriptRoot
+Set-Location $repoRoot
+
+$failures = @()
+
+function Write-Section { param([string]$Name) Write-Host "`n=== $Name ===" -ForegroundColor Cyan }
+function Write-Pass { param([string]$Message) Write-Host "  [PASS] $Message" -ForegroundColor Green }
+function Write-Fail {
+    param([string]$Message)
+    Write-Host "  [FAIL] $Message" -ForegroundColor Red
+    $script:failures += $Message
+}
+function Write-Info { param([string]$Message) Write-Host "         $Message" -ForegroundColor DarkGray }
+
+# -----------------------------------------------------------------------------
+Write-Section 'Docker'
+if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+    Write-Fail 'docker command not found - install Docker Desktop (docs/SETUP.md section 2)'
+    Write-Host "`nStopping early: nothing else can be checked without Docker." -ForegroundColor Yellow
+    exit 1
+}
+try {
+    $serverVersion = (& docker info --format '{{.ServerVersion}}' 2>$null)
+    if ($LASTEXITCODE -eq 0 -and $serverVersion) {
+        Write-Pass "Docker daemon running (engine $serverVersion)"
+    } else {
+        Write-Fail 'Docker daemon not responding - start Docker Desktop'
+        exit 1
+    }
+} catch {
+    Write-Fail "Docker check failed: $_"
+    exit 1
+}
+
+# -----------------------------------------------------------------------------
+Write-Section 'Containers'
+$expected = @('aiops-timescaledb', 'aiops-redis')
+foreach ($name in $expected) {
+    $state = (& docker inspect --format '{{.State.Status}}' $name 2>$null)
+    if ($LASTEXITCODE -ne 0) {
+        Write-Fail "$name does not exist - run .\scripts\stack.ps1 up"
+        continue
+    }
+    $health = (& docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' $name 2>$null)
+    if ($state -eq 'running' -and $health -in @('healthy', 'none')) {
+        Write-Pass "$name is $state (health: $health)"
+    } else {
+        Write-Fail "$name is $state (health: $health)"
+        Write-Info "docker logs $name --tail 50"
+    }
+}
+
+# -----------------------------------------------------------------------------
+Write-Section 'TimescaleDB'
+$dbUser = 'aiops'
+$dbName = 'aiops'
+if (Test-Path '.env') {
+    $envLines = Get-Content '.env' | Where-Object { $_ -match '^\s*[A-Z_]+=' }
+    foreach ($line in $envLines) {
+        $key, $value = $line -split '=', 2
+        if ($key.Trim() -eq 'POSTGRES_USER') { $dbUser = $value.Trim() }
+        if ($key.Trim() -eq 'POSTGRES_DB')   { $dbName = $value.Trim() }
+    }
+}
+
+function Invoke-Psql {
+    param([string]$Sql)
+    & docker exec aiops-timescaledb psql -U $dbUser -d $dbName -tAc $Sql 2>$null
+}
+
+$tsVersion = (Invoke-Psql "SELECT extversion FROM pg_extension WHERE extname = 'timescaledb';")
+if ($LASTEXITCODE -eq 0 -and $tsVersion) {
+    Write-Pass "TimescaleDB extension installed (version $($tsVersion.Trim()))"
+} else {
+    Write-Fail 'Could not query the timescaledb extension'
+}
+
+$expectedTables = @(
+    'service_metrics', 'anomalies', 'traffic_predictions',
+    'incidents', 'healing_actions', 'deployments', 'chaos_runs', 'model_runs'
+)
+$actualTables = (Invoke-Psql "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public';")
+$actualList = @()
+if ($actualTables) { $actualList = $actualTables -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ } }
+
+foreach ($table in $expectedTables) {
+    if ($actualList -contains $table) {
+        Write-Pass "table $table exists"
+    } else {
+        Write-Fail "table $table is missing"
+        Write-Info 'Init scripts only run on an empty volume: .\scripts\stack.ps1 reset'
+    }
+}
+
+$hypertable = (Invoke-Psql "SELECT count(*) FROM timescaledb_information.hypertables WHERE hypertable_name = 'service_metrics';")
+if ($hypertable -and $hypertable.Trim() -eq '1') {
+    Write-Pass 'service_metrics is a hypertable'
+} else {
+    Write-Fail 'service_metrics is not a hypertable'
+}
+
+$caggs = (Invoke-Psql "SELECT count(*) FROM timescaledb_information.continuous_aggregates;")
+if ($caggs -and [int]$caggs.Trim() -ge 2) {
+    Write-Pass "continuous aggregates created ($($caggs.Trim()))"
+} else {
+    Write-Fail "expected 2 continuous aggregates, found '$($caggs)'"
+}
+
+# -----------------------------------------------------------------------------
+Write-Section 'Redis'
+$pong = (& docker exec aiops-redis redis-cli ping 2>$null)
+if ($pong -and $pong.Trim() -eq 'PONG') {
+    Write-Pass 'Redis responds to PING'
+} else {
+    Write-Fail "Redis did not answer PING (got '$pong')"
+}
+
+# -----------------------------------------------------------------------------
+Write-Section 'Python foundation'
+$venvPython = Join-Path $repoRoot '.venv\Scripts\python.exe'
+if (-not (Test-Path $venvPython)) {
+    Write-Fail '.venv not found - run .\scripts\bootstrap.ps1'
+} else {
+    # The stack has already been verified healthy above, so run the integration
+    # tests as well. They exercise the real schema and the real event bus.
+    $previous = $env:AIOPS_RUN_INTEGRATION
+    $env:AIOPS_RUN_INTEGRATION = '1'
+    try {
+        & $venvPython -m pytest tests -q --no-header 2>&1 | ForEach-Object { Write-Info $_ }
+        if ($LASTEXITCODE -eq 0) {
+            Write-Pass 'unit and integration tests pass'
+        } else {
+            Write-Fail 'tests failed (see output above)'
+        }
+    } finally {
+        $env:AIOPS_RUN_INTEGRATION = $previous
+    }
+}
+
+# -----------------------------------------------------------------------------
+Write-Host ''
+if ($failures.Count -eq 0) {
+    Write-Host '================================' -ForegroundColor Green
+    Write-Host ' All checks passed. Module 1 OK.' -ForegroundColor Green
+    Write-Host '================================' -ForegroundColor Green
+    exit 0
+} else {
+    Write-Host '================================' -ForegroundColor Red
+    Write-Host " $($failures.Count) check(s) failed:" -ForegroundColor Red
+    $failures | ForEach-Object { Write-Host "  - $_" -ForegroundColor Red }
+    Write-Host '================================' -ForegroundColor Red
+    exit 1
+}

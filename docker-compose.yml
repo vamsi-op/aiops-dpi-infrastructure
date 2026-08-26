@@ -1,0 +1,99 @@
+# =============================================================================
+# Base stack — the data layer every other module depends on.
+#
+#   docker compose up -d                     # data layer only (this file)
+#   docker compose ps                        # check health
+#   docker compose logs -f timescaledb       # follow logs
+#   docker compose down                      # stop, keep data
+#   docker compose down -v                   # stop and DELETE all data
+#
+# Later modules add themselves through extra compose files:
+#   docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d
+# The helper script `scripts/stack.ps1` wraps those combinations.
+# =============================================================================
+
+name: aiops-dpi
+
+networks:
+  aiops:
+    name: aiops-net
+    driver: bridge
+
+volumes:
+  timescale_data:
+    name: aiops_timescale_data
+  redis_data:
+    name: aiops_redis_data
+
+services:
+  # ---------------------------------------------------------------------------
+  # TimescaleDB — metric history, feature store, incident and action records.
+  # ---------------------------------------------------------------------------
+  timescaledb:
+    image: timescale/timescaledb:2.17.2-pg16
+    container_name: aiops-timescaledb
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-aiops}
+      POSTGRES_USER: ${POSTGRES_USER:-aiops}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aiops_local_dev_password}
+      # Timescale tuning is skipped for local dev; the image's defaults are fine.
+      TIMESCALEDB_TELEMETRY: "off"
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - timescale_data:/var/lib/postgresql/data
+      # Scripts in this directory run once, on first initialisation of an empty
+      # data volume. To re-run them you must `docker compose down -v` first.
+      - ./infra/timescaledb/init:/docker-entrypoint-initdb.d:ro
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=timescaledb,pg_stat_statements
+      - -c
+      - max_connections=200
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - work_mem=16MB
+      - -c
+      - timescaledb.max_background_workers=8
+      - -c
+      - log_min_duration_statement=1000
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aiops} -d ${POSTGRES_DB:-aiops}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks: [aiops]
+
+  # ---------------------------------------------------------------------------
+  # Redis — event bus (Redis Streams) plus circuit-breaker and cooldown state.
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7.4-alpine
+    container_name: aiops-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_HOST_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      # Streams are capped in application code; this is a second line of defence.
+      - --maxmemory
+      - 512mb
+      - --maxmemory-policy
+      - noeviction
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    networks: [aiops]
