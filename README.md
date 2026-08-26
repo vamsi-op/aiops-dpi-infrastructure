@@ -69,46 +69,172 @@ reaches into another's database. Full reasoning in
 
 ---
 
-## Quick start
+## Running the project
 
-Prerequisites: **Docker Desktop**, **Python 3.11 or 3.12**, **Node 20+**.
-First time on Windows? **[docs/SETUP.md](docs/SETUP.md)** covers Docker and WSL 2 from
-scratch.
+Commands are PowerShell, on Windows. First time on this machine? **[docs/SETUP.md](docs/SETUP.md)**
+walks through installing Docker Desktop and WSL 2 from nothing.
+
+### Prerequisites
+
+| Tool | Version | Check |
+|---|---|---|
+| Docker Desktop | any recent | `docker compose version` |
+| Python | **3.11 or 3.12** | `python --version` |
+| Node.js | 20 or newer | `node --version` |
+| Git | any | `git --version` |
+
+Docker Desktop must be **running** — wait for the tray whale to stop animating. Python
+3.13 works for what exists today, but some ML wheels needed in module 5 still lag on it.
+
+### Step 1 — One-time setup
 
 ```powershell
-git clone <repo-url>
-cd Project
+git clone https://github.com/vamsi-op/aiops-dpi-infrastructure.git
+cd aiops-dpi-infrastructure
 
-.\scripts\bootstrap.ps1        # venv, dependencies, .env
-.\scripts\stack.ps1 up         # TimescaleDB + Redis
-.\scripts\healthcheck.ps1      # must print "All checks passed"
+# If PowerShell refuses to run the scripts:
+Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+
+.\scripts\bootstrap.ps1
 ```
 
-### See the dashboard
+`bootstrap.ps1` creates `.venv`, installs dependencies, copies `.env.example` to `.env`,
+and verifies the shared library imports. Safe to re-run; add `-Recreate` to start clean.
 
-Modules 2–7 are not built yet, so seed the database with representative data:
+### Step 2 — Start the data layer
+
+```powershell
+.\scripts\stack.ps1 up          # TimescaleDB + Redis
+.\scripts\healthcheck.ps1       # must end with "All checks passed"
+```
+
+The first run pulls ~2.8 GB of images and then applies the schema — give it about 30
+seconds. `healthcheck.ps1` asserts 16 things about Docker, the schema, the hypertable, the
+continuous aggregates and Redis, then runs the full test suite.
+
+**If the healthcheck is not green, stop here and fix it.** Everything below assumes it passes.
+
+### Step 3 — Load data
+
+Modules 2–7 do not exist yet, so nothing is producing telemetry. Seed it:
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\seed_demo_data.py --days 3
 ```
 
-Then, in three terminals:
+This writes ~21,000 metric rows plus 11 anomalies, 5 incidents, 8 healing actions, 15
+forecasts and a chaos run.
+
+### Step 4 — Start the app
+
+Three terminals. Activate the venv in each with `.\.venv\Scripts\Activate.ps1`, or use the
+full `.\.venv\Scripts\python.exe` path as shown.
 
 ```powershell
-# 1 - API
+# Terminal 1 - API gateway
 .\.venv\Scripts\python.exe -m uvicorn app:app --port 8000 --app-dir services\api_gateway
+```
 
-# 2 - dashboard
-cd dashboard; npm install; npm run dev          # http://localhost:5173
+```powershell
+# Terminal 2 - dashboard  (npm install only needed the first time)
+cd dashboard
+npm install
+npm run dev
+```
 
-# 3 - keep the health grid live
+```powershell
+# Terminal 3 - live data tail, keeps the health grid green
 .\.venv\Scripts\python.exe scripts\seed_demo_data.py --follow --skip-history
 ```
 
-The seed produces a week of Mojaloop telemetry with a realistic daily and weekly rhythm,
-plus five scripted failure scenarios: memory leak, bad deploy, traffic surge, a cascade
-with a single upstream cause, and a chaos run with a detect/remediate scorecard. Those are
-exactly the cases modules 4 and 7 have to handle.
+Terminal 3 is not optional for a demo: services are marked **stale** two minutes after
+their last sample, so without it the grid goes grey. That is correct behaviour — a service
+that stops reporting must be visible as stale, not silently vanish.
+
+### Step 5 — Open it
+
+**http://localhost:5173**
+
+| Page | What you should see |
+|---|---|
+| **Overview** | 5 Mojaloop services, all `healthy`, live TPS and error ratios |
+| **Service detail** | Per-service metric history, its anomalies, forecasts and actions |
+| **Anomalies** | Timeline with per-feature attribution and deviation in sigma |
+| **Forecast** | Actual vs predicted traffic with the scaling decision overlaid |
+| **Incidents** | 5 incidents, each with ranked root-cause hypotheses and evidence |
+| **Automation** | Healing actions, including the `skipped_*` ones proving the rails work |
+| **Chaos** | The seeded `cpu_hog` run with its detect/remediate scorecard |
+
+### Ports
+
+| Service | URL | Notes |
+|---|---|---|
+| Dashboard | http://localhost:5173 | Vite dev server, proxies `/api` to :8000 |
+| API gateway | http://localhost:8000 | `/docs` for interactive OpenAPI |
+| TimescaleDB | localhost:5432 | user/db `aiops` |
+| Redis | localhost:6379 | event bus |
+
+Change `POSTGRES_HOST_PORT` / `REDIS_HOST_PORT` in `.env` if those clash with something
+you already run.
+
+### Verify it end to end
+
+```powershell
+.\.venv\Scripts\python.exe scripts\ws_smoke.py             # Redis -> gateway -> browser socket
+.\.venv\Scripts\python.exe scripts\check_api_contract.py   # UI types vs live API responses
+```
+
+The first proves live fan-out works; every REST endpoint reads from the database, so they
+would all pass even with WebSockets broken. The second catches `types.ts` drifting from the
+Python models, which `tsc` and `pytest` both miss and which renders as an empty card.
+
+### Run the tests
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests -q        # unit only, no Docker needed
+
+$env:AIOPS_RUN_INTEGRATION = '1'                     # + real DB and Redis
+.\.venv\Scripts\python.exe -m pytest tests -q
+```
+
+### Stop
+
+```powershell
+Ctrl+C in each terminal
+
+.\scripts\stack.ps1 down        # stop containers, keep data
+.\scripts\stack.ps1 reset       # DESTROY data and re-apply the schema
+```
+
+Use `reset` after changing anything in `infra/timescaledb/init/` — those scripts only run
+against an empty volume.
+
+### If something breaks
+
+| Symptom | Fix |
+|---|---|
+| `running scripts is disabled` | `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned` |
+| `error during connect` from docker | Docker Desktop is not running |
+| `port is already allocated` | Change `POSTGRES_HOST_PORT` / `REDIS_HOST_PORT` in `.env` |
+| Healthcheck says tables are missing | `.\scripts\stack.ps1 reset` |
+| Dashboard loads but every panel is empty | API gateway not running, or no seed data |
+| Services all show `stale` | Start the terminal 3 tail |
+
+More detail in **[docs/SETUP.md](docs/SETUP.md)** section 10.
+
+### About the seeded data
+
+`seed_demo_data.py` generates a week of Mojaloop telemetry with a realistic daily and
+weekly rhythm, plus five scripted failure scenarios: memory leak, bad deploy, traffic
+surge, a cascade with a single upstream cause, and a chaos run with a scorecard.
+
+It is a stand-in, not a fake: the traffic shape matches what the module 2 simulator will
+produce, and the five scenarios are exactly the cases modules 4 and 7 must handle. The
+anomalies and incidents it writes were **not** produced by real detection — that is what
+modules 4 and 7 build. Once they exist, they write to the same tables and streams and the
+dashboard needs no changes.
+
+To clear it: `.\.venv\Scripts\python.exe scripts\seed_demo_data.py --clear`
 
 ---
 
