@@ -14,6 +14,8 @@ param()
 
 $ErrorActionPreference = 'Continue'
 $repoRoot = Split-Path -Parent $PSScriptRoot
+# Defined up front because both the observability section and the test section use it.
+$venvPython = Join-Path $repoRoot '.venv\Scripts\python.exe'
 Set-Location $repoRoot
 
 $failures = @()
@@ -131,8 +133,48 @@ if ($pong -and $pong.Trim() -eq 'PONG') {
 }
 
 # -----------------------------------------------------------------------------
+Write-Section 'Observability plane (module 2, optional)'
+# Only checked if the layer is running. The base stack is valid on its own, so a missing
+# observability plane is reported as informational rather than as a failure.
+$observabilityRunning = $false
+foreach ($name in @('aiops-prometheus', 'aiops-grafana')) {
+    $state = (& docker inspect --format '{{.State.Status}}' $name 2>$null)
+    if ($LASTEXITCODE -eq 0 -and $state -eq 'running') { $observabilityRunning = $true }
+}
+
+if (-not $observabilityRunning) {
+    Write-Info 'not running - start with: .\scripts\stack.ps1 up -Layer observability'
+} else {
+    $simulated = @('ml-api-adapter', 'central-ledger', 'quoting-service',
+                   'account-lookup-service', 'transaction-request-service')
+    foreach ($name in @('aiops-prometheus', 'aiops-grafana') + $simulated) {
+        $state = (& docker inspect --format '{{.State.Status}}' $name 2>$null)
+        if ($LASTEXITCODE -ne 0) {
+            Write-Fail "$name does not exist"
+            continue
+        }
+        $health = (& docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' $name 2>$null)
+        if ($state -eq 'running' -and $health -in @('healthy', 'none')) {
+            Write-Pass "$name is $state (health: $health)"
+        } else {
+            Write-Fail "$name is $state (health: $health)"
+        }
+    }
+
+    # The deep checks - targets, recording rules, exporter accuracy, dashboard panels -
+    # live in a dedicated script because they need real PromQL evaluation.
+    if (Test-Path $venvPython) {
+        & $venvPython scripts\check_observability.py 2>&1 | ForEach-Object { Write-Info $_ }
+        if ($LASTEXITCODE -eq 0) {
+            Write-Pass 'observability checks pass (targets, rules, exporter, dashboards)'
+        } else {
+            Write-Fail 'observability checks failed (see output above)'
+            Write-Info 'Metrics need ~60s after start-up before rate() windows fill.'
+        }
+    }
+}
+
 Write-Section 'Python foundation'
-$venvPython = Join-Path $repoRoot '.venv\Scripts\python.exe'
 if (-not (Test-Path $venvPython)) {
     Write-Fail '.venv not found - run .\scripts\bootstrap.ps1'
 } else {
@@ -156,7 +198,11 @@ if (-not (Test-Path $venvPython)) {
 Write-Host ''
 if ($failures.Count -eq 0) {
     Write-Host '================================' -ForegroundColor Green
-    Write-Host ' All checks passed. Module 1 OK.' -ForegroundColor Green
+    if ($observabilityRunning) {
+        Write-Host ' All checks passed. Modules 1 and 2 OK.' -ForegroundColor Green
+    } else {
+        Write-Host ' All checks passed. Module 1 OK (data layer only).' -ForegroundColor Green
+    }
     Write-Host '================================' -ForegroundColor Green
     exit 0
 } else {

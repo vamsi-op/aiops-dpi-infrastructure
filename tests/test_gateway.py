@@ -7,19 +7,14 @@ normalised before they reach the UI.
 
 from __future__ import annotations
 
-import sys
 from decimal import Decimal
-from pathlib import Path
 
 import pytest
 
-# The gateway is a service, not an installed package, so its directory goes on the path.
-GATEWAY_ROOT = Path(__file__).resolve().parent.parent / "services" / "api_gateway"
-if str(GATEWAY_ROOT) not in sys.path:
-    sys.path.insert(0, str(GATEWAY_ROOT))
-
-from api_gateway import health_rules  # noqa: E402
-from api_gateway.repository import DashboardRepository, _json, _num  # noqa: E402
+# `services/api_gateway` is on the path via the `pythonpath` setting in pyproject.toml,
+# which applies to every service rather than being re-implemented per test module.
+from api_gateway import health_rules
+from api_gateway.repository import DashboardRepository, _json, _num
 
 
 # ---------------------------------------------------------------------------

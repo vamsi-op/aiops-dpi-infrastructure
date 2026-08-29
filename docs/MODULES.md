@@ -52,7 +52,97 @@ that proves it works. Nothing is marked complete on the strength of "the code is
 
 ---
 
-## Module 2 — Observability plane + Mojaloop simulator ⬜ next
+## Module 2 — Observability plane + Mojaloop simulator 🟡 part A done
+
+### Part A ✅ — simulator, Prometheus, Grafana
+
+| Path | What it is |
+|------|-----------|
+| `services/mojaloop_sim/` | Five simulated Mojaloop services. One image, `SIM_SERVICE` selects the profile, so each runs as a **real container** that module 6 can restart and module 9 can kill |
+| `mojaloop_sim/profiles.py` | Per-service characteristics. `traffic_share` is derived from the dependency graph, so fan-in is real: central-ledger carries 1.78x the platform base |
+| `mojaloop_sim/traffic.py` | Two-peak daily curve x weekday weighting, ~2.7x trough-to-peak, noise capped at 12%. Latency, CPU, memory, errors and queue depth are **all derived from one load factor** |
+| `mojaloop_sim/faults.py` | 9 injectable faults, all auto-expiring, 30-minute hard cap |
+| `mojaloop_sim/metrics.py` | Prometheus exporter using `DpiMetric` names imported from the shared library |
+| `infra/prometheus/` | Scrape config + 20 recording rules for the DPI signals |
+| `infra/grafana/` | Provisioned datasource + a 13-panel dashboard, no UI clicking |
+| `scripts/check_observability.py` | Targets, recording rules, exporter-vs-simulator agreement, and **every dashboard panel returns data** |
+| `tests/test_simulator.py` | 37 tests |
+
+**Verify**
+
+```powershell
+.\scripts\stack.ps1 up -Layer observability
+.\.venv\Scripts\python.exe scripts\check_observability.py
+```
+
+Grafana: http://localhost:3000 (lands on the DPI dashboard). Prometheus: http://localhost:9090.
+
+**Verified working:** 9 containers healthy · 5/5 targets scraped · all 20 recording rules
+return data · exporter within 3% of the simulator · all 13 panels populated.
+
+### The two properties everything downstream depends on
+
+**1. Scaling genuinely relieves pressure.** Capacity is `tps_per_replica * replicas`, and
+every signal derives from `tps / capacity`. Measured on central-ledger:
+
+| Replicas | Load | p99 | Errors | Queue | Settlement lag |
+|---|---|---|---|---|---|
+| 1 | 1.26 | 56.6 s | 100% | 1258 | 116 s |
+| 8 | 0.16 | 0.21 s | 0.2% | 0 | 1.2 s |
+
+Without this, module 5's forecasts and module 6's scaling playbooks would be numbers on a
+dashboard with no observable consequence, and no remediation could ever be *shown* to have
+worked.
+
+**2. Signals are correlated, not independent.** An Isolation Forest over independent random
+columns learns nothing. Because everything keys off one load factor, module 4 can detect
+"latency is high *for this traffic level*" - which is the actual job.
+
+### Fault injection, verified end to end
+
+```
+POST /sim/faults  {"kind": "network_latency", "magnitude": 0.5, "duration_seconds": 60}
+```
+
+| Fault | Measured effect |
+|---|---|
+| `network_latency` | p99 0.22 s -> 2.02 s |
+| `error_injection` | error ratio 0.002 -> 0.202 |
+| `memory_hog` | monotonic climb 0.60 -> 0.70 over 30 s (a trend, not a spike) |
+| `cpu_hog` (8 s) | auto-expired after 11 s, other faults untouched |
+| `kill_service` | container RestartCount 0 -> 1, back to healthy |
+
+`bad_deploy` is deliberately a **composite** - errors *and* latency *and* queue depth
+starting together, which is what module 7 must attribute to a `change` rather than to load.
+
+### Design notes worth knowing
+
+- **Five containers, not one process.** Module 6's `restart_on_oom` needs a real container
+  to restart; module 9's `kill_service` needs a real one to kill.
+- **No Docker `HEALTHCHECK` restart on the simulators.** An auto-restart would silently
+  repair exactly the failures module 9 injects and module 6 is meant to remediate.
+- **`honor_labels: true` on the Mojaloop scrape job.** Every `dpi_*` series carries its own
+  `service` label; without this Prometheus renames it to `exported_service` and you end up
+  with two label names for one concept. With it on, `service` means the same thing
+  everywhere, including `up{service="central-ledger"}`.
+- **Recording rules, not ad-hoc PromQL.** Module 3 asks for `dpi:tps:rate5m` so the agent,
+  the dashboards and any alerts all read the identical computation.
+- **Faults expire on read, not on a timer.** There is no background task that could die and
+  leave a fault stuck on.
+- **Counters increment by the fractional rate each tick**, so `rate()` recovers the exact
+  offered load. Verified: scraped rate is within 3% of the simulator's own figure.
+
+### Part B ⬜ — logs and traces
+
+- Loki + Promtail: the simulator already emits structured JSON to stdout with the metrics
+  embedded, so log level correlates with simulated state and module 7 can use it as RCA
+  evidence
+- Tempo + OpenTelemetry instrumentation (`POST /simulate/request` exists to be traced)
+- Alertmanager
+
+---
+
+## Module 2 original plan (for reference)
 
 **Will deliver**
 
@@ -165,7 +255,7 @@ dashboard needs no changes.
 .\.venv\Scripts\python.exe scripts\seed_demo_data.py --days 3
 
 # terminal 1 - API
-.\.venv\Scripts\python.exe -m uvicorn app:app --port 8000 --app-dir services\api_gateway
+.\.venv\Scripts\python.exe -m uvicorn api_gateway.asgi:app --port 8000 --app-dir services\api_gateway
 # terminal 2 - UI
 cd dashboard; npm install; npm run dev            # http://localhost:5173
 # terminal 3 - keep the health grid live

@@ -1,0 +1,17 @@
+# Tells Grafana where to find dashboard JSON on disk.
+
+apiVersion: 1
+
+providers:
+  - name: DPI
+    orgId: 1
+    folder: DPI
+    type: file
+    # Editing in the UI is allowed for exploration, but changes are overwritten on restart.
+    # Anything worth keeping belongs in infra/grafana/dashboards/ and in git.
+    disableDeletion: false
+    allowUiUpdates: true
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

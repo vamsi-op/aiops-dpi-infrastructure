@@ -1,0 +1,39 @@
+# Grafana datasources, provisioned from file.
+#
+# Provisioned rather than clicked: a datasource configured by hand lives only in one
+# person's container and disappears on `docker compose down -v`. This file means every
+# teammate gets an identical, working Grafana on first start.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: dpi-prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      # Must match `scrape_interval` in prometheus.yml, otherwise Grafana picks step
+      # values that either alias the data or query far more points than exist.
+      timeInterval: 15s
+      httpMethod: POST
+
+  # Loki and Tempo arrive in part B of module 2. Left commented rather than deleted so the
+  # wiring is obvious when they land - and so Grafana does not start with two broken
+  # datasources that make everything look misconfigured.
+  #
+  # - name: Loki
+  #   type: loki
+  #   uid: dpi-loki
+  #   access: proxy
+  #   url: http://loki:3100
+  #   editable: false
+  #
+  # - name: Tempo
+  #   type: tempo
+  #   uid: dpi-tempo
+  #   access: proxy
+  #   url: http://tempo:3200
+  #   editable: false

@@ -1,0 +1,7 @@
+# The simulator needs nothing beyond the shared library, which already pins fastapi,
+# uvicorn and prometheus-client. Installing aiops_common is what guarantees the exported
+# metric names match the DpiMetric contract module 3 queries.
+#
+# Local development: already installed by scripts/bootstrap.ps1.
+# Docker: the Dockerfile copies libs/ and installs this file.
+-e ./libs/aiops_common

@@ -84,6 +84,11 @@ class DpiMetric(StrEnum):
     MEMORY_UTILISATION_RATIO = "dpi_memory_utilisation_ratio"
     QUEUE_DEPTH = "dpi_queue_depth"
     ACTIVE_CONNECTIONS = "dpi_active_connections"
+    # Topology and capacity. The metrics agent needs the replica count to populate
+    # MetricSample.replicas, and the traffic predictor needs capacity to turn a forecast
+    # in transactions per second into a recommended replica count.
+    REPLICAS = "dpi_replicas"
+    CAPACITY_TPS = "dpi_capacity_tps"
 
 
 # Feature vector fed to the anomaly detector. Order is part of the model contract —

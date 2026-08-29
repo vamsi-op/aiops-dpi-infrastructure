@@ -1,0 +1,130 @@
+# Recording rules for the DPI signals.
+#
+# Why these exist: module 3's metrics agent has to turn raw counters and histograms into one
+# MetricSample per service, every 15 seconds. Doing that with ad-hoc PromQL in Python would
+# scatter the same rate() and histogram_quantile() expressions across the codebase, where a
+# subtle difference between two of them is invisible. Defining each signal once here means
+# the agent asks for `dpi:tps:rate5m` and everyone - agent, dashboards, alerts - is looking
+# at the identical computation.
+#
+# Naming follows the Prometheus convention `level:metric:operations`.
+
+groups:
+  # ---------------------------------------------------------------------------
+  # RED signals: Rate, Errors, Duration.
+  # ---------------------------------------------------------------------------
+  - name: dpi_red
+    interval: 15s
+    rules:
+      - record: dpi:tps:rate5m
+        expr: sum by (service, platform) (rate(dpi_transaction_total[5m]))
+
+      - record: dpi:request_rate:rate5m
+        expr: sum by (service, platform) (rate(dpi_api_request_total[5m]))
+
+      # clamp_min guards the divide: a service with no traffic would otherwise produce
+      # 0/0 = NaN, which propagates into the feature vector and poisons model training.
+      - record: dpi:error_ratio:rate5m
+        expr: |
+          sum by (service, platform) (rate(dpi_transaction_failed_total[5m]))
+          /
+          clamp_min(sum by (service, platform) (rate(dpi_transaction_total[5m])), 0.001)
+
+      - record: dpi:latency_p50:5m
+        expr: |
+          histogram_quantile(
+            0.50,
+            sum by (service, platform, le) (rate(dpi_transaction_duration_seconds_bucket[5m]))
+          )
+
+      - record: dpi:latency_p95:5m
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (service, platform, le) (rate(dpi_transaction_duration_seconds_bucket[5m]))
+          )
+
+      - record: dpi:latency_p99:5m
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (service, platform, le) (rate(dpi_transaction_duration_seconds_bucket[5m]))
+          )
+
+  # ---------------------------------------------------------------------------
+  # Saturation. These are already gauges; aggregating by service collapses the
+  # per-instance series so the shape matches the RED rules above.
+  # ---------------------------------------------------------------------------
+  - name: dpi_saturation
+    interval: 15s
+    rules:
+      - record: dpi:cpu:avg
+        expr: avg by (service, platform) (dpi_cpu_utilisation_ratio)
+
+      # max, not avg: one replica about to be OOM-killed is the event that matters, and
+      # averaging would hide it behind healthy siblings.
+      - record: dpi:memory:max
+        expr: max by (service, platform) (dpi_memory_utilisation_ratio)
+
+      - record: dpi:queue_depth:sum
+        expr: sum by (service, platform) (dpi_queue_depth)
+
+      - record: dpi:connections:sum
+        expr: sum by (service, platform) (dpi_active_connections)
+
+      - record: dpi:replicas
+        expr: max by (service, platform) (dpi_replicas)
+
+      - record: dpi:capacity_tps
+        expr: max by (service, platform) (dpi_capacity_tps)
+
+      # Offered load over capacity. Module 5 uses this to decide whether a forecast peak
+      # actually needs more replicas, rather than scaling on raw traffic.
+      - record: dpi:load_factor
+        expr: |
+          dpi:tps:rate5m / clamp_min(dpi:capacity_tps, 0.001)
+
+  # ---------------------------------------------------------------------------
+  # DPI-specific business signals - the ones generic infrastructure monitoring
+  # misses entirely, and the ones a payments operator actually cares about.
+  # ---------------------------------------------------------------------------
+  - name: dpi_business
+    interval: 15s
+    rules:
+      - record: dpi:settlement_lag:max
+        expr: max by (service, platform) (dpi_settlement_lag_seconds)
+
+      - record: dpi:quote_latency_p95:5m
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (service, platform, le) (rate(dpi_quote_latency_seconds_bucket[5m]))
+          )
+
+      - record: dpi:verification_latency_p95:5m
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (service, platform, le) (rate(dpi_verification_latency_seconds_bucket[5m]))
+          )
+
+      - record: dpi:success_ratio
+        expr: avg by (service, platform) (dpi_api_success_ratio)
+
+  # ---------------------------------------------------------------------------
+  # Platform-wide rollups for the dashboard's headline numbers.
+  # ---------------------------------------------------------------------------
+  - name: dpi_platform
+    interval: 15s
+    rules:
+      - record: dpi:platform_tps:rate5m
+        expr: sum by (platform) (dpi:tps:rate5m)
+
+      - record: dpi:platform_error_ratio:rate5m
+        expr: |
+          sum by (platform) (rate(dpi_transaction_failed_total[5m]))
+          /
+          clamp_min(sum by (platform) (rate(dpi_transaction_total[5m])), 0.001)
+
+      - record: dpi:services_up
+        expr: sum by (platform) (up{job="mojaloop"})

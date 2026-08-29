@@ -114,9 +114,33 @@ continuous aggregates and Redis, then runs the full test suite.
 
 **If the healthcheck is not green, stop here and fix it.** Everything below assumes it passes.
 
-### Step 3 — Load data
+### Step 3 — Start the observability plane and the simulated workload
 
-Modules 2–7 do not exist yet, so nothing is producing telemetry. Seed it:
+```powershell
+.\scripts\stack.ps1 up -Layer observability
+```
+
+Adds seven containers: the five simulated Mojaloop services, Prometheus and Grafana. The
+first run builds the simulator image, so allow a few minutes.
+
+- **Grafana** — http://localhost:3000 — opens straight on the DPI dashboard, no setup
+- **Prometheus** — http://localhost:9090 — all 5 Mojaloop targets should be `UP`
+
+Give it about 60 seconds for the `rate()` windows to fill, then:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\check_observability.py
+```
+
+That verifies targets are scraped, all recording rules return data, the exporter agrees
+with the simulator, and every dashboard panel is populated rather than showing "No data".
+
+Traffic follows a realistic daily and weekly rhythm, so over 24 hours the Grafana traffic
+panel shows a clear curve. That seasonality is what module 5's forecasting learns.
+
+### Step 4 — Load data for the dashboard
+
+Modules 3–7 do not exist yet, so nothing is writing telemetry to TimescaleDB. Seed it:
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\seed_demo_data.py --days 3
@@ -125,14 +149,14 @@ Modules 2–7 do not exist yet, so nothing is producing telemetry. Seed it:
 This writes ~21,000 metric rows plus 11 anomalies, 5 incidents, 8 healing actions, 15
 forecasts and a chaos run.
 
-### Step 4 — Start the app
+### Step 5 — Start the dashboard app
 
 Three terminals. Activate the venv in each with `.\.venv\Scripts\Activate.ps1`, or use the
 full `.\.venv\Scripts\python.exe` path as shown.
 
 ```powershell
 # Terminal 1 - API gateway
-.\.venv\Scripts\python.exe -m uvicorn app:app --port 8000 --app-dir services\api_gateway
+.\.venv\Scripts\python.exe -m uvicorn api_gateway.asgi:app --port 8000 --app-dir services\api_gateway
 ```
 
 ```powershell
@@ -151,7 +175,7 @@ Terminal 3 is not optional for a demo: services are marked **stale** two minutes
 their last sample, so without it the grid goes grey. That is correct behaviour — a service
 that stops reporting must be visible as stale, not silently vanish.
 
-### Step 5 — Open it
+### Step 6 — Open the dashboard
 
 **http://localhost:5173**
 
@@ -171,15 +195,64 @@ that stops reporting must be visible as stale, not silently vanish.
 |---|---|---|
 | Dashboard | http://localhost:5173 | Vite dev server, proxies `/api` to :8000 |
 | API gateway | http://localhost:8000 | `/docs` for interactive OpenAPI |
+| Grafana | http://localhost:3000 | Provisioned DPI dashboard, admin/admin |
+| Prometheus | http://localhost:9090 | `/targets` and `/rules` |
 | TimescaleDB | localhost:5432 | user/db `aiops` |
 | Redis | localhost:6379 | event bus |
+| Simulated services | localhost:8011–8015 | `/sim`, `/metrics`, `/docs` per service |
+
+Simulated service ports: `ml-api-adapter` 8011, `central-ledger` 8012, `quoting-service`
+8013, `account-lookup-service` 8014, `transaction-request-service` 8015.
 
 Change `POSTGRES_HOST_PORT` / `REDIS_HOST_PORT` in `.env` if those clash with something
 you already run.
 
+### Break something on purpose
+
+The simulator accepts fault injection, which is how modules 4, 6 and 9 are developed and
+demonstrated. Every fault **expires automatically** (30-minute hard cap), so nothing can be
+left broken.
+
+```powershell
+# Add 500 ms of latency to central-ledger for 60 seconds
+curl.exe -X POST http://localhost:8012/sim/faults -H "Content-Type: application/json" `
+  -d '{\"kind\":\"network_latency\",\"magnitude\":0.5,\"duration_seconds\":60}'
+
+# Watch the effect
+curl.exe http://localhost:8012/sim
+
+# Clear everything early
+curl.exe -X DELETE http://localhost:8012/sim/faults
+```
+
+| Fault kind | What it simulates |
+|---|---|
+| `network_latency` | Slow downstream dependency |
+| `error_injection` | Failing requests |
+| `memory_hog` | Memory leak — a monotonic climb, not a spike |
+| `cpu_hog` | CPU saturation |
+| `traffic_spike` | Demand surge with a smooth rise and fall |
+| `queue_backlog` | Work piling up |
+| `settlement_delay` | Payments-specific: settlement falling behind |
+| `bad_deploy` | Composite: errors + latency + queue together |
+| `kill_service` | Terminates the process; the container restarts |
+
+Scaling is also live, and it genuinely relieves pressure — capacity is
+`tps_per_replica x replicas`, and every signal derives from `tps / capacity`:
+
+```powershell
+curl.exe -X POST http://localhost:8012/sim/scale -H "Content-Type: application/json" `
+  -d '{\"replicas\":8,\"reason\":\"manual test\"}'
+```
+
+On `central-ledger`, 1 replica gives load 1.26 / p99 56 s / 100% errors; 8 replicas gives
+load 0.16 / p99 0.21 s / 0.2% errors. That is what lets a remediation be *shown* to have
+worked rather than merely logged.
+
 ### Verify it end to end
 
 ```powershell
+.\.venv\Scripts\python.exe scripts\check_observability.py  # targets, rules, dashboards
 .\.venv\Scripts\python.exe scripts\ws_smoke.py             # Redis -> gateway -> browser socket
 .\.venv\Scripts\python.exe scripts\check_api_contract.py   # UI types vs live API responses
 ```
@@ -263,8 +336,8 @@ that proves it works.
 | # | Module | Focus | Status |
 |---|--------|-------|--------|
 | 1 | Project foundation — config, logging, schemas, event bus, storage | infra | ✅ done |
-| 2 | Observability plane + Mojaloop simulator | infra | ⬜ **start here** |
-| 3 | Metrics collection agent + DPI exporter | infra | ⬜ |
+| 2 | Observability plane + Mojaloop simulator | infra | 🟡 part A done, part B (logs/traces) open |
+| 3 | Metrics collection agent + DPI exporter | infra | ⬜ **start here** |
 | 4 | Anomaly detection (Isolation Forest) | ml | ⬜ |
 | 5 | Traffic prediction + pre-emptive scaling | ml | ⬜ |
 | 6 | Self-healing playbook engine | automation | ⬜ |

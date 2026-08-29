@@ -1,7 +1,7 @@
 r"""API gateway: read APIs and live event fan-out for the operations dashboard.
 
 Run locally:
-    uvicorn app:app --reload --port 8000 --app-dir services/api_gateway
+    uvicorn api_gateway.asgi:app --reload --port 8000 --app-dir services/api_gateway
 
 Or through the stack:
     .\scripts\stack.ps1 up -Layer aiops
@@ -13,9 +13,6 @@ import asyncio
 import contextlib
 from typing import Any
 
-from api_gateway.live import WATCHED_STREAMS, ConnectionManager, EventRelay
-from api_gateway.repository import DashboardRepository
-from api_gateway.routes import router
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 from aiops_common.bus import EventBus
@@ -25,6 +22,10 @@ from aiops_common.db import Database
 from aiops_common.log import get_logger
 from aiops_common.schemas import utc_now
 from aiops_common.service import build_app
+
+from .live import WATCHED_STREAMS, ConnectionManager, EventRelay
+from .repository import DashboardRepository
+from .routes import router
 
 SERVICE_NAME = str(AiopsService.API_GATEWAY)
 
@@ -120,7 +121,7 @@ if __name__ == "__main__":  # pragma: no cover - convenience for local runs
 
     with contextlib.suppress(KeyboardInterrupt, asyncio.CancelledError):
         uvicorn.run(
-            "app:app",
+            "api_gateway.asgi:app",
             host="0.0.0.0",  # noqa: S104 - container needs to bind all interfaces
             port=8000,
             log_config=None,  # structlog already owns logging

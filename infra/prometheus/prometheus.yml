@@ -1,0 +1,81 @@
+# Prometheus configuration for the DPI AIOps platform.
+#
+# Scrape targets are static rather than service-discovered. In Compose the service names
+# are known and fixed, so discovery would add machinery without adding information.
+# Module 10 replaces this with Kubernetes service discovery.
+
+global:
+  # 15s matches the metrics agent's collection interval in module 3. Faster would give the
+  # agent nothing extra; slower would blur the latency spikes module 4 needs to see.
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+  external_labels:
+    platform: mojaloop
+    env: local
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  # -------------------------------------------------------------------------
+  # Prometheus itself. If this target is down, nothing else can be trusted.
+  # -------------------------------------------------------------------------
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # -------------------------------------------------------------------------
+  # Simulated Mojaloop services.
+  #
+  # honor_labels: true matters here. Every dpi_* series already carries its own `service`
+  # label, and without this Prometheus would rename it to `exported_service` and apply the
+  # target label instead - leaving two different label names for the same concept. With it
+  # on, the metric's own label wins, while the synthetic `up` series (which has no service
+  # label of its own) still picks up the target label. Result: `service` means the same
+  # thing in every query, including `up{service="central-ledger"}`.
+  # -------------------------------------------------------------------------
+  - job_name: mojaloop
+    honor_labels: true
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["ml-api-adapter:8000"]
+        labels:
+          service: ml-api-adapter
+          tier: edge
+      - targets: ["central-ledger:8000"]
+        labels:
+          service: central-ledger
+          tier: core
+      - targets: ["quoting-service:8000"]
+        labels:
+          service: quoting-service
+          tier: core
+      - targets: ["account-lookup-service:8000"]
+        labels:
+          service: account-lookup-service
+          tier: core
+      - targets: ["transaction-request-service:8000"]
+        labels:
+          service: transaction-request-service
+          tier: edge
+
+  # -------------------------------------------------------------------------
+  # The AIOps services monitor themselves. An AIOps platform that fails silently is
+  # worse than none, so every service exposes aiops_* metrics via build_app().
+  #
+  # These targets are expected to be down until their module is built; Prometheus
+  # reporting them as down is the correct and useful signal.
+  # -------------------------------------------------------------------------
+  - job_name: aiops
+    honor_labels: true
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - "api-gateway:8000"
+          - "metrics-agent:8000"
+          - "anomaly-detector:8000"
+          - "traffic-predictor:8000"
+          - "rca-engine:8000"
+          - "healing-engine:8000"
+          - "chaos-agent:8000"

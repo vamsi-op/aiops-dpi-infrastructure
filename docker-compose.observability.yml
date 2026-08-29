@@ -1,0 +1,205 @@
+# =============================================================================
+# Observability plane + simulated Mojaloop workload (module 2, part A).
+#
+# Always combined with the base stack, because the AIOps services need both:
+#   docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d
+#
+# Or, more simply:
+#   .\scripts\stack.ps1 up -Layer observability
+#
+# Part B adds Loki, Promtail, Tempo and Alertmanager to this same file.
+# =============================================================================
+
+name: aiops-dpi
+
+# Declared identically to docker-compose.yml rather than as `external`. Compose merges the
+# two files, and a mismatched definition (external here, driver there) makes Compose expect
+# a network it will not create.
+networks:
+  aiops:
+    name: aiops-net
+    driver: bridge
+
+volumes:
+  prometheus_data:
+    name: aiops_prometheus_data
+  grafana_data:
+    name: aiops_grafana_data
+
+# ---------------------------------------------------------------------------
+# Every simulated service is the same image with a different SIM_SERVICE. YAML
+# anchors keep that DRY - the alternative is five near-identical 20-line blocks
+# where a change to one silently fails to reach the others.
+# ---------------------------------------------------------------------------
+x-sim-common: &sim-common
+  build:
+    # Context is the repo root, not services/mojaloop_sim, because the image needs libs/.
+    context: .
+    dockerfile: services/mojaloop_sim/Dockerfile
+  image: aiops/mojaloop-sim:0.1.0
+  # `unless-stopped`, not `always`: a container killed by module 9's chaos experiment must
+  # come back (that is the point of the restart playbook), but a deliberate
+  # `docker compose stop` should stay stopped.
+  restart: unless-stopped
+  environment: &sim-env
+    AIOPS_ENV: ${AIOPS_ENV:-local}
+    AIOPS_LOG_LEVEL: ${AIOPS_LOG_LEVEL:-INFO}
+    # JSON regardless of the host setting: Promtail has to parse these in part B.
+    AIOPS_LOG_FORMAT: json
+    AIOPS_DPI_PLATFORM: mojaloop
+    MOJALOOP_SIM_BASE_TPS: ${MOJALOOP_SIM_BASE_TPS:-25}
+    MOJALOOP_SIM_SEASONALITY: ${MOJALOOP_SIM_SEASONALITY:-true}
+  networks: [aiops]
+  # Modest limits so five containers plus the observability stack fit in Docker Desktop's
+  # default allocation. They also make the simulated utilisation ratios meaningful: memory
+  # pressure is relative to a real ceiling.
+  deploy:
+    resources:
+      limits:
+        cpus: "0.40"
+        memory: 192M
+
+x-sim-healthcheck: &sim-healthcheck
+  # Reports health without Compose acting on it. Compose does not restart on an unhealthy
+  # container by default, which is what we want: an auto-restart would silently repair the
+  # exact failures module 9 injects and module 6 is meant to remediate.
+  test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status==200 else 1)\""]
+  interval: 15s
+  timeout: 5s
+  retries: 3
+  start_period: 20s
+
+services:
+  # ---------------------------------------------------------------------------
+  # Simulated Mojaloop microservices. Compose service names match the real
+  # Mojaloop deployment names, so Prometheus targets and the `service` label read
+  # identically to a production setup.
+  # ---------------------------------------------------------------------------
+  ml-api-adapter:
+    <<: *sim-common
+    container_name: ml-api-adapter
+    environment:
+      <<: *sim-env
+      SIM_SERVICE: ml-api-adapter
+      AIOPS_SERVICE_NAME: ml-api-adapter
+    ports:
+      - "${SIM_ML_API_ADAPTER_PORT:-8011}:8000"
+    healthcheck: *sim-healthcheck
+
+  central-ledger:
+    <<: *sim-common
+    container_name: central-ledger
+    environment:
+      <<: *sim-env
+      SIM_SERVICE: central-ledger
+      AIOPS_SERVICE_NAME: central-ledger
+    ports:
+      - "${SIM_CENTRAL_LEDGER_PORT:-8012}:8000"
+    healthcheck: *sim-healthcheck
+
+  quoting-service:
+    <<: *sim-common
+    container_name: quoting-service
+    environment:
+      <<: *sim-env
+      SIM_SERVICE: quoting-service
+      AIOPS_SERVICE_NAME: quoting-service
+    ports:
+      - "${SIM_QUOTING_SERVICE_PORT:-8013}:8000"
+    healthcheck: *sim-healthcheck
+
+  account-lookup-service:
+    <<: *sim-common
+    container_name: account-lookup-service
+    environment:
+      <<: *sim-env
+      SIM_SERVICE: account-lookup-service
+      AIOPS_SERVICE_NAME: account-lookup-service
+    ports:
+      - "${SIM_ACCOUNT_LOOKUP_PORT:-8014}:8000"
+    healthcheck: *sim-healthcheck
+
+  transaction-request-service:
+    <<: *sim-common
+    container_name: transaction-request-service
+    environment:
+      <<: *sim-env
+      SIM_SERVICE: transaction-request-service
+      AIOPS_SERVICE_NAME: transaction-request-service
+    ports:
+      - "${SIM_TRANSACTION_REQUEST_PORT:-8015}:8000"
+    healthcheck: *sim-healthcheck
+
+  # ---------------------------------------------------------------------------
+  # Prometheus
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: aiops-prometheus
+    restart: unless-stopped
+    user: root
+    ports:
+      - "${PROMETHEUS_HOST_PORT:-9090}:9090"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus_data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # 15 days is far more than the platform needs - TimescaleDB is the long-term store,
+      # and module 5 trains on the 1h rollup there, not on Prometheus.
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+      - --web.console.libraries=/usr/share/prometheus/console_libraries
+      - --web.console.templates=/usr/share/prometheus/consoles
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:9090/-/healthy || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks: [aiops]
+    depends_on:
+      - ml-api-adapter
+      - central-ledger
+      - quoting-service
+      - account-lookup-service
+      - transaction-request-service
+
+  # ---------------------------------------------------------------------------
+  # Grafana
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:11.3.1
+    container_name: aiops-grafana
+    restart: unless-stopped
+    ports:
+      - "${GRAFANA_HOST_PORT:-3000}:3000"
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      # Local dev convenience: skip the login screen. Never do this anywhere reachable by
+      # anyone else - Grafana would be fully open.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_USERS_DEFAULT_THEME: dark
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+      # Land straight on the DPI dashboard instead of an empty home page.
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/dpi-overview.json
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:3000/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 25s
+    networks: [aiops]
+    depends_on:
+      prometheus:
+        condition: service_started
