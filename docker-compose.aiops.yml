@@ -176,3 +176,46 @@ services:
           # hourly points per service.
           cpus: "0.50"
           memory: 384M
+
+  # ---------------------------------------------------------------------------
+  # Module 8 - API Gateway.
+  #
+  # REST + WebSocket API that the dashboard queries. Reads from TimescaleDB (metrics,
+  # anomalies, predictions, incidents, actions) and relays live events from Redis streams.
+  # The dashboard connects to this, not directly to the backend modules.
+  # ---------------------------------------------------------------------------
+  api-gateway:
+    <<: *aiops-common
+    build:
+      context: .
+      dockerfile: services/api_gateway/Dockerfile
+    image: aiops/api-gateway:0.1.0
+    container_name: aiops-api-gateway
+    environment:
+      <<: *aiops-env
+      AIOPS_SERVICE_NAME: api-gateway
+      # CORS origin for the dashboard. In production this would be the dashboard's public URL.
+      # For local dev, allow localhost on any port so both `npm run dev` (5173) and a
+      # production build preview work without rebuilding the gateway.
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:5173,http://localhost:4173}
+    ports:
+      - "${API_GATEWAY_PORT:-8080}:8000"
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      # The gateway queries what modules 3-5 write, so starting after them avoids returning
+      # empty results while the pipeline is still initializing.
+      metrics-agent:
+        condition: service_started
+      anomaly-detector:
+        condition: service_started
+      traffic-predictor:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          # Read-only queries and WebSocket relay; no heavy computation.
+          cpus: "0.25"
+          memory: 256M

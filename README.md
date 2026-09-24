@@ -43,25 +43,30 @@ Built against **Mojaloop** (payments). The design generalises to **MOSIP** (iden
             │ metrics · logs · traces
             ▼
 ┌──────────────────────────────────────────────────────────────────────────┐
-│  OBSERVABILITY PLANE                                                      │
-│  Prometheus · Loki + Alloy · Tempo · Grafana · Alertmanager                │
+│  OBSERVABILITY PLANE ✅                                                   │
+│  Prometheus · Loki + Alloy · Tempo · Grafana · Alertmanager              │
 └───────────┬──────────────────────────────────────────────────────────────┘
             ▼
 ┌──────────────────────────────────────────────────────────────────────────┐
-│  AIOPS PLANE                                                              │
-│  metrics-agent ──► TimescaleDB (history + feature store)                   │
-│        ├──► anomaly-detector      (Isolation Forest)                       │
-│        ├──► traffic-predictor     (1h / 6h / 24h)                          │
-│        ├──► rca-engine            (service · change · event)               │
-│        └──► healing-engine        (playbooks + safety rails)               │
+│  AIOPS PLANE ✅                                                           │
+│  metrics-agent ──► TimescaleDB (history + feature store)                 │
+│        ├──► anomaly-detector      (Isolation Forest) ✅                  │
+│        ├──► traffic-predictor     (1h / 6h / 24h) ✅                     │
+│        ├──► rca-engine            (service · change · event) ⏸️          │
+│        └──► healing-engine        (playbooks + safety rails) ⏸️          │
 └───────────┬──────────────────────────────────────────────────────────────┘
             │ Redis Streams
             ▼
 ┌──────────────────────────────────────────────────────────────────────────┐
-│  CONTROL PLANE                                                            │
-│  api-gateway (REST + WebSocket) · dashboard (React) · chaos-agent          │
+│  CONTROL PLANE ✅                                                         │
+│  api-gateway (REST + WebSocket) · dashboard (React) · chaos-agent ⏸️     │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
+
+**Current Status (Sept 2026):**
+- ✅ Modules 1-5, 8 complete and integrated
+- ⏸️ Modules 6-7, 9-10 planned
+- 17 containers running, full pipeline operational
 
 Layers only query downward and communicate upward through the event bus. No service
 reaches into another's database. Full reasoning in

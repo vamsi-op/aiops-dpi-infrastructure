@@ -673,40 +673,54 @@ separate incidents.
 
 ---
 
-## Module 8 — Operations dashboard ✅ (built ahead of modules 2-7)
+## Module 8 — API Gateway and Operations Dashboard ✅
 
-Built out of order, at request. The UI is written against the real schema and the real
-event bus; `scripts/seed_demo_data.py` stands in for the services that will eventually
-feed it. When modules 2-7 land they write to the same tables and streams, so the
-dashboard needs no changes.
+The gateway bridges modules 3-5 to the dashboard, providing REST + WebSocket APIs that query
+TimescaleDB and relay live events from Redis. Now fully containerized and integrated with the
+complete pipeline.
 
 **Delivered**
 
 | Path | What it is |
 |------|-----------|
 | `services/api_gateway/` | FastAPI: 17 REST endpoints + `/ws`. `repository.py` holds all SQL, `health_rules.py` the status thresholds, `live.py` the Redis-to-WebSocket relay with per-service metric batching |
+| `services/api_gateway/Dockerfile` | Containerized gateway deployed via docker-compose.aiops.yml on port 8080 |
 | `dashboard/` | React 18 + TypeScript + Vite. 7 pages: Overview, Service detail, Anomalies, Forecast, Incidents, Automation, Chaos |
+| `dashboard/vite.config.ts` | Dev server proxy to gateway (port 8080), eliminating CORS in development |
 | `scripts/seed_demo_data.py` | A week of Mojaloop telemetry with daily/weekly rhythm, plus 5 scripted failure scenarios (memory leak, bad deploy, traffic surge, cascade, chaos run) |
 | `scripts/ws_smoke.py` | Proves the live path: publishes to Redis, asserts it arrives at the WebSocket |
 | `scripts/check_api_contract.py` | Parses `types.ts` and checks all 20 interfaces against live API responses |
 | `tests/test_gateway.py` | 25 tests over health rules, repository shaping and route behaviour |
 
-**Verify**
+**Verify** — gateway running in Docker, dashboard connecting to live pipeline
 
 ```powershell
-.\scripts\stack.ps1 up
-.\.venv\Scripts\python.exe scripts\seed_demo_data.py --days 3
+.\scripts\stack.ps1 up -Layer all
 
-# terminal 1 - API
-.\.venv\Scripts\python.exe -m uvicorn api_gateway.asgi:app --port 8000 --app-dir services\api_gateway
-# terminal 2 - UI
-cd dashboard; npm install; npm run dev            # http://localhost:5173
-# terminal 3 - keep the health grid live
-.\.venv\Scripts\python.exe scripts\seed_demo_data.py --follow --skip-history
+# Gateway health check
+Invoke-RestMethod http://localhost:8080/health
 
-.\.venv\Scripts\python.exe scripts\ws_smoke.py            # live relay works
-.\.venv\Scripts\python.exe scripts\check_api_contract.py  # UI/API contract holds
+# Query live data from modules 3-5
+Invoke-RestMethod http://localhost:8080/api/overview
+Invoke-RestMethod "http://localhost:8080/api/anomalies?hours=1"
+Invoke-RestMethod http://localhost:8080/api/predictions
+
+# Start dashboard (separate terminal)
+cd dashboard
+npm install
+npm run dev            # http://localhost:5173
+
+# Verify contracts and WebSocket relay
+.\.venv\Scripts\python.exe scripts\ws_smoke.py
+.\.venv\Scripts\python.exe scripts\check_api_contract.py
 ```
+
+**Verified working:**
+- Gateway containerized and serving on port 8080
+- All 17 REST endpoints returning live data from the pipeline
+- WebSocket relay publishing 7 stream types (metrics, anomalies, predictions, incidents, actions, deployments, chaos)
+- Dashboard showing real-time data: 5 services, live TPS, anomaly detections, traffic forecasts
+- Complete integration: Modules 3 → 4 → 5 → 8 → Dashboard
 
 **Why the two extra verification scripts exist.** `tsc` checks the frontend against
 `types.ts`, and pytest checks the backend against its Pydantic models, but nothing checked
