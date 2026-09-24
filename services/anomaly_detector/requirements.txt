@@ -1,0 +1,10 @@
+# Anomaly detector runtime dependencies.
+#
+# The shared library brings fastapi, uvicorn, pydantic, redis, SQLAlchemy, asyncpg,
+# prometheus-client and OpenTelemetry. Only the ML stack is specific to this service.
+#
+# scikit-learn is deliberately *not* added to aiops_common: with scipy and numpy it is around
+# 100 MB, and the api_gateway, metrics_agent and mojaloop_sim images have no use for it.
+# Module 5's forecaster will depend on the same three and can reuse requirements-ml.txt.
+-e ../../libs/aiops_common
+-r requirements-ml.txt

@@ -5,7 +5,8 @@ Two output modes, chosen with `AIOPS_LOG_FORMAT`:
   * `console` — colourised, human friendly. Use when running a service in your terminal.
 
 Every log line automatically carries `service`, `env` and `dpi_platform`, so a single
-Loki query can slice across the whole platform.
+Loki query can slice across the whole platform. Lines emitted inside an active span also
+carry `trace_id` and `span_id`, which is what connects a log to the trace that produced it.
 """
 
 from __future__ import annotations
@@ -51,6 +52,30 @@ def _drop_color_message(_logger: Any, _method: str, event_dict: EventDict) -> Ev
     return event_dict
 
 
+def _add_trace_context(_logger: Any, _method: str, event_dict: EventDict) -> EventDict:
+    """Stamp the active trace and span ids onto the line, when there is one.
+
+    This is the entire mechanism behind "jump from this log line to the trace" in Grafana:
+    Alloy lifts `trace_id` into structured metadata, and the Loki datasource turns it into
+    a link. Without it, logs and traces are two collections that happen to cover the same
+    period and have to be lined up by eye.
+
+    Imported lazily and defensively. `log.py` is imported by every module in the library,
+    including at times when OpenTelemetry is deliberately absent (unit tests, the seeder),
+    and logging must never be the thing that fails to import.
+    """
+    try:
+        from opentelemetry import trace
+    except ImportError:  # pragma: no cover - otel is a hard dependency, but be safe
+        return event_dict
+
+    context = trace.get_current_span().get_span_context()
+    if context.is_valid:
+        event_dict.setdefault("trace_id", format(context.trace_id, "032x"))
+        event_dict.setdefault("span_id", format(context.span_id, "016x"))
+    return event_dict
+
+
 def configure_logging(
     service_name: str | None = None,
     *,
@@ -83,6 +108,7 @@ def configure_logging(
         structlog.stdlib.add_log_level,
         structlog.stdlib.add_logger_name,
         _add_service_context,
+        _add_trace_context,
         _drop_color_message,
         structlog.processors.TimeStamper(fmt="iso", utc=True),
         structlog.processors.StackInfoRenderer(),

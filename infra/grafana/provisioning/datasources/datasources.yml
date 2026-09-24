@@ -20,20 +20,78 @@ datasources:
       timeInterval: 15s
       httpMethod: POST
 
-  # Loki and Tempo arrive in part B of module 2. Left commented rather than deleted so the
-  # wiring is obvious when they land - and so Grafana does not start with two broken
-  # datasources that make everything look misconfigured.
-  #
-  # - name: Loki
-  #   type: loki
-  #   uid: dpi-loki
-  #   access: proxy
-  #   url: http://loki:3100
-  #   editable: false
-  #
-  # - name: Tempo
-  #   type: tempo
-  #   uid: dpi-tempo
-  #   access: proxy
-  #   url: http://tempo:3200
-  #   editable: false
+  - name: Loki
+    type: loki
+    uid: dpi-loki
+    access: proxy
+    url: http://loki:3100
+    editable: false
+    jsonData:
+      # Turns the trace_id that aiops_common.log stamps on every line into a link straight
+      # to the trace in Tempo. This is the single most useful thing in this file: without
+      # it, logs and traces are two collections covering the same period that a human has
+      # to line up by timestamp, which is exactly the manual work the platform exists to
+      # remove.
+      #
+      # Reads structured metadata, not a regex over the message. Alloy promotes trace_id to
+      # structured metadata (see infra/alloy/config.alloy), so the field is already parsed
+      # and a change to the log line's shape cannot silently break the link.
+      derivedFields:
+        - name: TraceID
+          matcherType: label
+          matcherRegex: trace_id
+          datasourceUid: dpi-tempo
+          url: "${__value.raw}"
+          urlDisplayLabel: "View trace"
+
+  - name: Tempo
+    type: tempo
+    uid: dpi-tempo
+    access: proxy
+    url: http://tempo:3200
+    editable: false
+    jsonData:
+      # The return journey: from a span, show the logs of that service around that moment.
+      tracesToLogsV2:
+        datasourceUid: dpi-loki
+        # Matched on `service` because that label means the same thing in Prometheus, Loki
+        # and Tempo's generated metrics. Keeping one name for one concept across all three
+        # is what makes these cross-links possible at all.
+        tags:
+          - key: service.name
+            value: service
+        # Asymmetric window, deliberately: a span's logs are written during and just after
+        # it, and the cause usually logged shortly before it started.
+        spanStartTimeShift: "-2m"
+        spanEndTimeShift: "2m"
+        filterByTraceID: false
+        filterBySpanID: false
+
+      # From a span to the RED metrics of the same service.
+      tracesToMetrics:
+        datasourceUid: dpi-prometheus
+        spanStartTimeShift: "-5m"
+        spanEndTimeShift: "5m"
+        tags:
+          - key: service.name
+            value: service
+        queries:
+          - name: "Error ratio"
+            query: 'dpi:error_ratio:rate5m{service="$__tags"}'
+          - name: "p99 latency"
+            query: 'dpi:latency_p99:5m{service="$__tags"}'
+          - name: "Load factor"
+            query: 'dpi:load_factor{service="$__tags"}'
+
+      # Renders Tempo's generated service graph. Points at Prometheus because the graph
+      # lives there as traces_service_graph_request_total, remote-written by Tempo's
+      # metrics generator - not inside Tempo itself.
+      serviceMap:
+        datasourceUid: dpi-prometheus
+
+      # Span metrics, same source and same reason.
+      spanBar:
+        type: Duration
+
+      streamingEnabled:
+        search: true

@@ -1,0 +1,11 @@
+# Traffic predictor runtime dependencies.
+#
+# The shared library brings everything else. Notably absent: scikit-learn. The forecaster is a
+# multiplicative seasonal decomposition built from medians, which needs nothing beyond the
+# standard library's `statistics` module - so this image stays ~100 MB smaller than the anomaly
+# detector's and starts faster.
+#
+# statsmodels is also absent, deliberately. Holt-Winters with `seasonal_periods=168` needs two
+# full weekly cycles just to initialise and leaves little of a 28-day window for validation; the
+# reasoning is recorded in forecaster.py.
+-e ../../libs/aiops_common

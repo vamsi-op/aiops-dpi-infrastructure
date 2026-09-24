@@ -121,6 +121,46 @@ jobs:
           AIOPS_RUN_INTEGRATION: "1"
         run: pytest tests -q
 
+      # mypy checks the backend against its Pydantic models and tsc checks the frontend
+      # against types.ts, but nothing checks those two agree. A field renamed on one side
+      # passes both jobs and renders an empty card in the browser. This closes that gap by
+      # seeding data, serving the real gateway, and diffing every required UI field
+      # against the actual response bodies.
+      - name: Seed demo data
+        run: python scripts/seed_demo_data.py --days 1
+
+      - name: Start API gateway
+        # `services/api_gateway` is not an installed package - pytest puts it on the path
+        # via tool.pytest.ini_options.pythonpath, so uvicorn needs the same treatment.
+        env:
+          PYTHONPATH: services/api_gateway
+        run: |
+          nohup python -m uvicorn api_gateway.asgi:app \
+            --host 127.0.0.1 --port 8000 --log-level warning > gateway.log 2>&1 &
+          echo $! > gateway.pid
+          for attempt in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8000/ready > /dev/null; then
+              echo "gateway ready after ${attempt}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::gateway did not become ready within 30s"
+          cat gateway.log
+          exit 1
+
+      - name: API contract check
+        run: python scripts/check_api_contract.py
+
+      - name: Gateway log
+        # `failure()` also fires when an earlier step failed, before the log exists.
+        if: failure()
+        run: test -f gateway.log && cat gateway.log || echo "no gateway log"
+
+      - name: Stop API gateway
+        if: always()
+        run: kill "$(cat gateway.pid)" 2>/dev/null || true
+
   # ---------------------------------------------------------------------------
   # Dashboard: types must check and the production bundle must build.
   # ---------------------------------------------------------------------------

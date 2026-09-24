@@ -44,7 +44,7 @@ Built against **Mojaloop** (payments). The design generalises to **MOSIP** (iden
             ▼
 ┌──────────────────────────────────────────────────────────────────────────┐
 │  OBSERVABILITY PLANE                                                      │
-│  Prometheus · Loki + Promtail · Tempo · Grafana · Alertmanager             │
+│  Prometheus · Loki + Alloy · Tempo · Grafana · Alertmanager                │
 └───────────┬──────────────────────────────────────────────────────────────┘
             ▼
 ┌──────────────────────────────────────────────────────────────────────────┐
@@ -114,33 +114,39 @@ continuous aggregates and Redis, then runs the full test suite.
 
 **If the healthcheck is not green, stop here and fix it.** Everything below assumes it passes.
 
-### Step 3 — Start the observability plane and the simulated workload
+### Step 3 — Start the full AIOps stack
 
 ```powershell
-.\scripts\stack.ps1 up -Layer observability
+.\scripts\stack.ps1 up -Layer all
 ```
 
-Adds seven containers: the five simulated Mojaloop services, Prometheus and Grafana. The
-first run builds the simulator image, so allow a few minutes.
+Builds and starts 16 containers: the five simulated Mojaloop services, Prometheus, Grafana, 
+the metrics agent, anomaly detector, and traffic predictor. The first run builds images, so 
+allow a few minutes.
 
 - **Grafana** — http://localhost:3000 — opens straight on the DPI dashboard, no setup
 - **Prometheus** — http://localhost:9090 — all 5 Mojaloop targets should be `UP`
 
-Give it about 60 seconds for the `rate()` windows to fill, then:
+Give it about 60 seconds for the `rate()` windows to fill, then verify each module:
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\check_observability.py
+.\.venv\Scripts\python.exe scripts\check_metrics_agent.py
+.\.venv\Scripts\python.exe scripts\check_anomaly_detector.py
+.\.venv\Scripts\python.exe scripts\replay_history.py --days 28  # needed for module 5
+.\.venv\Scripts\python.exe scripts\check_traffic_predictor.py
 ```
 
-That verifies targets are scraped, all recording rules return data, the exporter agrees
-with the simulator, and every dashboard panel is populated rather than showing "No data".
+These verify that: targets are scraped, recording rules work, metrics flow to TimescaleDB,
+anomaly detection beats the baseline on real data, and traffic forecasting beats seasonal-naive 
+at every horizon.
 
 Traffic follows a realistic daily and weekly rhythm, so over 24 hours the Grafana traffic
 panel shows a clear curve. That seasonality is what module 5's forecasting learns.
 
-### Step 4 — Load data for the dashboard
+### Step 4 — Load historical data for the dashboard
 
-Modules 3–7 do not exist yet, so nothing is writing telemetry to TimescaleDB. Seed it:
+The live modules write real-time data, but the dashboard looks better with history. Seed it:
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\seed_demo_data.py --days 3
@@ -199,6 +205,9 @@ that stops reporting must be visible as stale, not silently vanish.
 | Prometheus | http://localhost:9090 | `/targets` and `/rules` |
 | TimescaleDB | localhost:5432 | user/db `aiops` |
 | Redis | localhost:6379 | event bus |
+| Metrics agent | http://localhost:8020 | Collection and rollup |
+| Anomaly detector | http://localhost:8021 | Isolation Forest scoring |
+| Traffic predictor | http://localhost:8022 | 1h / 6h / 24h forecasts |
 | Simulated services | localhost:8011–8015 | `/sim`, `/metrics`, `/docs` per service |
 
 Simulated service ports: `ml-api-adapter` 8011, `central-ledger` 8012, `quoting-service`
@@ -336,11 +345,11 @@ that proves it works.
 | # | Module | Focus | Status |
 |---|--------|-------|--------|
 | 1 | Project foundation — config, logging, schemas, event bus, storage | infra | ✅ done |
-| 2 | Observability plane + Mojaloop simulator | infra | 🟡 part A done, part B (logs/traces) open |
-| 3 | Metrics collection agent + DPI exporter | infra | ⬜ **start here** |
-| 4 | Anomaly detection (Isolation Forest) | ml | ⬜ |
-| 5 | Traffic prediction + pre-emptive scaling | ml | ⬜ |
-| 6 | Self-healing playbook engine | automation | ⬜ |
+| 2 | Observability plane + Mojaloop simulator | infra | ✅ done |
+| 3 | Metrics collection agent + DPI exporter | infra | ✅ done |
+| 4 | Anomaly detection (Isolation Forest) | ml | ✅ done |
+| 5 | Traffic prediction + pre-emptive scaling | ml | ✅ done |
+| 6 | Self-healing playbook engine | automation | ⬜ **next** |
 | 7 | Root cause analysis engine | ml | ⬜ |
 | 8 | Operations dashboard (React + FastAPI) | frontend | ✅ done |
 | 9 | Chaos engineering demo | automation | ⬜ |

@@ -25,6 +25,15 @@ dependencies = [
     "tenacity==9.0.0",
     "fastapi==0.115.2",
     "uvicorn[standard]==0.31.1",
+    # Tracing (module 2, part B). In the shared library rather than per service because
+    # a trace is only useful if every service produces spans the same shape, with the
+    # same resource attributes - which is exactly the "two services must agree" rule.
+    # The instrumentation packages version separately from the SDK: 0.65b0 pairs with
+    # 1.44.0. Bump them together or the API contract between them breaks.
+    "opentelemetry-sdk==1.44.0",
+    "opentelemetry-exporter-otlp-proto-http==1.44.0",
+    "opentelemetry-instrumentation-fastapi==0.65b0",
+    "opentelemetry-instrumentation-httpx==0.65b0",
 ]
 
 [project.optional-dependencies]

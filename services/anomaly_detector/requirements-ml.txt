@@ -1,0 +1,15 @@
+# The ML stack, kept separate from requirements.txt so the Dockerfile can install it in its
+# own layer without the editable `-e ../../libs/aiops_common` line, whose relative path is
+# meaningless inside the image.
+#
+# Single source of truth for these pins: requirements.txt includes this file, and the
+# Dockerfile copies and installs it. Listing the versions in both places would guarantee they
+# eventually disagree.
+#
+# Pinned exactly rather than loosely. An Isolation Forest is sensitive to its RNG and to the
+# implementation details of its estimators, so a rebuild months from now should produce the
+# same model from the same data.
+scikit-learn==1.9.1
+numpy==2.5.3
+scipy==1.18.1
+joblib==1.6.0

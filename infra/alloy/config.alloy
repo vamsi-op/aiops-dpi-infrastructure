@@ -1,0 +1,181 @@
+// Grafana Alloy: ships container logs to Loki (module 2, part B).
+//
+// Alloy rather than Promtail. The original module plan named Promtail, but Promtail
+// reached end of life on 2 March 2026 - no updates, no security fixes - and Grafana
+// directs all further development to Alloy. Shipping a brand-new platform on an
+// unmaintained collector would be a deliberate choice to start with technical debt.
+//
+// Alloy reads the Docker daemon directly instead of tailing files under
+// /var/lib/docker/containers. On Docker Desktop that directory lives inside the WSL 2 VM
+// and is not reliably bind-mountable from Windows, so file tailing works on Linux and
+// silently collects nothing here. The socket behaves identically on both.
+
+// ---------------------------------------------------------------------------
+// Discovery
+// ---------------------------------------------------------------------------
+discovery.docker "containers" {
+	host = "unix:///var/run/docker.sock"
+	// Matches the Prometheus scrape interval. A new container becomes visible to logs
+	// and metrics at roughly the same moment, which matters when module 9 kills one and
+	// module 7 has to line the two signals up.
+	refresh_interval = "15s"
+}
+
+discovery.relabel "containers" {
+	targets = discovery.docker.containers.targets
+
+	// Docker reports names with a leading slash.
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "/?(.*)"
+		target_label  = "container"
+	}
+
+	// Default `service` to the container name. For our own services the JSON pipeline
+	// below overwrites this with the value the process reports, which is what keeps the
+	// `service` label identical in Loki and Prometheus. For infrastructure containers
+	// the container name is the only name there is, and having *some* `service` label on
+	// every stream means one query shape works across the whole platform.
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "/?(.*)"
+		target_label  = "service"
+	}
+
+	// Split platform services from infrastructure. Only the former emit structlog JSON,
+	// so only the former should be run through the JSON parser - otherwise every
+	// Postgres and Grafana line produces a parse failure and the real errors are buried.
+	rule {
+		source_labels = ["__meta_docker_container_name"]
+		regex         = "/?(ml-api-adapter|central-ledger|quoting-service|account-lookup-service|transaction-request-service|aiops-api-gateway|aiops-metrics-agent|aiops-anomaly-detector|aiops-traffic-predictor|aiops-rca-engine|aiops-healing-engine|aiops-chaos-agent)"
+		target_label  = "service_group"
+		replacement   = "dpi"
+	}
+
+	// Anything the rule above did not match has no `service_group` yet, which reads as
+	// the empty string here. Give it one so the label is never missing.
+	rule {
+		source_labels = ["service_group"]
+		regex         = ""
+		target_label  = "service_group"
+		replacement   = "infra"
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Collection
+// ---------------------------------------------------------------------------
+loki.source.docker "containers" {
+	host       = "unix:///var/run/docker.sock"
+	targets    = discovery.relabel.containers.output
+	forward_to = [loki.process.dpi.receiver]
+
+	// Mirrors prometheus.yml's external_labels, so a Loki query and a PromQL query can
+	// be filtered by the same platform/env pair.
+	labels = {
+		platform = "mojaloop",
+		env      = "local",
+	}
+
+	refresh_interval = "15s"
+}
+
+// ---------------------------------------------------------------------------
+// Processing
+// ---------------------------------------------------------------------------
+loki.process "dpi" {
+	// Only our own services emit structlog JSON. stage.match scopes the whole JSON
+	// pipeline to them.
+	stage.match {
+		selector = "{service_group=\"dpi\"}"
+
+		stage.json {
+			expressions = {
+				// Named `svc` because `service` is already a label at this point and
+				// reusing the name makes the precedence between the two confusing.
+				svc      = "service",
+				level    = "level",
+				logger   = "logger",
+				event    = "event",
+				ts       = "timestamp",
+				trace_id = "trace_id",
+				span_id  = "span_id",
+			}
+		}
+
+		// Deliberately only `service` and `level` become labels.
+		//
+		// `event` is tempting - "give me every txn.failure_rate_high" is exactly the RCA
+		// query - but labels are Loki's index and every distinct value creates a new
+		// stream. The simulator's event names are a bounded set, but uvicorn and every
+		// library log through the same pipeline with the message text as `event`, so the
+		// real cardinality is unbounded. `| json | event="txn.degraded"` costs a little
+		// more at query time and cannot melt the index.
+		stage.labels {
+			values = {
+				service = "svc",
+				level   = "level",
+			}
+		}
+
+		// Use the process's own timestamp rather than the moment Alloy read the line.
+		// Without this, a container that is blocked or restarting has its backlog
+		// stamped with the recovery time, which is precisely when module 7 is trying to
+		// establish what happened first.
+		stage.timestamp {
+			source = "ts"
+			format = "RFC3339Nano"
+		}
+
+		// Structured metadata, not labels: high cardinality by definition, but attached
+		// to the line so Grafana can turn a log into a trace link. Requires
+		// `allow_structured_metadata: true` in loki.yml.
+		stage.structured_metadata {
+			values = {
+				logger   = "logger",
+				event    = "event",
+				trace_id = "trace_id",
+				span_id  = "span_id",
+			}
+		}
+	}
+
+	// Drop the historical backlog.
+	//
+	// `loki.source.docker` has no "start at the tail" option: with no stored position it
+	// reads each container's log from the beginning. Containers like TimescaleDB and
+	// Grafana run for weeks, so a fresh Alloy volume replays all of it, and Loki rejects
+	// every line past `reject_old_samples_max_age` with a wall of "timestamp too old"
+	// errors. A working stack then looks badly broken on its first start.
+	//
+	// Dropping at the collector rather than raising Loki's cutoff is the right side to fix
+	// it on: the cutoff is a real guard against genuinely stale data being backdated into
+	// the store, and this platform only cares about logs from the current run anyway.
+	//
+	// Placed after stage.match so the DPI services' timestamps have already been parsed
+	// out of their JSON - otherwise this would be comparing against the time Alloy read
+	// the line, and a service replaying its own backlog after a restart would survive it.
+	stage.drop {
+		older_than          = "1h"
+		drop_counter_reason = "backlog_older_than_1h"
+	}
+
+	forward_to = [loki.write.loki.receiver]
+}
+
+// ---------------------------------------------------------------------------
+// Write
+// ---------------------------------------------------------------------------
+loki.write "loki" {
+	endpoint {
+		url = "http://loki:3100/loki/api/v1/push"
+	}
+}
+
+// Alloy's own health, scraped by Prometheus as the `alloy` job. A log pipeline that has
+// silently stopped is the failure mode that matters here: nothing else in the stack
+// notices missing logs, so Alloy has to report on itself.
+logging {
+	level  = "warn"
+	format = "logfmt"
+}

@@ -1,0 +1,71 @@
+# Alertmanager configuration (module 2, part B).
+#
+# There is deliberately nowhere for alerts to go. No Slack webhook, no PagerDuty key, no
+# SMTP server: this is a local demo platform, and a config referencing credentials nobody
+# has would fail to start, while one pointing at a real channel would spam it during chaos
+# experiments. The `null` receiver means alerts are grouped, deduplicated, silenced and
+# queryable through the API - which is everything the platform itself consumes - without
+# leaving the machine.
+#
+# Module 6 reads alerts from the API, not from a notification. That is the important
+# property: remediation is driven by state Alertmanager exposes, so it works identically
+# whether or not a human is being notified.
+
+global:
+  # How long without an update before a firing alert is considered resolved. Must comfortably
+  # exceed the scrape interval times the evaluation interval, or a single slow scrape
+  # resolves and immediately re-fires an alert that never actually cleared.
+  resolve_timeout: 2m
+
+route:
+  # Group by alertname and service so a cascade across five services arrives as five
+  # grouped notifications rather than one blob - module 7 needs to see the per-service
+  # detail to attribute the cascade to its origin.
+  group_by: ["alertname", "service"]
+  # Short waits for the same reason the `for` durations in dpi_alerts.yml are short: demo
+  # scenarios run in minutes and the default 30s/5m/4h would mean the experiment finishes
+  # before the notification is grouped.
+  group_wait: 15s
+  group_interval: 1m
+  repeat_interval: 1h
+  receiver: "null"
+
+  routes:
+    # Critical alerts skip the grouping delay. During a chaos run the time-to-detect
+    # measurement in module 9's scorecard starts when the alert fires, and a 15s grouping
+    # wait would be recorded as detection latency the platform did not actually have.
+    - matchers:
+        - severity = "critical"
+      receiver: "null"
+      group_wait: 5s
+      group_interval: 30s
+
+# Suppress symptoms when the cause is already firing. This is the same idea module 7
+# implements properly with topological correlation; doing the obvious cases here keeps the
+# alert list readable and gives module 7 a baseline to beat.
+inhibit_rules:
+  # A service that is down cannot meaningfully have high latency or a growing queue.
+  - source_matchers:
+      - alertname = "DpiServiceDown"
+    target_matchers:
+      - category =~ "latency|errors|saturation|business"
+    equal: ["service"]
+
+  # Over-capacity is the cause; latency, errors and queue depth are all derived from it.
+  # Without this rule a single traffic surge on central-ledger produces five alerts that
+  # all say the same thing.
+  - source_matchers:
+      - alertname = "DpiOverCapacity"
+    target_matchers:
+      - alertname =~ "DpiLatencyP99High|DpiHighErrorRatio|DpiQueueBacklog|DpiSettlementLagHigh"
+    equal: ["service"]
+
+  # Critical beats warning for the same alert on the same service.
+  - source_matchers:
+      - severity = "critical"
+    target_matchers:
+      - severity = "warning"
+    equal: ["alertname", "service"]
+
+receivers:
+  - name: "null"

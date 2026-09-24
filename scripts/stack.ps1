@@ -4,9 +4,10 @@
 
 .DESCRIPTION
     The stack is split into layers so you can run only what you need:
-      base          data layer: TimescaleDB + Redis                 (module 1)
-      observability Prometheus, Grafana, Loki, Tempo, Alertmanager   (module 2)
-      aiops         the Python AIOps services                       (modules 3-9)
+      base          data layer: TimescaleDB + Redis                          (module 1)
+      observability simulator, Prometheus, Grafana, Loki, Alloy, Tempo,
+                    Alertmanager                                             (module 2)
+      aiops         the Python AIOps services                              (modules 3-9)
       all           every layer
 
 .PARAMETER Action

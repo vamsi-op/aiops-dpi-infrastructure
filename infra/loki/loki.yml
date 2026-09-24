@@ -1,0 +1,93 @@
+# Loki configuration for the DPI AIOps platform (module 2, part B).
+#
+# Single-binary, filesystem-backed. This is a demo/development platform, not a
+# multi-tenant log estate: the whole point is that one `docker compose up` gives a
+# teammate a working stack. Loki's microservices mode would add six components and a
+# object-store dependency without changing anything the platform can observe.
+#
+# Module 10 swaps this for the Helm chart if the Kubernetes migration happens.
+
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+  # Loki logs every request at info by default, which floods its own container output
+  # and makes the interesting startup errors hard to find.
+  log_level: warn
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    # tsdb + v13 is the current schema. Starting the period in the past rather than at
+    # "today" avoids the trap where Loki rejects the first writes because the active
+    # schema period has not begun yet in UTC.
+    - from: "2024-01-01"
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  # The simulator backdates nothing, but the seeder and any replayed telemetry might.
+  # Rejecting old samples outright would look like "logs silently missing".
+  reject_old_samples: true
+  reject_old_samples_max_age: 168h
+  # Five containers at ~1 line/second each is trivial volume; these limits exist only so
+  # a fault-injection burst does not get rate-limited into gaps, which would look like
+  # the fault stopped rather than the log pipeline throttling.
+  ingestion_rate_mb: 16
+  ingestion_burst_size_mb: 32
+  per_stream_rate_limit: 8MB
+  per_stream_rate_limit_burst: 16MB
+  max_streams_per_user: 0
+  max_global_streams_per_user: 0
+  # Queries from module 7 will ask for "everything around this incident", which can span
+  # the full retention window.
+  max_query_lookback: 0s
+  # Dashboards and RCA queries both want a longer window than the 721h default allows
+  # when combined with instant queries over label sets this small.
+  max_query_length: 0s
+  allow_structured_metadata: true
+  volume_enabled: true
+
+# Retention. Prometheus keeps 15 days of metrics; logs are bulkier and less useful once
+# the incident they explain has been closed, so 7 days.
+compactor:
+  working_directory: /loki/compactor
+  retention_enabled: true
+  retention_delete_delay: 1h
+  delete_request_store: filesystem
+
+table_manager:
+  retention_deletes_enabled: true
+  retention_period: 168h
+
+# Off. Tracks nothing the platform needs and phones home.
+analytics:
+  reporting_enabled: false
+
+# Ruler is configured but has no rules yet. Log-based alerting belongs with the
+# metric-based alerting in Alertmanager, and metrics are the better signal for the
+# conditions the platform acts on, so Prometheus owns alerting for now.
+ruler:
+  storage:
+    type: local
+    local:
+      directory: /loki/rules
+  rule_path: /loki/rules-temp
+  alertmanager_url: http://alertmanager:9093
+  enable_api: true

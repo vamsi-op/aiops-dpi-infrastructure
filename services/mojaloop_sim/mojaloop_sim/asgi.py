@@ -22,6 +22,7 @@ from aiops_common.config import get_settings
 from aiops_common.constants import MojaloopService
 from aiops_common.log import configure_logging, get_logger
 from aiops_common.service import build_app
+from aiops_common.tracing import configure_tracing, instrument_httpx, shutdown_tracing
 
 from .routes import router
 from .simulator import Simulator
@@ -50,6 +51,10 @@ def _on_startup() -> None:
 
 async def _on_shutdown() -> None:
     await simulator.stop()
+    # Flush queued spans. The kill_service fault exits via SIGTERM specifically so uvicorn
+    # runs shutdown handlers, and this is the handler that makes the spans leading up to
+    # the kill survive it.
+    shutdown_tracing()
 
 
 app = build_app(
@@ -65,6 +70,26 @@ app = build_app(
 )
 app.state.simulator = simulator
 app.include_router(router)
+
+# The /sim* control surface is excluded for the same reason /health and /metrics are: those
+# calls are the platform poking the simulator, not workload. Tracing them made Tempo's
+# service graph show a `user -> service` edge for all five services purely because
+# check_observability.py had read their state, and inflated
+# traces_spanmetrics_calls_total with the platform's own introspection.
+#
+# The patterns are anchored deliberately. A bare `sim` would also match /simulate/request -
+# the one endpoint that must be traced - because exclusions are substring matches.
+SIM_CONTROL_URLS = r"/sim$,/sim/"
+
+# After include_router: FastAPIInstrumentor wraps the ASGI app, so routes added later are
+# still traced, but instrumenting before the app is fully assembled means the span name
+# falls back to the raw path instead of the route template - and then every distinct URL
+# becomes its own operation in Tempo's span metrics.
+configure_tracing(SERVICE, app=app, excluded_urls=SIM_CONTROL_URLS)
+# The simulator does not call other services yet. Module 9's cascade experiment will make
+# it fan out, and at that point the trace has to cross the boundary rather than stopping
+# at this process.
+instrument_httpx()
 
 
 @app.get("/", include_in_schema=False)

@@ -1,5 +1,5 @@
 # =============================================================================
-# Observability plane + simulated Mojaloop workload (module 2, part A).
+# Observability plane + simulated Mojaloop workload (module 2, parts A and B).
 #
 # Always combined with the base stack, because the AIOps services need both:
 #   docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d
@@ -7,7 +7,11 @@
 # Or, more simply:
 #   .\scripts\stack.ps1 up -Layer observability
 #
-# Part B adds Loki, Promtail, Tempo and Alertmanager to this same file.
+# Part A: five simulated Mojaloop services, Prometheus, Grafana.
+# Part B: Loki + Alloy (logs), Tempo (traces), Alertmanager.
+#
+# Alloy, not Promtail, which the original plan named: Promtail reached end of life on
+# 2 March 2026. The reasoning is in infra/alloy/config.alloy.
 # =============================================================================
 
 name: aiops-dpi
@@ -25,6 +29,17 @@ volumes:
     name: aiops_prometheus_data
   grafana_data:
     name: aiops_grafana_data
+  loki_data:
+    name: aiops_loki_data
+  tempo_data:
+    name: aiops_tempo_data
+  alertmanager_data:
+    name: aiops_alertmanager_data
+  # Alloy's positions file: how far into each container's log it has read. On a named
+  # volume rather than ephemeral so a restart resumes instead of re-shipping the whole
+  # backlog, which would duplicate every line in Loki.
+  alloy_data:
+    name: aiops_alloy_data
 
 # ---------------------------------------------------------------------------
 # Every simulated service is the same image with a different SIM_SERVICE. YAML
@@ -49,6 +64,12 @@ x-sim-common: &sim-common
     AIOPS_DPI_PLATFORM: mojaloop
     MOJALOOP_SIM_BASE_TPS: ${MOJALOOP_SIM_BASE_TPS:-25}
     MOJALOOP_SIM_SEASONALITY: ${MOJALOOP_SIM_SEASONALITY:-true}
+    # Tracing (part B). Container-internal address, not the host-published port: the
+    # default in config.py is localhost:4318 for a service run from a terminal, and
+    # inside the network localhost is the container itself.
+    OTLP_ENDPOINT: http://tempo:4318
+    TRACING_ENABLED: ${TRACING_ENABLED:-true}
+    TRACE_SAMPLE_RATIO: ${TRACE_SAMPLE_RATIO:-1.0}
   networks: [aiops]
   # Modest limits so five containers plus the observability stack fit in Docker Desktop's
   # default allocation. They also make the simulated utilisation ratios meaningful: memory
@@ -151,6 +172,11 @@ services:
       # and module 5 trains on the 1h rollup there, not on Prometheus.
       - --storage.tsdb.retention.time=15d
       - --web.enable-lifecycle
+      # Tempo's metrics generator remote-writes span metrics and the service graph here.
+      # Without this flag Prometheus returns 404 on /api/v1/write and Tempo logs the
+      # failure in its own container - so the symptom is "traces_* series never appear"
+      # with nothing wrong on the Prometheus side to explain it.
+      - --web.enable-remote-write-receiver
       - --web.console.libraries=/usr/share/prometheus/console_libraries
       - --web.console.templates=/usr/share/prometheus/consoles
     healthcheck:
@@ -203,3 +229,129 @@ services:
     depends_on:
       prometheus:
         condition: service_started
+      loki:
+        condition: service_started
+      tempo:
+        condition: service_started
+
+  # ---------------------------------------------------------------------------
+  # Loki - log storage
+  # ---------------------------------------------------------------------------
+  loki:
+    image: grafana/loki:3.7.0
+    container_name: aiops-loki
+    restart: unless-stopped
+    # The image runs as uid 10001, which cannot write to a fresh named volume.
+    user: root
+    ports:
+      - "${LOKI_HOST_PORT:-3100}:3100"
+    volumes:
+      - ./infra/loki/loki.yml:/etc/loki/loki.yml:ro
+      - loki_data:/loki
+    command:
+      - -config.file=/etc/loki/loki.yml
+    # No healthcheck. The Loki image is distroless - it has no /bin/sh, no wget and no
+    # curl - so a CMD-SHELL probe cannot run at all, and Docker reports the container
+    # permanently unhealthy while Loki works perfectly. The same is true of Tempo and
+    # Alloy below.
+    #
+    # Health is covered better elsewhere: Prometheus scrapes all three (the `observability`
+    # and `alloy` jobs), `up{component="loki"}` is the series the AiopsLogPipelineStalled
+    # alert is built on, and scripts/check_observability.py asserts /ready directly. A
+    # container healthcheck would be a fourth, weaker signal that needs a custom image.
+    networks: [aiops]
+
+  # ---------------------------------------------------------------------------
+  # Grafana Alloy - log collection
+  #
+  # Replaces Promtail, which reached end of life on 2 March 2026. See the header of
+  # infra/alloy/config.alloy for the reasoning and for why it reads the Docker socket
+  # rather than tailing files.
+  # ---------------------------------------------------------------------------
+  alloy:
+    image: grafana/alloy:v1.18.1
+    container_name: aiops-alloy
+    restart: unless-stopped
+    # Needs to read the Docker socket, which is root-owned. This is a real privilege: a
+    # container with the Docker socket can control the daemon. It is accepted here for the
+    # same reason module 6's healing engine will need it - remediation acts on containers -
+    # but it is worth knowing rather than discovering.
+    user: root
+    ports:
+      - "${ALLOY_HOST_PORT:-12345}:12345"
+    volumes:
+      - ./infra/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy_data:/var/lib/alloy/data
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      # Alloy phones home with usage statistics by default.
+      - --disable-reporting
+      - /etc/alloy/config.alloy
+    # No healthcheck: the Alloy image has a shell but neither wget nor curl. See the note
+    # on the loki service above.
+    networks: [aiops]
+    depends_on:
+      loki:
+        condition: service_started
+
+  # ---------------------------------------------------------------------------
+  # Tempo - trace storage, plus the metrics generator that derives a service
+  # graph from spans and remote-writes it into Prometheus.
+  # ---------------------------------------------------------------------------
+  tempo:
+    image: grafana/tempo:2.10.0
+    container_name: aiops-tempo
+    restart: unless-stopped
+    user: root
+    ports:
+      - "${TEMPO_HOST_PORT:-3200}:3200"
+      # OTLP published to the host as well as the network, so a service run from a
+      # terminal during development traces to the same Tempo as the containers.
+      - "${TEMPO_OTLP_GRPC_PORT:-4317}:4317"
+      - "${TEMPO_OTLP_HTTP_PORT:-4318}:4318"
+    volumes:
+      - ./infra/tempo/tempo.yml:/etc/tempo/tempo.yml:ro
+      - tempo_data:/var/tempo
+    command:
+      - -config.file=/etc/tempo/tempo.yml
+    # No healthcheck: distroless image. See the note on the loki service above.
+    networks: [aiops]
+    depends_on:
+      # Not a hard dependency - Tempo starts fine without it - but its metrics generator
+      # remote-writes to Prometheus, and starting second means fewer failed writes in the
+      # log to explain away.
+      prometheus:
+        condition: service_started
+
+  # ---------------------------------------------------------------------------
+  # Alertmanager
+  #
+  # Notifications go nowhere on purpose (see infra/alertmanager/alertmanager.yml).
+  # Module 6 consumes alerts through the API, so remediation works whether or not a
+  # human is being paged.
+  # ---------------------------------------------------------------------------
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    container_name: aiops-alertmanager
+    restart: unless-stopped
+    user: root
+    ports:
+      - "${ALERTMANAGER_HOST_PORT:-9093}:9093"
+    volumes:
+      - ./infra/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+      # Must match the published address or the web UI builds broken links to itself.
+      - --web.external-url=http://localhost:${ALERTMANAGER_HOST_PORT:-9093}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:9093/-/healthy || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks: [aiops]

@@ -17,6 +17,12 @@ global:
 rule_files:
   - /etc/prometheus/rules/*.yml
 
+# Alertmanager (module 2, part B). Static, for the same reason the scrape targets are.
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
 scrape_configs:
   # -------------------------------------------------------------------------
   # Prometheus itself. If this target is down, nothing else can be trusted.
@@ -79,3 +85,38 @@ scrape_configs:
           - "rca-engine:8000"
           - "healing-engine:8000"
           - "chaos-agent:8000"
+
+  # -------------------------------------------------------------------------
+  # The observability plane monitors itself (module 2, part B).
+  #
+  # These are not vanity targets. Loki and Tempo failing is invisible from the outside -
+  # logs and traces just stop arriving while every dashboard continues to look correct -
+  # so the only way to notice is to scrape the components themselves. The
+  # AiopsLogPipelineStalled and AiopsTraceIngestStalled rules in dpi_alerts.yml are built
+  # on these series.
+  # -------------------------------------------------------------------------
+  - job_name: observability
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["loki:3100"]
+        labels:
+          component: loki
+      - targets: ["tempo:3200"]
+        labels:
+          component: tempo
+      - targets: ["alertmanager:9093"]
+        labels:
+          component: alertmanager
+      - targets: ["grafana:3000"]
+        labels:
+          component: grafana
+
+  # Alloy's own port. Separate from the job above because Alloy is the component whose
+  # silent failure matters most: it is the only thing shipping logs, and nothing else in
+  # the stack observes its absence.
+  - job_name: alloy
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["alloy:12345"]
+        labels:
+          component: alloy

@@ -1,0 +1,212 @@
+# Alerting rules for the DPI signals (module 2, part B).
+#
+# Every expression here reads a `dpi:*` recording rule rather than recomputing from raw
+# counters. That is the whole point of having the recording rules: an alert that fires and a
+# dashboard panel that looks fine cannot both be right, and the usual cause is two slightly
+# different rate() windows. Sharing the computation makes that class of disagreement
+# impossible rather than unlikely.
+#
+# On the relationship between these alerts and modules 4-7: they are not the same thing and
+# neither replaces the other. These are static thresholds - fast, explainable, and the
+# baseline the anomaly detector has to beat. Module 4 detects "latency is high *for this
+# traffic level*", which is the judgement a threshold cannot make. Keeping both means the
+# platform's own value is measurable: if the Isolation Forest never fires earlier or more
+# precisely than these rules, it is not earning its place.
+#
+# `for` durations are deliberately short. The simulator's faults have a 30-minute hard cap
+# and demo scenarios run in minutes, so a conventional 10-minute `for` would mean the fault
+# expires before the alert fires and the demo shows nothing.
+
+groups:
+  # ---------------------------------------------------------------------------
+  # Availability. Nothing else is meaningful if a service is gone.
+  # ---------------------------------------------------------------------------
+  - name: dpi_availability
+    interval: 15s
+    rules:
+      - alert: DpiServiceDown
+        expr: up{job="mojaloop"} == 0
+        for: 30s
+        labels:
+          severity: critical
+          category: availability
+        annotations:
+          summary: "{{ $labels.service }} is not responding to scrapes"
+          description: >-
+            Prometheus has been unable to scrape {{ $labels.service }} for 30s. If module 9
+            injected kill_service this is expected and the restart policy should clear it
+            within a scrape interval; if it persists the container is crash-looping.
+          runbook: "docs/MODULES.md#module-6--self-healing-playbook-engine"
+
+      - alert: DpiPlatformDegraded
+        # 5 services in the simulated deployment; fewer than 4 up is a platform event
+        # rather than a single-service one, and should page differently.
+        expr: dpi:services_up < 4
+        for: 1m
+        labels:
+          severity: critical
+          category: availability
+        annotations:
+          summary: "Only {{ $value }} of 5 Mojaloop services are up"
+          description: >-
+            More than one service is down at once. Check for a cascade originating
+            upstream before restarting anything.
+
+  # ---------------------------------------------------------------------------
+  # RED signals.
+  # ---------------------------------------------------------------------------
+  - name: dpi_red_alerts
+    interval: 15s
+    rules:
+      - alert: DpiHighErrorRatio
+        expr: dpi:error_ratio:rate5m > 0.05
+        for: 1m
+        labels:
+          severity: warning
+          category: errors
+        annotations:
+          summary: "{{ $labels.service }} error ratio {{ $value | humanizePercentage }}"
+          description: >-
+            Above the 5% budget. The simulator crosses this either from an injected
+            error_injection fault or from load_factor exceeding 1.0 - check
+            dpi:load_factor before assuming a fault.
+
+      - alert: DpiCriticalErrorRatio
+        expr: dpi:error_ratio:rate5m > 0.25
+        for: 30s
+        labels:
+          severity: critical
+          category: errors
+        annotations:
+          summary: "{{ $labels.service }} failing {{ $value | humanizePercentage }} of transactions"
+          description: >-
+            One in four transactions is failing. At this level the queue is almost
+            certainly growing too, so treat a queue alert on the same service as the same
+            incident rather than a second one.
+
+      - alert: DpiLatencyP99High
+        # 2s against a healthy p99 of ~0.22s. Chosen from measured behaviour, not a round
+        # number: a network_latency fault at magnitude 0.5 takes p99 to ~2.0s, so this is
+        # the level at which an injected fault is unambiguous.
+        expr: dpi:latency_p99:5m > 2
+        for: 1m
+        labels:
+          severity: warning
+          category: latency
+        annotations:
+          summary: "{{ $labels.service }} p99 latency {{ $value | humanizeDuration }}"
+          description: >-
+            p99 is an order of magnitude above the healthy baseline. Distinguish load from
+            fault by checking dpi:load_factor - above 1.0 the service needs replicas, below
+            it something is wrong inside the service.
+
+      - alert: DpiSettlementLagHigh
+        # The signal generic infrastructure monitoring does not have. A payments operator
+        # cares about this more than about CPU.
+        expr: dpi:settlement_lag:max > 30
+        for: 2m
+        labels:
+          severity: warning
+          category: business
+        annotations:
+          summary: "{{ $labels.service }} settlement lag {{ $value | humanizeDuration }}"
+          description: >-
+            Settlement is falling behind. Unlike latency this compounds: the backlog does
+            not clear when load drops, it clears when capacity exceeds arrival rate.
+
+  # ---------------------------------------------------------------------------
+  # Saturation. These are the predictive ones - they fire before the failure.
+  # ---------------------------------------------------------------------------
+  - name: dpi_saturation_alerts
+    interval: 15s
+    rules:
+      - alert: DpiMemoryPressure
+        expr: dpi:memory:max > 0.85
+        for: 2m
+        labels:
+          severity: warning
+          category: saturation
+          # Read by module 6 to select restart_on_oom. The label is part of the contract
+          # between alerting and remediation, not decoration.
+          playbook: restart_on_oom
+        annotations:
+          summary: "{{ $labels.service }} memory at {{ $value | humanizePercentage }}"
+          description: >-
+            A memory_hog fault climbs monotonically rather than spiking, so a sustained
+            2-minute breach here is a leak signature rather than a transient.
+
+      - alert: DpiCpuSaturated
+        expr: dpi:cpu:avg > 0.85
+        for: 2m
+        labels:
+          severity: warning
+          category: saturation
+          playbook: scale_out_preemptive
+        annotations:
+          summary: "{{ $labels.service }} CPU at {{ $value | humanizePercentage }}"
+
+      - alert: DpiOverCapacity
+        # The single most important alert in the file. Every other signal - latency,
+        # errors, queue depth, settlement lag - is derived from tps/capacity, so this is
+        # the cause and the rest are symptoms. Alerting on it means the platform can act
+        # before the symptoms appear.
+        expr: dpi:load_factor > 1
+        for: 1m
+        labels:
+          severity: critical
+          category: saturation
+          playbook: scale_out_preemptive
+        annotations:
+          summary: "{{ $labels.service }} at {{ $value | humanizePercentage }} of capacity"
+          description: >-
+            Offered load exceeds tps_per_replica * replicas. Latency, errors and queue
+            depth are all downstream of this; scaling out resolves all of them together.
+
+      - alert: DpiQueueBacklog
+        expr: dpi:queue_depth:sum > 500
+        for: 1m
+        labels:
+          severity: warning
+          category: saturation
+          playbook: clear_queue_backlog
+        annotations:
+          summary: "{{ $labels.service }} queue depth {{ $value }}"
+
+  # ---------------------------------------------------------------------------
+  # The platform monitoring itself. An AIOps platform that fails silently is worse
+  # than none, so its own blind spots get alerts too.
+  # ---------------------------------------------------------------------------
+  - name: aiops_self
+    interval: 30s
+    rules:
+      - alert: AiopsLogPipelineStalled
+        # Alloy is the only component whose failure is invisible from the outside: logs
+        # simply stop arriving and every dashboard still looks correct. Nothing else in
+        # the stack would notice.
+        expr: |
+          sum(rate(loki_write_sent_entries_total[5m])) == 0
+          or absent(loki_write_sent_entries_total)
+        for: 5m
+        labels:
+          severity: warning
+          category: platform
+        annotations:
+          summary: "No log lines have reached Loki for 5 minutes"
+          description: >-
+            Either Alloy has stopped shipping or it cannot reach Loki. Logs are module 7's
+            RCA evidence, so an incident during this window will be diagnosable from
+            metrics only.
+
+      - alert: AiopsTraceIngestStalled
+        expr: |
+          sum(rate(tempo_distributor_spans_received_total[5m])) == 0
+          or absent(tempo_distributor_spans_received_total)
+        for: 5m
+        labels:
+          severity: warning
+          category: platform
+        annotations:
+          summary: "Tempo has received no spans for 5 minutes"
+          description: >-
+            Traces are only produced by traffic to /simulate/request, so this is expected
+            when nothing is driving the workload. It is a real problem during a demo run.

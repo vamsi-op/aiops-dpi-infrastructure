@@ -1,0 +1,103 @@
+# Tempo configuration for the DPI AIOps platform (module 2, part B).
+#
+# Single binary, local filesystem blocks. Same reasoning as Loki: this stack has to come up
+# with one command on a teammate's laptop, and Tempo's microservices mode would add an
+# object store dependency without letting the platform observe anything new.
+
+server:
+  http_listen_port: 3200
+  grpc_listen_port: 9095
+  # Tempo logs every flush at info, which drowns the startup errors that actually matter.
+  log_level: warn
+
+# Streaming TraceQL results. Grafana's trace search falls back to a slower non-streaming
+# path without it and search feels broken on a cold block list.
+stream_over_http_enabled: true
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+ingester:
+  # Defaults are tuned for production throughput and hold traces in memory for minutes.
+  # At demo volume that means injecting a fault, looking for the trace, and finding
+  # nothing - which is indistinguishable from tracing being broken. Short blocks make a
+  # span queryable within about a minute.
+  max_block_duration: 5m
+  complete_block_timeout: 1m
+
+compactor:
+  compaction:
+    # Traces are the bulkiest and shortest-lived signal here. Two days outlives any
+    # incident the demo produces.
+    block_retention: 48h
+
+# ---------------------------------------------------------------------------
+# Metrics generator: derives RED metrics and a service graph from spans and
+# remote-writes them into Prometheus.
+#
+# This is the part that earns tracing its place in the platform rather than making it a
+# box on an architecture diagram. Module 7 correlates anomalies topologically by walking
+# MOJALOOP_DEPENDENCIES, which is a hand-maintained constant in the shared library.
+# traces_service_graph_request_total is the same graph *measured*, so the declared
+# topology can be checked against the observed one instead of trusted.
+# ---------------------------------------------------------------------------
+metrics_generator:
+  registry:
+    external_labels:
+      # Marks the origin so a span-derived series is never mistaken for one the simulator
+      # exported directly. Without this, dpi:* and traces_* look equally authoritative.
+      source: tempo
+      platform: mojaloop
+      env: local
+  storage:
+    path: /var/tempo/generator/wal
+    remote_write:
+      - url: http://prometheus:9090/api/v1/write
+        send_exemplars: true
+  traces_storage:
+    path: /var/tempo/generator/traces
+  processor:
+    service_graphs:
+      # Defaults. Adding dimensions here multiplies series count, and the platform only
+      # needs the edges.
+      wait: 10s
+      max_items: 10000
+    span_metrics:
+      # `service` matches the label Prometheus and Loki both use, so a span metric joins
+      # to a dpi_* metric without relabelling.
+      dimensions:
+        - service.name
+
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /var/tempo/wal
+    local:
+      path: /var/tempo/blocks
+    # Must not exceed `ingester.complete_block_timeout` above. Tempo warns about this
+    # combination at startup and the symptom is precise: a trace that has been flushed out
+    # of the ingester but whose block the querier has not polled yet returns 404. With the
+    # default 5m poll against a 1m flush there is a four-minute window where a trace that
+    # definitely exists cannot be fetched by id - which reads as "tracing is broken".
+    blocklist_poll: 30s
+
+# The generator is off unless a tenant enables it. Single-tenant here, so it is set on the
+# defaults. `local-blocks` is deliberately omitted: it is what TraceQL metrics queries
+# need, and it costs a second copy of every span on disk for a capability nothing in
+# modules 3-9 asks for.
+overrides:
+  defaults:
+    metrics_generator:
+      processors:
+        - service-graphs
+        - span-metrics
+
+usage_report:
+  reporting_enabled: false

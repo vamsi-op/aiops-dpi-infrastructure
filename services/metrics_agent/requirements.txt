@@ -1,0 +1,6 @@
+# Metrics agent runtime dependencies.
+# The shared library brings fastapi, uvicorn, pydantic, httpx, redis, SQLAlchemy, asyncpg,
+# prometheus-client and the OpenTelemetry packages. Installing it is also what guarantees
+# the agent reads the same DpiMetric names the simulator exports and writes the same
+# MetricSample shape the anomaly detector expects.
+-e ../../libs/aiops_common

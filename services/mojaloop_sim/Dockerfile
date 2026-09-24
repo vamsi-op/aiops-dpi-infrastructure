@@ -5,7 +5,8 @@
 FROM python:3.12-slim AS base
 
 # Python behaviour suited to containers: no .pyc files, unbuffered stdout so logs reach
-# Docker (and therefore Promtail) immediately rather than sitting in a buffer.
+# Docker (and therefore Alloy, and therefore Loki) immediately rather than sitting in a
+# buffer. Buffered output would also break the log timestamps module 7 orders events by.
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \

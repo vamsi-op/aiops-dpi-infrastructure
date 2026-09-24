@@ -135,6 +135,23 @@ class ObservabilitySettings(BaseSettings):
     scrape_interval_seconds: int = Field(default=15, alias="SCRAPE_INTERVAL_SECONDS")
     query_timeout_seconds: float = Field(default=10.0, alias="OBSERVABILITY_QUERY_TIMEOUT")
 
+    # Tracing (module 2, part B). On by default: unlike healing, emitting a span changes
+    # nothing about the system being observed, and a trace that was never recorded cannot
+    # be recovered after the incident.
+    tracing_enabled: bool = Field(default=True, alias="TRACING_ENABLED")
+    # 1.0 - keep everything. The simulator's traffic is a handful of requests per second,
+    # so sampling would only make traces intermittently missing, which is far more
+    # confusing to debug than a slightly larger Tempo volume. Lower this if the platform
+    # is ever pointed at real Mojaloop traffic.
+    trace_sample_ratio: float = Field(default=1.0, alias="TRACE_SAMPLE_RATIO")
+
+    @field_validator("trace_sample_ratio")
+    @classmethod
+    def _validate_sample_ratio(cls, value: float) -> float:
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("TRACE_SAMPLE_RATIO must be between 0.0 and 1.0 inclusive")
+        return value
+
 
 class MLSettings(BaseSettings):
     """Model training + inference behaviour."""
@@ -150,6 +167,26 @@ class MLSettings(BaseSettings):
     retrain_interval_minutes: int = Field(default=60, alias="MODEL_RETRAIN_INTERVAL_MINUTES")
     # Anomaly score above this is escalated to the RCA engine.
     anomaly_score_threshold: float = Field(default=0.65, alias="ANOMALY_SCORE_THRESHOLD")
+
+    # --- Forecasting (module 5) ---
+    # Days of hourly history the forecaster trains on. 28 gives four weekly cycles, which is the
+    # minimum that allows a full week to be held back for validation while three remain for
+    # fitting. Fewer than 14 cannot validate weekly seasonality at all.
+    forecast_history_days: int = Field(default=28, alias="FORECAST_HISTORY_DAYS")
+    # How often to re-forecast. Minutes, not seconds: the input is an hourly rollup, so forecasting
+    # faster would produce near-identical predictions and fill the table with noise.
+    forecast_interval_seconds: int = Field(default=600, alias="FORECAST_INTERVAL_SECONDS")
+    # Floor on the capacity headroom a scaling recommendation carries. The actual headroom is the
+    # larger of this and the measured backtest MAPE, so accuracy drives the safety margin - this
+    # only guarantees a minimum cushion if a backtest reports suspiciously perfect accuracy.
+    scaling_min_headroom: float = Field(default=0.25, alias="SCALING_MIN_HEADROOM")
+
+    @field_validator("scaling_min_headroom")
+    @classmethod
+    def _validate_headroom(cls, value: float) -> float:
+        if not 0.0 <= value < 2.0:
+            raise ValueError("SCALING_MIN_HEADROOM must be between 0.0 and 2.0")
+        return value
 
     @computed_field  # type: ignore[prop-decorator]
     @property

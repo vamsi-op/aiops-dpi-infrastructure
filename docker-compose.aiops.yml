@@ -1,0 +1,178 @@
+# =============================================================================
+# The Python AIOps services (modules 3-9).
+#
+# Always combined with the base stack and the observability layer, because these services
+# read Prometheus and write TimescaleDB and Redis:
+#   .\scripts\stack.ps1 up -Layer all
+#
+# Only the metrics agent exists so far. The rest are added as their modules land, which is
+# why prometheus.yml already lists all seven as scrape targets - Prometheus reporting the
+# absent ones as down is correct and useful information, not noise.
+# =============================================================================
+
+name: aiops-dpi
+
+networks:
+  aiops:
+    name: aiops-net
+    driver: bridge
+
+# ---------------------------------------------------------------------------
+# Every AIOps service shares the same environment and build shape. Anchored so a change
+# to the shared parts cannot reach one service and silently miss the others.
+# ---------------------------------------------------------------------------
+x-aiops-common: &aiops-common
+  restart: unless-stopped
+  networks: [aiops]
+  environment: &aiops-env
+    AIOPS_ENV: ${AIOPS_ENV:-local}
+    AIOPS_LOG_LEVEL: ${AIOPS_LOG_LEVEL:-INFO}
+    # JSON regardless of the host setting, so Alloy can parse these into Loki labels.
+    AIOPS_LOG_FORMAT: json
+    AIOPS_DPI_PLATFORM: ${AIOPS_DPI_PLATFORM:-mojaloop}
+
+    # Container-to-container addresses. The values in .env are localhost because that file
+    # is read by code running on the host; inside the network these have to be Docker DNS
+    # names, and localhost would resolve to the container itself.
+    POSTGRES_HOST: timescaledb
+    POSTGRES_PORT: "5432"
+    POSTGRES_DB: ${POSTGRES_DB:-aiops}
+    POSTGRES_USER: ${POSTGRES_USER:-aiops}
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aiops_local_dev_password}
+    REDIS_HOST: redis
+    REDIS_PORT: "6379"
+    REDIS_DB: ${REDIS_DB:-0}
+    PROMETHEUS_URL: http://prometheus:9090
+    LOKI_URL: http://loki:3100
+    TEMPO_URL: http://tempo:3200
+    ALERTMANAGER_URL: http://alertmanager:9093
+    OTLP_ENDPOINT: http://tempo:4318
+    TRACING_ENABLED: ${TRACING_ENABLED:-true}
+    TRACE_SAMPLE_RATIO: ${TRACE_SAMPLE_RATIO:-1.0}
+
+services:
+  # ---------------------------------------------------------------------------
+  # Module 3 - metrics collection agent.
+  #
+  # Reads the dpi:* recording rules from Prometheus every SCRAPE_INTERVAL_SECONDS,
+  # normalises them into service_metrics rows, and publishes each sample to
+  # aiops.metrics for the anomaly detector.
+  # ---------------------------------------------------------------------------
+  metrics-agent:
+    <<: *aiops-common
+    build:
+      # Context is the repo root, not services/metrics_agent, because the image needs libs/.
+      context: .
+      dockerfile: services/metrics_agent/Dockerfile
+    image: aiops/metrics-agent:0.1.0
+    container_name: aiops-metrics-agent
+    environment:
+      <<: *aiops-env
+      AIOPS_SERVICE_NAME: metrics-agent
+      # Matches prometheus.yml's scrape_interval. Collecting faster than Prometheus scrapes
+      # would write the same values repeatedly under new timestamps, inventing resolution
+      # the data does not have.
+      SCRAPE_INTERVAL_SECONDS: ${SCRAPE_INTERVAL_SECONDS:-15}
+    ports:
+      - "${METRICS_AGENT_PORT:-8020}:8000"
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      # Started, not healthy: Prometheus is a readiness dependency the agent reports on
+      # itself, and blocking start-up on it would make a Prometheus restart look like an
+      # agent crash loop.
+      prometheus:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+
+  # ---------------------------------------------------------------------------
+  # Module 4 - anomaly detector.
+  #
+  # Consumes aiops.metrics, scores each sample against a per-service Isolation Forest
+  # with hour-of-day-aware baselines, and publishes aiops.anomalies with feature
+  # attribution and a kind that maps to a remediation playbook.
+  # ---------------------------------------------------------------------------
+  anomaly-detector:
+    <<: *aiops-common
+    build:
+      context: .
+      dockerfile: services/anomaly_detector/Dockerfile
+    image: aiops/anomaly-detector:0.1.0
+    container_name: aiops-anomaly-detector
+    environment:
+      <<: *aiops-env
+      AIOPS_SERVICE_NAME: anomaly-detector
+      MODEL_ARTIFACT_DIR: /app/ml/artifacts
+      ANOMALY_CONTAMINATION: ${ANOMALY_CONTAMINATION:-0.02}
+      ANOMALY_MIN_TRAINING_ROWS: ${ANOMALY_MIN_TRAINING_ROWS:-2000}
+      ANOMALY_SCORE_THRESHOLD: ${ANOMALY_SCORE_THRESHOLD:-0.65}
+    ports:
+      - "${ANOMALY_DETECTOR_PORT:-8021}:8000"
+    volumes:
+      # Bind-mounted rather than a named volume so a trained model can be inspected, copied
+      # or deleted from the host without exec'ing into the container. Models are build
+      # artifacts of a training run, not opaque container state.
+      - ./ml/artifacts:/app/ml/artifacts
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      # Not a hard dependency: the detector reads the metrics *stream*, not Prometheus. But
+      # with no agent there is nothing on the stream, so starting after it avoids a confusing
+      # "running but scoring nothing" first minute.
+      metrics-agent:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          # Fitting five Isolation Forests is the heaviest thing any AIOps service does, and
+          # it is bursty - seconds of work on a POST /train, then idle. Scoring needs almost
+          # nothing.
+          cpus: "1.00"
+          memory: 768M
+
+  # ---------------------------------------------------------------------------
+  # Module 5 - traffic predictor.
+  #
+  # Forecasts each service on 1, 6 and 24 hour horizons from the 1-hour rollup, backtests
+  # against a seasonal-naive baseline, and turns the predicted peak into a replica
+  # recommendation on aiops.predictions.
+  # ---------------------------------------------------------------------------
+  traffic-predictor:
+    <<: *aiops-common
+    build:
+      context: .
+      dockerfile: services/traffic_predictor/Dockerfile
+    image: aiops/traffic-predictor:0.1.0
+    container_name: aiops-traffic-predictor
+    environment:
+      <<: *aiops-env
+      AIOPS_SERVICE_NAME: traffic-predictor
+      FORECAST_HORIZONS: ${FORECAST_HORIZONS:-1,6,24}
+      FORECAST_HISTORY_DAYS: ${FORECAST_HISTORY_DAYS:-28}
+      FORECAST_INTERVAL_SECONDS: ${FORECAST_INTERVAL_SECONDS:-600}
+      SCALING_MIN_HEADROOM: ${SCALING_MIN_HEADROOM:-0.25}
+    ports:
+      - "${TRAFFIC_PREDICTOR_PORT:-8022}:8000"
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      # Prometheus supplies the measured capacity behind every recommendation.
+      prometheus:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          # Lighter than the detector: no ML stack, and a forecast cycle is medians over ~670
+          # hourly points per service.
+          cpus: "0.50"
+          memory: 384M

@@ -19,6 +19,8 @@ import signal
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, HTTPException, Request
+from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
 from pydantic import BaseModel, Field
 
 from aiops_common.log import get_logger
@@ -204,8 +206,12 @@ async def scale(request: Request, body: Annotated[ScaleRequest, Body()]) -> dict
 async def simulated_request(request: Request, endpoint: str = "/transfers") -> dict[str, Any]:
     """Handle one request with the service's current latency characteristics.
 
-    Exists so there is a real HTTP call to trace once OpenTelemetry is wired up in part B,
-    and so a load generator can exercise the service directly.
+    Traced. FastAPI's instrumentation produces the server span; the child spans below give
+    the trace internal structure, so a slow request shows *where* it was slow rather than
+    only that it was. Attributes carry the simulated state at the moment of the request,
+    which makes a single trace self-contained evidence for module 7: load factor and active
+    faults are right there on the span instead of having to be joined from Prometheus by
+    timestamp.
 
     It deliberately does **not** touch the DPI counters. The background tick is the single
     writer for those; letting requests increment them too would double-count and make
@@ -213,15 +219,40 @@ async def simulated_request(request: Request, endpoint: str = "/transfers") -> d
     """
     simulator = _sim(request)
     state = simulator.last_state or simulator.tick()
+    tracer = trace.get_tracer(__name__)
 
-    await asyncio.sleep(min(state.latency_p50_seconds, 2.0))
+    with tracer.start_as_current_span("mojaloop.handle_request") as span:
+        span.set_attribute("dpi.service", simulator.service)
+        span.set_attribute("dpi.endpoint", endpoint)
+        span.set_attribute("dpi.load_factor", round(state.load_factor, 3))
+        span.set_attribute("dpi.replicas", state.replicas)
+        span.set_attribute("dpi.queue_depth", round(state.queue_depth, 1))
+        active = [str(fault.kind) for fault in simulator.faults.active()]
+        if active:
+            span.set_attribute("dpi.active_faults", active)
 
-    if simulator.rng.random() < state.error_ratio:
-        raise HTTPException(status_code=503, detail="simulated downstream failure")
+        # Two phases so the span tree has shape. The split is proportional rather than
+        # measured - the simulator has no real work to divide - but it keeps the sum equal
+        # to the latency the metrics report, so traces and metrics do not contradict.
+        total = min(state.latency_p50_seconds, 2.0)
+        with tracer.start_as_current_span("mojaloop.validate_participants"):
+            await asyncio.sleep(total * 0.3)
 
-    return {
-        "service": simulator.service,
-        "endpoint": endpoint,
-        "latency_seconds": round(state.latency_p50_seconds, 4),
-        "status": "committed",
-    }
+        with tracer.start_as_current_span("mojaloop.commit_transfer") as commit:
+            await asyncio.sleep(total * 0.7)
+
+            if simulator.rng.random() < state.error_ratio:
+                # Mark the span before raising. An exception that escapes an unmarked span
+                # still shows as an error via the HTTP status, but the trace then blames
+                # the request as a whole rather than the phase that actually failed.
+                commit.set_status(Status(StatusCode.ERROR, "simulated downstream failure"))
+                span.set_status(Status(StatusCode.ERROR, "simulated downstream failure"))
+                raise HTTPException(status_code=503, detail="simulated downstream failure")
+
+        return {
+            "service": simulator.service,
+            "endpoint": endpoint,
+            "latency_seconds": round(state.latency_p50_seconds, 4),
+            "status": "committed",
+            "trace_id": format(span.get_span_context().trace_id, "032x"),
+        }

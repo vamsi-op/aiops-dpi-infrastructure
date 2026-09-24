@@ -42,14 +42,34 @@ ignore = [
 # The seeder uses `random` to shape synthetic traffic, not for anything security related,
 # and imports after a sys.path insert so it can run as a plain script from the repo root.
 "scripts/seed_demo_data.py" = ["S311", "E402", "S608"]
+# Same three reasons: it drives the simulator's own traffic model, imports after a sys.path
+# insert, and interpolates only the TABLE_METRICS constant into SQL.
+"scripts/replay_history.py" = ["S311", "E402", "S608"]
 # S608 (SQL built by string formatting) is a false positive in these two files: the only
 # interpolated values are table-name constants from aiops_common.constants, and every
 # runtime value is a bound parameter. Verified by review, not assumed — if you add a
 # query here, the same must remain true.
 "services/api_gateway/api_gateway/repository.py" = ["S608"]
+# Same exemption, same reasoning, same obligation: the only interpolated value is
+# TABLE_METRICS from aiops_common.constants, and every runtime value is a bound parameter.
+"services/metrics_agent/metrics_agent/writer.py" = ["S608"]
+"scripts/check_metrics_agent.py" = ["S608"]
+# Same again: only TABLE_* constants from aiops_common.constants are interpolated.
+"services/anomaly_detector/anomaly_detector/trainer.py" = ["S608"]
+"services/anomaly_detector/anomaly_detector/detector.py" = ["S608"]
+"scripts/check_anomaly_detector.py" = ["S608"]
+"services/traffic_predictor/traffic_predictor/predictor.py" = ["S608"]
+"scripts/check_traffic_predictor.py" = ["S608"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["aiops_common", "api_gateway", "mojaloop_sim"]
+known-first-party = [
+    "aiops_common",
+    "anomaly_detector",
+    "api_gateway",
+    "metrics_agent",
+    "mojaloop_sim",
+    "traffic_predictor",
+]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -76,13 +96,32 @@ disallow_untyped_defs = false
 module = ["sklearn.*", "statsmodels.*", "docker.*", "kubernetes.*", "joblib.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+# numpy ships its own stubs, and from 2.x they use `type` statement syntax that mypy only
+# accepts under python_version >= 3.12. Following them fails to parse and aborts the whole
+# run before any of our code is checked.
+#
+# Skipped rather than bumping `python_version` to 3.12, because that setting is a real promise:
+# aiops_common declares `requires-python = ">=3.11"` and the shared library genuinely does run
+# there. Our own use of numpy is a handful of array operations whose types we do not need
+# checked; what matters is that the code around them is.
+module = ["numpy", "numpy.*"]
+follow_imports = "skip"
+follow_imports_for_stubs = true
+
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests", "libs", "services"]
 # Each service is a self-contained app rather than an installed package, so its root goes
 # on the path here. Doing it once centrally beats a sys.path hack repeated in every test
 # module, which is what this replaced.
-pythonpath = ["services/api_gateway", "services/mojaloop_sim"]
+pythonpath = [
+    "services/anomaly_detector",
+    "services/api_gateway",
+    "services/metrics_agent",
+    "services/mojaloop_sim",
+    "services/traffic_predictor",
+]
 python_files = ["test_*.py"]
 addopts = "-ra --strict-markers --strict-config"
 asyncio_mode = "auto"
