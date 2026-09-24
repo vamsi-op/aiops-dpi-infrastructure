@@ -2,8 +2,7 @@
 
 **Project:** AI-driven operations platform for Digital Payment Infrastructure  
 **Review Date:** September 26, 2026  
-**Team:** Vamsi (vamsi-op)  
-**Repository:** https://github.com/vamsi-op/aiops-dpi-infrastructure
+**Team:** AI 7
 
 ---
 
