@@ -87,7 +87,7 @@ def inject(args: argparse.Namespace) -> dict[str, Any]:
     if args.magnitude is not None:
         body["magnitude"] = args.magnitude
 
-    request = urllib.request.Request(
+    request = urllib.request.Request(  # noqa: S310
         url,
         data=json.dumps(body).encode("utf-8"),
         method="POST",
