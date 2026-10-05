@@ -118,7 +118,9 @@ def main() -> int:
     print(f"Injected {args.fault} into {args.service} (magnitude {magnitude}).")
     print(f"Fault ID: {fault.get('fault_id', 'unknown')}")
     print(f"Expires at: {expiry}")
-    print("The fault will automatically expire; observe metrics and anomalies in the dashboard.")
+    print(
+        "The fault will automatically expire; observe metrics and anomalies in the dashboard."
+    )
     return 0
 
 
