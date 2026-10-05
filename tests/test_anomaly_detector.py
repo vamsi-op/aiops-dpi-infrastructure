@@ -32,6 +32,7 @@ from anomaly_detector.baseline import (
     build_baseline,
 )
 from anomaly_detector.classify import IMPLICATION_SIGMA, classify
+from anomaly_detector.detector import ANOMALY_COOLDOWN_SECONDS, AnomalyDetector
 from anomaly_detector.scorer import Scorer
 
 THRESHOLD = 0.65
@@ -54,6 +55,17 @@ NORMAL = {
 # The agent's collection interval. Used to turn an error *ratio* into the integer counts
 # `MetricSample` actually stores, exactly as `MetricsCollector._counts_for` does.
 INTERVAL_SECONDS = 15
+
+
+def test_anomaly_emission_cooldown_is_per_service_and_three_minutes() -> None:
+    detector = AnomalyDetector(None, None, Scorer(THRESHOLD), None)
+    first_emission = 100.0
+    detector._last_anomaly_emitted[SERVICE] = first_emission
+
+    assert ANOMALY_COOLDOWN_SECONDS == 180
+    assert detector._in_anomaly_cooldown(SERVICE, first_emission + 179.9)
+    assert not detector._in_anomaly_cooldown(SERVICE, first_emission + 180.0)
+    assert not detector._in_anomaly_cooldown("quoting-service", first_emission + 1.0)
 
 
 def _counts(tps: float, error_ratio: float) -> tuple[int, int]:

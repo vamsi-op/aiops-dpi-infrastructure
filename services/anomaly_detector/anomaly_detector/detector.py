@@ -35,6 +35,7 @@ from .scorer import Scorer
 log = get_logger(__name__)
 
 CONSUMER_GROUP = "anomaly-detector"
+ANOMALY_COOLDOWN_SECONDS = 180
 
 INSERT_ANOMALY = f"""
 INSERT INTO {TABLE_ANOMALIES} (
@@ -150,6 +151,7 @@ class AnomalyDetector:
         self._batch = batch_size
         self._block_ms = block_ms
         self._models: dict[str, ServiceModel] = {}
+        self._last_anomaly_emitted: dict[str, float] = {}
         self.status = DetectorStatus(threshold=scorer.threshold)
         self._task: asyncio.Task[None] | None = None
         self._stopping = asyncio.Event()
@@ -273,8 +275,18 @@ class AnomalyDetector:
         if result.anomaly is None:
             return True
 
+        now = time.monotonic()
+        if self._in_anomaly_cooldown(sample.service, now):
+            log.debug(
+                "anomaly.cooldown",
+                monitored_service=sample.service,
+                cooldown_seconds=ANOMALY_COOLDOWN_SECONDS,
+            )
+            return True
+
         await self._persist(result.anomaly)
         await self._publish(result.anomaly)
+        self._last_anomaly_emitted[sample.service] = time.monotonic()
 
         self.status.anomalies_detected += 1
         if result.anomaly.is_actionable:
@@ -302,6 +314,10 @@ class AnomalyDetector:
             contributing=result.anomaly.contributing_features[:3],
         )
         return True
+
+    def _in_anomaly_cooldown(self, service: str, now: float) -> bool:
+        last_emitted = self._last_anomaly_emitted.get(service)
+        return last_emitted is not None and now - last_emitted < ANOMALY_COOLDOWN_SECONDS
 
     async def _persist(self, anomaly: AnomalyEvent) -> None:
         await self._db.execute(
