@@ -1,0 +1,7 @@
+# RCA engine runtime dependencies.
+#
+# The shared library brings fastapi, uvicorn, pydantic, redis, SQLAlchemy, asyncpg,
+# prometheus-client and OpenTelemetry. The RCA engine doesn't need any additional
+# dependencies - correlation logic uses standard Python libraries and the dependency
+# graph is already defined in constants.py.
+-e ../../libs/aiops_common

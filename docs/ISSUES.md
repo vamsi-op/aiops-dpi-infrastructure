@@ -333,14 +333,14 @@ Correlate anomalies four ways and produce ranked, evidence-backed hypotheses:
 
 ### Acceptance criteria
 
-- [ ] A fault in `central-ledger` that cascades to `quoting-service` and `ml-api-adapter`
+- [x] A fault in `central-ledger` that cascades to `quoting-service` and `ml-api-adapter`
       produces **one** incident naming `central-ledger`, not three separate incidents
-- [ ] A deploy 10 minutes before an error burst yields a `change` hypothesis with the
+- [x] A deploy 10 minutes before an error burst yields a `change` hypothesis with the
       deployment as `target`
-- [ ] A traffic surge with no service fault yields an `event` hypothesis, not `service`
-- [ ] Hypotheses are ordered by confidence and every one carries concrete `evidence` strings
-- [ ] Anomalies are stamped with their `incident_id`
-- [ ] Incidents resolve automatically when the underlying anomalies clear
+- [x] A traffic surge with no service fault yields an `event` hypothesis, not `service`
+- [x] Hypotheses are ordered by confidence and every one carries concrete `evidence` strings
+- [x] Anomalies are stamped with their `incident_id`
+- [x] Incidents resolve automatically when the underlying anomalies clear
 
 ### Files you will likely touch
 

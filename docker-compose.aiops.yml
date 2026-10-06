@@ -178,6 +178,44 @@ services:
           memory: 384M
 
   # ---------------------------------------------------------------------------
+  # Module 7 - RCA Engine.
+  #
+  # Correlates anomalies across temporal, topological, change, and event dimensions.
+  # Produces ranked root cause hypotheses with evidence. Manages incident lifecycle
+  # from detection to resolution. Publishes incidents with AI-generated summaries
+  # to aiops.incidents stream.
+  # ---------------------------------------------------------------------------
+  rca-engine:
+    <<: *aiops-common
+    build:
+      context: .
+      dockerfile: services/rca_engine/Dockerfile
+    image: aiops/rca-engine:0.1.0
+    container_name: aiops-rca-engine
+    environment:
+      <<: *aiops-env
+      AIOPS_SERVICE_NAME: rca-engine
+      RCA_WINDOW_SECONDS: ${RCA_WINDOW_SECONDS:-300}
+      RCA_AUTO_RESOLVE_SECONDS: ${RCA_AUTO_RESOLVE_SECONDS:-300}
+    ports:
+      - "${RCA_ENGINE_PORT:-8023}:8000"
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      # RCA engine consumes anomalies from the detector, so start after it
+      anomaly-detector:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          # Correlation logic is computational but not heavy - mainly graph traversal
+          # and time-series clustering. Lighter than the anomaly detector.
+          cpus: "0.50"
+          memory: 384M
+
+  # ---------------------------------------------------------------------------
   # Module 8 - API Gateway.
   #
   # REST + WebSocket API that the dashboard queries. Reads from TimescaleDB (metrics,
@@ -205,13 +243,15 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      # The gateway queries what modules 3-5 write, so starting after them avoids returning
+      # The gateway queries what modules 3-5, 7 write, so starting after them avoids returning
       # empty results while the pipeline is still initializing.
       metrics-agent:
         condition: service_started
       anomaly-detector:
         condition: service_started
       traffic-predictor:
+        condition: service_started
+      rca-engine:
         condition: service_started
     deploy:
       resources:
