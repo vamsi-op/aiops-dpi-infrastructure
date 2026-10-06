@@ -116,26 +116,25 @@ class RCAEngine:
         cutoff = datetime.now(timezone.utc) - timedelta(seconds=self.window_seconds)
 
         query = """
-            SELECT anomaly_id, detected_at, service, metric_name, severity,
-                   anomaly_score, contributing_features, predicted_kind, incident_id
+            SELECT anomaly_id, detected_at, service, severity,
+                   score as anomaly_score, contributing_features, kind as predicted_kind, incident_id
             FROM anomalies
-            WHERE detected_at >= $1
+            WHERE detected_at >= :cutoff
             ORDER BY detected_at DESC
             LIMIT 1000
         """
 
-        rows = await self.db.fetch(query, cutoff)
+        rows = await self.db.fetch_all(query, {"cutoff": cutoff})
 
         for row in rows:
             anomaly = AnomalyEvent(
                 anomaly_id=row["anomaly_id"],
                 detected_at=row["detected_at"],
                 service=row["service"],
-                metric_name=row["metric_name"],
                 severity=row["severity"],
-                anomaly_score=row["anomaly_score"],
+                score=row["anomaly_score"],
                 contributing_features=row["contributing_features"] or [],
-                predicted_kind=row["predicted_kind"],
+                kind=row["predicted_kind"],
                 incident_id=row["incident_id"],
             )
             self.recent_anomalies.append(anomaly)

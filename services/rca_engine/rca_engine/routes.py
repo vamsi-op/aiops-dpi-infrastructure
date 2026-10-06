@@ -93,14 +93,14 @@ async def list_incidents(
 
     query = """
         SELECT incident_id, opened_at, closed_at, status, severity, platform,
-               title, affected_services, anomaly_ids, hypotheses_json, ai_summary
+               title, affected_services, anomaly_ids, hypotheses, ai_summary
         FROM incidents
-        WHERE ($1::text IS NULL OR status = $1)
+        WHERE (:status::text IS NULL OR status = :status)
         ORDER BY opened_at DESC
-        LIMIT $2
+        LIMIT :limit
     """
 
-    rows = await manager.db.fetch(query, status, limit)
+    rows = await manager.db.fetch_all(query, {"status": status, "limit": limit})
 
     incidents = []
     for row in rows:
@@ -114,7 +114,7 @@ async def list_incidents(
             "title": row["title"],
             "affected_services": row["affected_services"],
             "anomaly_count": len(row["anomaly_ids"]),
-            "hypothesis_count": len(row["hypotheses_json"]),
+            "hypothesis_count": len(row["hypotheses"]),
             "ai_summary": row["ai_summary"],
         })
 
@@ -171,13 +171,13 @@ async def correlate(
 
     # Load anomalies from database
     query = """
-        SELECT anomaly_id, detected_at, service, metric_name, severity,
-               anomaly_score, contributing_features, predicted_kind, incident_id
+        SELECT anomaly_id, detected_at, service, severity,
+               score as anomaly_score, contributing_features, kind as predicted_kind, incident_id
         FROM anomalies
-        WHERE anomaly_id = ANY($1)
+        WHERE anomaly_id = ANY(:anomaly_ids)
     """
 
-    rows = await correlator.db.fetch(query, body.anomaly_ids)
+    rows = await correlator.db.fetch_all(query, {"anomaly_ids": body.anomaly_ids})
 
     if not rows:
         raise HTTPException(
@@ -191,11 +191,10 @@ async def correlate(
             anomaly_id=row["anomaly_id"],
             detected_at=row["detected_at"],
             service=row["service"],
-            metric_name=row["metric_name"],
             severity=row["severity"],
-            anomaly_score=row["anomaly_score"],
+            score=row["anomaly_score"],
             contributing_features=row["contributing_features"] or [],
-            predicted_kind=row["predicted_kind"],
+            kind=row["predicted_kind"],
             incident_id=row["incident_id"],
         )
         anomalies.append(anomaly)
