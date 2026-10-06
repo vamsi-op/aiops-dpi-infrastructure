@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from aiops_common.log import get_logger
 from aiops_common.schemas import AnomalyEvent
 
-from .correlator import RCACorrelator
+from .correlator import Correlator
 from .engine import RCAEngine
 from .incident_manager import IncidentManager
 
@@ -26,8 +26,8 @@ def _engine(request: Request) -> RCAEngine:
     return engine
 
 
-def _correlator(request: Request) -> RCACorrelator:
-    correlator: RCACorrelator | None = getattr(request.app.state, "correlator", None)
+def _correlator(request: Request) -> Correlator:
+    correlator: Correlator | None = getattr(request.app.state, "correlator", None)
     if correlator is None:  # pragma: no cover
         raise HTTPException(status_code=503, detail="Correlator not available")
     return correlator

@@ -24,7 +24,7 @@ from aiops_common.db import Database
 from aiops_common.log import get_logger
 from aiops_common.schemas import AnomalyEvent
 
-from .correlator import RCACorrelator
+from .correlator import Correlator
 from .incident_manager import IncidentManager
 
 SERVICE_NAME = str(AiopsService.RCA_ENGINE)
@@ -40,7 +40,7 @@ class RCAEngine:
         self,
         db: Database,
         bus: EventBus,
-        correlator: RCACorrelator,
+        correlator: Correlator,
         incident_manager: IncidentManager,
         *,
         window_seconds: int = 300,
