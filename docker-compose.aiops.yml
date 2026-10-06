@@ -216,6 +216,51 @@ services:
           memory: 384M
 
   # ---------------------------------------------------------------------------
+  # Module 6 - Healing Engine.
+  #
+  # Self-healing playbook engine. Consumes anomalies and incidents, selects remediation
+  # playbooks based on anomaly kind and root cause hypotheses. Enforces four safety rails:
+  # master switch (HEALING_ENABLED), per-target cooldown, hourly budget, min confidence.
+  # Captures before/after metric snapshots and executes actions via Docker API.
+  # ---------------------------------------------------------------------------
+  healing-engine:
+    <<: *aiops-common
+    build:
+      context: .
+      dockerfile: services/healing_engine/Dockerfile
+    image: aiops/healing-engine:0.1.0
+    container_name: aiops-healing-engine
+    environment:
+      <<: *aiops-env
+      AIOPS_SERVICE_NAME: healing-engine
+      HEALING_ENABLED: ${HEALING_ENABLED:-false}
+      HEALING_MAX_ACTIONS_PER_HOUR: ${HEALING_MAX_ACTIONS_PER_HOUR:-10}
+      HEALING_COOLDOWN_SECONDS: ${HEALING_COOLDOWN_SECONDS:-300}
+      HEALING_MIN_CONFIDENCE: ${HEALING_MIN_CONFIDENCE:-0.7}
+      DOCKER_SOCKET: /var/run/docker.sock
+    ports:
+      - "${HEALING_ENGINE_PORT:-8024}:8000"
+    volumes:
+      # Mount Docker socket so the engine can restart containers and scale services
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      # Healing consumes anomalies and incidents, so depends on both
+      anomaly-detector:
+        condition: service_started
+      rca-engine:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          # Lightweight - mostly coordination and I/O. Docker operations are async.
+          cpus: "0.25"
+          memory: 256M
+
+  # ---------------------------------------------------------------------------
   # Module 8 - API Gateway.
   #
   # REST + WebSocket API that the dashboard queries. Reads from TimescaleDB (metrics,
@@ -243,7 +288,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      # The gateway queries what modules 3-5, 7 write, so starting after them avoids returning
+      # The gateway queries what modules 3-7 write, so starting after them avoids returning
       # empty results while the pipeline is still initializing.
       metrics-agent:
         condition: service_started
@@ -252,6 +297,8 @@ services:
       traffic-predictor:
         condition: service_started
       rca-engine:
+        condition: service_started
+      healing-engine:
         condition: service_started
     deploy:
       resources:

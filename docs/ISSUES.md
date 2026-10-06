@@ -278,15 +278,15 @@ one you cannot evaluate — start with the baseline so you have something to bea
 
 ### Acceptance criteria
 
-- [ ] With `HEALING_ENABLED=false`, actions are recorded as `skipped_dry_run` and
+- [x] With `HEALING_ENABLED=false`, actions are recorded as `skipped_dry_run` and
       **nothing executes**
-- [ ] With it enabled, a memory-pressure anomaly restarts the container and
+- [x] With it enabled, a memory-pressure anomaly restarts the container and
       `after_snapshot` shows recovery
-- [ ] Each rail has a unit test proving it blocks: cooldown, hourly budget,
+- [x] Each rail has a unit test proving it blocks: cooldown, hourly budget,
       below-confidence, master switch
-- [ ] Every action is persisted to `healing_actions`, including skipped ones
-- [ ] Actions are idempotent — a duplicate anomaly does not double-restart
-- [ ] A failing playbook records `failed` with a useful `result_message`, and does not
+- [x] Every action is persisted to `healing_actions`, including skipped ones
+- [x] Actions are idempotent — a duplicate anomaly does not double-restart
+- [x] A failing playbook records `failed` with a useful `result_message`, and does not
       take the service down
 
 ### Files you will likely touch

@@ -645,17 +645,74 @@ earns its weight.
 
 ---
 
-## Module 6 — Self-healing playbook engine ⬜
+## Module 6 — Self-healing playbook engine ✅
 
-- Playbooks: `restart_on_oom`, `circuit_break_cascade`, `rollback_bad_deploy`,
-  `scale_out_preemptive`, `scale_in_idle`, `clear_queue_backlog`
-- Safety rails: master switch, per-target cooldown, hourly budget, minimum confidence
-- Docker adapter now, Kubernetes adapter later, behind one interface
-- Before/after metric snapshots on every action, so effectiveness is measurable
+Self-healing engine that executes remediation actions in response to anomalies and incidents.
+Four safety rails ensure actions are safe, auditable, and rate-limited. Six playbooks map
+anomaly kinds and root cause hypotheses to Docker operations.
 
-**Verify**: with `HEALING_ENABLED=false` actions are recorded as `skipped_dry_run`; with it
-true, a memory-pressure anomaly restarts the container and the after-snapshot shows
-recovery. Rails are covered by unit tests.
+**Delivered**
+
+| Path | What it is |
+|------|-----------|
+| `services/healing_engine/healing_engine/executor.py` | ExecutorInterface (abstract base) + DockerExecutor: restart_container, scale_service, rollback_deployment, get_replica_count. Kubernetes implementation ready for module 10 |
+| `services/healing_engine/healing_engine/safety.py` | SafetyRails: checks all 4 rails (master switch, min confidence, cooldown, budget) and returns distinct ActionStatus for each block |
+| `services/healing_engine/healing_engine/playbooks.py` | PlaybookRegistry (anomaly kind → playbook mapping, incident-based selection) + PlaybookExecutor with all 6 playbooks |
+| `services/healing_engine/healing_engine/snapshot.py` | MetricSnapshot: captures before/after metrics for effectiveness measurement, compare() for delta analysis |
+| `services/healing_engine/healing_engine/engine.py` | Main HealingEngine: consumes anomalies+incidents, selects playbooks, checks safety, captures snapshots, executes, persists, publishes |
+| `services/healing_engine/healing_engine/asgi.py` | FastAPI app with lifecycle management and dependency injection |
+| `services/healing_engine/healing_engine/routes.py` | HTTP endpoints: /status, /config, /actions (list), /actions/{id} (details with snapshots) |
+| `services/healing_engine/Dockerfile` | Containerized engine deployed via docker-compose.aiops.yml on port 8024, mounts docker.sock |
+| `tests/test_healing_engine.py` | Unit tests for all 4 safety rails and playbook selection logic |
+| `scripts/check_healing_engine.py` | End-to-end verification: dry-run mode, safety rails, idempotency, persistence |
+
+**Six Playbooks:**
+- **restart_on_oom**: Memory/CPU pressure, error bursts, latency spikes, multivariate → container restart
+- **circuit_break_cascade**: Service cascades (topological RCA hypothesis) → restart root service
+- **rollback_bad_deploy**: Change root cause hypothesis → rollback to previous version
+- **scale_out_preemptive**: Traffic surge → increment replicas by 1
+- **scale_in_idle**: Traffic drop → decrement replicas (min 1)
+- **clear_queue_backlog**: Queue backlog, settlement delays → restart to clear queues
+
+**Four Safety Rails** (each with distinct ActionStatus when blocking):
+- **Master switch** (HEALING_ENABLED): Dry-run by default → skipped_dry_run
+- **Minimum confidence** (0.7 threshold): Low RCA confidence → skipped_low_confidence
+- **Per-target cooldown** (300s): Recent action on same service → skipped_cooldown
+- **Hourly budget** (10 max/hour): Rate limit exceeded → skipped_budget
+
+**Playbook Selection Priority:**
+1. Incident with CHANGE hypothesis → rollback_bad_deploy
+2. Incident with SERVICE cascade → circuit_break_cascade
+3. Anomaly kind mapping (memory_pressure → restart, traffic_surge → scale_out, etc.)
+
+**Verify** — dry-run mode, safety rails, before/after snapshots
+
+```powershell
+.\scripts\stack.ps1 up -Layer all
+
+# Healing engine health check
+Invoke-RestMethod http://localhost:8024/health
+Invoke-RestMethod http://localhost:8024/status
+Invoke-RestMethod http://localhost:8024/config
+
+# Query healing actions
+Invoke-RestMethod "http://localhost:8024/actions?status=skipped_dry_run"
+Invoke-RestMethod http://localhost:8024/actions/<action_id>
+
+# Run verification script
+.\.venv\Scripts\python.exe scripts\check_healing_engine.py
+
+# Run unit tests
+.\.venv\Scripts\python.exe -m pytest tests/test_healing_engine.py -v
+```
+
+**Acceptance Criteria Met:**
+- ✅ Dry-run mode: HEALING_ENABLED=false records actions as skipped_dry_run, nothing executes
+- ✅ Actual execution: HEALING_ENABLED=true triggers container restarts with before/after snapshots
+- ✅ Safety rail tests: Each rail has unit test proving it blocks with distinct status
+- ✅ Idempotency: Duplicate anomalies do not trigger duplicate actions (tracked in engine)
+- ✅ Failure handling: Failed playbooks record 'failed' status with descriptive message
+- ✅ All actions persisted: Including skipped ones, for full audit trail
 
 ---
 
