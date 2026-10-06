@@ -34,7 +34,7 @@ from aiops_common.log import get_logger
 from aiops_common.service import build_app
 from aiops_common.tracing import configure_tracing, shutdown_tracing
 
-from .correlator import RCACorrelator
+from .correlator import Correlator
 from .engine import RCAEngine
 from .incident_manager import IncidentManager
 from .routes import router
@@ -78,7 +78,7 @@ app: FastAPI = build_app(
 )
 
 # Initialize RCA components
-correlator = RCACorrelator(database)
+correlator = Correlator(database)
 incident_manager = IncidentManager(database, bus)
 engine = RCAEngine(
     database,
