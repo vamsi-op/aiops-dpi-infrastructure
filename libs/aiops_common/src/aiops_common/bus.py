@@ -24,6 +24,7 @@ Typical consumer:
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Sequence
 from datetime import datetime
 from typing import Any, Self, cast
@@ -31,7 +32,7 @@ from typing import Any, Self, cast
 import orjson
 import redis.asyncio as redis
 from pydantic import BaseModel
-from redis.exceptions import ResponseError
+from redis.exceptions import ResponseError, ConnectionError, TimeoutError
 
 from .config import RedisSettings, get_settings
 from .constants import Stream
@@ -97,6 +98,9 @@ class EventBus:
                 socket_connect_timeout=self._settings.socket_timeout_seconds,
                 decode_responses=True,
                 health_check_interval=30,
+                retry_on_timeout=True,
+                retry_on_error=[ConnectionError, TimeoutError],
+                max_connections=50,
             )
         await self.ping()
         return self
@@ -143,27 +147,53 @@ class EventBus:
             "published_at": utc_now().isoformat(),
             "data": _dumps(data),
         }
-        try:
-            message_id = await self.client.xadd(
-                name=str(stream),
-                fields=fields,
-                maxlen=maxlen or self._settings.stream_maxlen,
-                approximate=True,
-            )
-        except Exception as exc:
-            raise EventBusError("Failed to publish event", stream=str(stream)) from exc
-
-        log.debug(
-            "event.published", stream=str(stream), event_id=event_id, message_id=message_id
-        )
-        return str(message_id)
+        
+        # Retry logic with exponential backoff for transient failures
+        max_retries = 3
+        base_delay = 0.1
+        
+        for attempt in range(max_retries):
+            try:
+                message_id = await self.client.xadd(
+                    name=str(stream),
+                    fields=fields,
+                    maxlen=maxlen or self._settings.stream_maxlen,
+                    approximate=True,
+                )
+                
+                log.debug(
+                    "event.published", stream=str(stream), event_id=event_id, message_id=message_id
+                )
+                return str(message_id)
+                
+            except (ConnectionError, TimeoutError) as exc:
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)
+                    log.warning(
+                        "event.publish_retry",
+                        stream=str(stream),
+                        attempt=attempt + 1,
+                        max_retries=max_retries,
+                        delay=delay,
+                        error=str(exc),
+                    )
+                    await asyncio.sleep(delay)
+                    # Try to reconnect
+                    try:
+                        await self.ping()
+                    except Exception:
+                        pass
+                else:
+                    raise EventBusError("Failed to publish event after retries", stream=str(stream)) from exc
+            except Exception as exc:
+                raise EventBusError("Failed to publish event", stream=str(stream)) from exc
 
     # -- consuming ---------------------------------------------------------
     async def ensure_group(self, stream: Stream | str, group: str) -> None:
         """Create the consumer group (and the stream) if they do not exist yet."""
         try:
             await self.client.xgroup_create(
-                name=str(stream), groupname=group, id="0", mkstream=True
+                name=str(stream), groupname=group, id="$", mkstream=True
             )
             log.info("bus.group_created", stream=str(stream), group=group)
         except ResponseError as exc:
@@ -182,21 +212,54 @@ class EventBus:
         block_ms: int = 5_000,
     ) -> list[Event]:
         """Read up to `count` new events, blocking up to `block_ms` if the stream is idle."""
-        try:
-            response = await self.client.xreadgroup(
-                groupname=group,
-                consumername=consumer,
-                streams={str(stream): ">"},
-                count=count,
-                block=block_ms,
-            )
-        except ResponseError as exc:
-            if "NOGROUP" in str(exc):
-                await self.ensure_group(stream, group)
-                return []
-            raise EventBusError("Failed to read stream", stream=str(stream)) from exc
-        except Exception as exc:
-            raise EventBusError("Failed to read stream", stream=str(stream)) from exc
+        max_retries = 2
+        base_delay = 0.1
+        response = None
+        
+        for attempt in range(max_retries):
+            try:
+                response = await self.client.xreadgroup(
+                    groupname=group,
+                    consumername=consumer,
+                    streams={str(stream): ">"},
+                    count=count,
+                    block=block_ms,
+                )
+                break
+            except ResponseError as exc:
+                if "NOGROUP" in str(exc):
+                    await self.ensure_group(stream, group)
+                    response = await self.client.xreadgroup(
+                        groupname=group,
+                        consumername=consumer,
+                        streams={str(stream): ">"},
+                        count=count,
+                        block=block_ms,
+                    )
+                    break
+                else:
+                    raise EventBusError("Stream error", stream=str(stream)) from exc
+            except (ConnectionError, TimeoutError) as exc:
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)
+                    log.warning(
+                        "event.read_retry",
+                        stream=str(stream),
+                        attempt=attempt + 1,
+                        max_retries=max_retries,
+                        delay=delay,
+                        error=str(exc),
+                    )
+                    await asyncio.sleep(delay)
+                    # Try to reconnect
+                    try:
+                        await self.ping()
+                    except Exception:
+                        pass
+                else:
+                    raise EventBusError("Failed to read stream after retries", stream=str(stream)) from exc
+            except Exception as exc:
+                raise EventBusError("Failed to read stream", stream=str(stream)) from exc
 
         events: list[Event] = []
         for stream_name, messages in response or []:

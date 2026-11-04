@@ -230,6 +230,7 @@ services:
       dockerfile: services/healing_engine/Dockerfile
     image: aiops/healing-engine:0.1.0
     container_name: aiops-healing-engine
+    user: root
     environment:
       <<: *aiops-env
       AIOPS_SERVICE_NAME: healing-engine
@@ -281,6 +282,11 @@ services:
       # For local dev, allow localhost on any port so both `npm run dev` (5173) and a
       # production build preview work without rebuilding the gateway.
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:5173,http://localhost:4173}
+      # Healing configuration - needed by /automation endpoint to report current status
+      HEALING_ENABLED: ${HEALING_ENABLED:-false}
+      HEALING_MAX_ACTIONS_PER_HOUR: ${HEALING_MAX_ACTIONS_PER_HOUR:-10}
+      HEALING_COOLDOWN_SECONDS: ${HEALING_COOLDOWN_SECONDS:-300}
+      HEALING_MIN_CONFIDENCE: ${HEALING_MIN_CONFIDENCE:-0.7}
     ports:
       - "${API_GATEWAY_PORT:-8080}:8000"
     depends_on:

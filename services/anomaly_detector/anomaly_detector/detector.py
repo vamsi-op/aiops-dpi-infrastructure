@@ -35,7 +35,9 @@ from .scorer import Scorer
 log = get_logger(__name__)
 
 CONSUMER_GROUP = "anomaly-detector"
-ANOMALY_COOLDOWN_SECONDS = 180
+# Cooldown prevents multiple anomalies from the same issue
+# 15s = fast demo response while preventing spam from baseline noise
+ANOMALY_COOLDOWN_SECONDS = 15
 
 INSERT_ANOMALY = f"""
 INSERT INTO {TABLE_ANOMALIES} (

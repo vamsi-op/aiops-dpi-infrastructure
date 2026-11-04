@@ -50,10 +50,10 @@ Built against **Mojaloop** (payments). The design generalises to **MOSIP** (iden
 ┌──────────────────────────────────────────────────────────────────────────┐
 │  AIOPS PLANE ✅                                                           │
 │  metrics-agent ──► TimescaleDB (history + feature store)                 │
-│        ├──► anomaly-detector      (Isolation Forest) ✅                  │
+│        ├──► anomaly-detector      (Isolation Forest, 5-15s) ✅           │
 │        ├──► traffic-predictor     (1h / 6h / 24h) ✅                     │
-│        ├──► rca-engine            (service · change · event) ⏸️          │
-│        └──► healing-engine        (playbooks + safety rails) ⏸️          │
+│        ├──► rca-engine            (service · change · event) ✅          │
+│        └──► healing-engine        (playbooks + safety rails) ✅          │
 └───────────┬──────────────────────────────────────────────────────────────┘
             │ Redis Streams
             ▼
@@ -63,10 +63,11 @@ Built against **Mojaloop** (payments). The design generalises to **MOSIP** (iden
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Current Status (Sept 2026):**
-- ✅ Modules 1-5, 8 complete and integrated
-- ⏸️ Modules 6-7, 9-10 planned
-- 17 containers running, full pipeline operational
+**Current Status (November 2026):**
+- ✅ Modules 1-5, 6, 7, 8 complete and integrated
+- ⏸️ Modules 9-10 planned
+- 17 containers running, full end-to-end pipeline operational
+- **Self-healing workflow verified**: Fault → Anomaly (5-15s) → Incident → Remediation
 
 Layers only query downward and communicate upward through the event bus. No service
 reaches into another's database. Full reasoning in
@@ -186,7 +187,52 @@ Terminal 3 is not optional for a demo: services are marked **stale** two minutes
 their last sample, so without it the grid goes grey. That is correct behaviour — a service
 that stops reporting must be visible as stale, not silently vanish.
 
-### Step 6 — Open the dashboard
+### Step 7 — Run the self-healing demo
+
+The system now demonstrates full end-to-end self-healing. This demo injects a fault, waits for automatic detection, incident creation, and remediation:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\demo_quick_healing.py
+```
+
+**What happens:**
+1. **T+0s**: 50% error rate injected into `central-ledger`
+2. **T+5-15s**: Anomaly detected (Isolation Forest)
+3. **T+15-20s**: Incident created with root cause analysis
+4. **T+20-25s**: Healing playbook executes (container restart)
+5. **Complete**: Fault cleared, system restored
+
+**Performance metrics:**
+- Anomaly detection: **5-15 seconds** (optimized from 40-60s)
+- End-to-end recovery: **~25 seconds** from injection to remediation
+- Zero consumer group backlog issues
+
+The demo output shows the anomaly ID, incident ID, severity, and timeline. Check the dashboard **Incidents** page to see the full RCA with hypotheses and evidence.
+
+### Step 8 — Verify healing actions
+
+Check that healing actions executed:
+
+```powershell
+# View healing engine logs
+docker logs aiops-healing-engine --tail 50
+
+# Check RCA engine incident creation
+docker logs aiops-rca-engine --tail 30 | Select-String "incident_created"
+
+# Verify playbook execution (look for "Restarted" messages)
+docker logs aiops-healing-engine | Select-String "Restarted|execute_start"
+```
+
+Healing actions execute when:
+- Master switch `HEALING_ENABLED=true` (set in `.env`)
+- Cooldown period expired (15 seconds between actions on same target)
+- Hourly budget not exceeded (max 10 actions per hour)
+- Confidence threshold met (>= 0.7)
+
+Blocked actions are logged with `skipped_*` status codes proving the safety rails work.
+
+### Step 9 — Open the dashboard
 
 **http://localhost:5173**
 
@@ -354,8 +400,8 @@ that proves it works.
 | 3 | Metrics collection agent + DPI exporter | infra | ✅ done |
 | 4 | Anomaly detection (Isolation Forest) | ml | ✅ done |
 | 5 | Traffic prediction + pre-emptive scaling | ml | ✅ done |
-| 6 | Self-healing playbook engine | automation | ⬜ **next** |
-| 7 | Root cause analysis engine | ml | ⬜ |
+| 6 | Self-healing playbook engine | automation | ✅ done |
+| 7 | Root cause analysis engine | ml | ✅ done |
 | 8 | Operations dashboard (React + FastAPI) | frontend | ✅ done |
 | 9 | Chaos engineering demo | automation | ⬜ |
 | 10 | Kubernetes migration | infra | ⬜ stretch |

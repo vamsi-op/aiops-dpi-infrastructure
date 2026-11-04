@@ -38,8 +38,9 @@ const PAGES: { id: PageId; label: string; title: string; subtitle: string }[] = 
   { id: 'anomalies', label: 'Anomalies', title: 'Anomaly detection', subtitle: 'Unusual behaviour, and the signals that gave it away' },
   { id: 'incidents', label: 'Incidents', title: 'Incidents and root cause', subtitle: 'Correlated anomalies with a ranked explanation' },
   { id: 'forecast', label: 'Forecast', title: 'Traffic forecasting', subtitle: 'Predicted load and pre-emptive scaling decisions' },
-  { id: 'automation', label: 'Automation', title: 'Self-healing', subtitle: 'Playbooks, safety rails, and every action taken' },
-  { id: 'chaos', label: 'Chaos', title: 'Chaos engineering', subtitle: 'Deliberate failures and how fast the platform responded' },
+  // Temporarily hidden - healing engine database persist issue
+  // { id: 'automation', label: 'Automation', title: 'Self-healing', subtitle: 'Playbooks, safety rails, and every action taken' },
+  // { id: 'chaos', label: 'Chaos', title: 'Chaos engineering', subtitle: 'Deliberate failures and how fast the platform responded' },
 ];
 
 function parseHash(): Route {
@@ -105,8 +106,11 @@ export function App() {
     <div className="app">
       <nav className="sidebar" aria-label="Main navigation">
         <div className="brand">
-          <span className="brand__title">AIOps · DPI</span>
-          <span className="brand__subtitle">{overview.data?.platform ?? config.data?.platform ?? 'mojaloop'}</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span className="brand__title">AIOPS Platform</span>
+            {config.data && !config.data.healing.enabled && <Badge tone="info">dry run</Badge>}
+          </div>
+          <span className="brand__subtitle">DPI Services</span>
         </div>
 
         <div className="nav">
@@ -140,10 +144,6 @@ export function App() {
         </div>
 
         <div className="stack" style={{ gap: 8, marginTop: 'auto', padding: '0 8px', fontSize: 11, color: 'var(--text-dim)' }}>
-          <div className="row" style={{ gap: 6 }}>
-            {connectionBadge}
-            {config.data && !config.data.healing.enabled && <Badge tone="info">dry run</Badge>}
-          </div>
           {config.data && (
             <>
               <div>env: {config.data.env}</div>
@@ -163,19 +163,6 @@ export function App() {
         <div className="header__titles">
           <h1>{meta.title}</h1>
           <p>{meta.subtitle}</p>
-        </div>
-        <div className="header__meta">
-          {overview.data && (
-            <>
-              <Badge tone={statusTone(overview.data.platform_status)} dot pulse={overview.data.platform_status === 'critical'}>
-                {statusLabel(overview.data.platform_status)}
-              </Badge>
-              <span className="mono">
-                {overview.data.totals.services_total} services · {formatPercent(overview.data.totals.error_ratio, 3)} errors
-              </span>
-            </>
-          )}
-          <span className="mono">updated {formatRelative(overview.lastUpdated)}</span>
         </div>
       </header>
 

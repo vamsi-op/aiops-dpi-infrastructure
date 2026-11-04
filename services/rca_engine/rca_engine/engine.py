@@ -147,12 +147,16 @@ class RCAEngine:
 
     async def _consume_anomalies(self) -> None:
         """Consume anomaly events and trigger correlation."""
-        async for message in self.bus.consume(Stream.ANOMALIES):
+        async for event in self.bus.subscribe(
+            Stream.ANOMALIES,
+            group="rca-engine",
+            consumer=f"rca-{settings.env}",
+        ):
             if not self._running:
                 break
 
             try:
-                anomaly = AnomalyEvent.model_validate(message)
+                anomaly = AnomalyEvent.model_validate(event.data)
 
                 # Add to sliding window
                 self.recent_anomalies.append(anomaly)
@@ -165,7 +169,7 @@ class RCAEngine:
                 log.error(
                     "rca_engine.consume_error",
                     error=str(exc),
-                    message=message,
+                    event_id=event.event_id,
                     exc_info=True,
                 )
 
@@ -192,7 +196,7 @@ class RCAEngine:
             return
 
         # Run correlation
-        hypotheses = await self.correlator.correlate(unassigned)
+        hypotheses = await self.correlator.correlate_all(unassigned)
 
         if not hypotheses:
             log.debug(
@@ -225,9 +229,7 @@ class RCAEngine:
             try:
                 await asyncio.sleep(60)  # Check every minute
 
-                await self.incident_manager.auto_resolve_old_incidents(
-                    idle_seconds=self.auto_resolve_seconds
-                )
+                await self.incident_manager.check_auto_resolve()
 
             except asyncio.CancelledError:
                 break

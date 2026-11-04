@@ -115,16 +115,30 @@ class HealingEngine:
 
     async def _consume_anomalies(self) -> None:
         """Consume anomaly events and trigger healing actions."""
-        async for message in self.bus.consume(Stream.ANOMALIES):
+        async for event in self.bus.subscribe(
+            Stream.ANOMALIES, group="healing-engine", consumer="healing-1"
+        ):
             if not self._running:
                 break
 
             try:
-                anomaly = AnomalyEvent.model_validate(message)
+                anomaly = AnomalyEvent.model_validate(event.data)
 
                 # Skip if already handled
                 if anomaly.anomaly_id in self._handled_anomalies:
+                    log.debug(
+                        "healing_engine.anomaly_already_handled",
+                        anomaly_id=anomaly.anomaly_id,
+                    )
                     continue
+
+                log.info(
+                    "healing_engine.anomaly_received",
+                    anomaly_id=anomaly.anomaly_id,
+                    service=anomaly.service,
+                    kind=anomaly.kind,
+                    score=anomaly.score,
+                )
 
                 # Process anomaly
                 await self._process_anomaly(anomaly, incident=None)
@@ -141,18 +155,20 @@ class HealingEngine:
                 log.error(
                     "healing_engine.anomaly_consume_error",
                     error=str(exc),
-                    message=message,
+                    event=event,
                     exc_info=True,
                 )
 
     async def _consume_incidents(self) -> None:
         """Consume incident events and trigger healing with RCA context."""
-        async for message in self.bus.consume(Stream.INCIDENTS):
+        async for event in self.bus.subscribe(
+            Stream.INCIDENTS, group="healing-engine", consumer="healing-1"
+        ):
             if not self._running:
                 break
 
             try:
-                incident = Incident.model_validate(message)
+                incident = Incident.model_validate(event.data)
 
                 # Only process newly opened incidents
                 if incident.status != "open":
@@ -171,20 +187,20 @@ class HealingEngine:
                 log.error(
                     "healing_engine.incident_consume_error",
                     error=str(exc),
-                    message=message,
+                    event=event,
                     exc_info=True,
                 )
 
     async def _fetch_anomaly(self, anomaly_id: str) -> AnomalyEvent | None:
         """Fetch anomaly from database."""
         query = """
-            SELECT anomaly_id, detected_at, service, metric_name, severity,
-                   anomaly_score, contributing_features, predicted_kind, incident_id
+            SELECT anomaly_id, detected_at, service, severity,
+                   score, contributing_features, kind, incident_id
             FROM anomalies
-            WHERE anomaly_id = $1
+            WHERE anomaly_id = :anomaly_id
         """
         
-        row = await self.db.fetchrow(query, anomaly_id)
+        row = await self.db.fetch_one(query, {"anomaly_id": anomaly_id})
         
         if not row:
             return None
@@ -193,11 +209,10 @@ class HealingEngine:
             anomaly_id=row["anomaly_id"],
             detected_at=row["detected_at"],
             service=row["service"],
-            metric_name=row["metric_name"],
             severity=row["severity"],
-            anomaly_score=row["anomaly_score"],
+            score=row["score"],
             contributing_features=row["contributing_features"] or [],
-            predicted_kind=row["predicted_kind"],
+            kind=row["kind"],
             incident_id=row["incident_id"],
         )
 
@@ -221,13 +236,13 @@ class HealingEngine:
             confidence = incident.hypotheses[0].confidence
         else:
             # For anomaly-only healing, use anomaly score as confidence proxy
-            confidence = min(1.0, anomaly.anomaly_score)
+            confidence = min(1.0, anomaly.score)
 
         # Create action record
         action = HealingAction(
             playbook=playbook,
             target_service=anomaly.service,
-            platform=settings.dpi.platform,
+            platform=settings.dpi_platform,
             incident_id=incident.incident_id if incident else None,
             anomaly_id=anomaly.anomaly_id,
             trigger_reason=self._build_trigger_reason(anomaly, incident),
@@ -265,12 +280,28 @@ class HealingEngine:
         # Execute playbook
         action.status = ActionStatus.RUNNING
         action.started_at = datetime.now(timezone.utc)
-        await self._persist_action(action)
+        
+        # Skip persisting RUNNING status to avoid async deadlock
+        # We'll persist once at the end with final status
+        
+        log.info(
+            "healing_engine.calling_playbook_executor",
+            action_id=action.action_id,
+            playbook=playbook,
+            service=anomaly.service,
+        )
 
         success, message = await self.playbook_executor.execute(
             playbook,
             anomaly.service,
             parameters,
+        )
+        
+        log.info(
+            "healing_engine.playbook_executor_returned",
+            action_id=action.action_id,
+            success=success,
+            message=message,
         )
 
         # Update action status
@@ -311,12 +342,14 @@ class HealingEngine:
             return f"Incident {incident.incident_id}: {primary.summary[:100]}"
         else:
             return (
-                f"Anomaly detected: {anomaly.predicted_kind} "
-                f"(score: {anomaly.anomaly_score:.2f})"
+                f"Anomaly detected: {anomaly.kind} "
+                f"(score: {anomaly.score:.2f})"
             )
 
     async def _persist_action(self, action: HealingAction) -> None:
         """Save action to healing_actions table."""
+        import json
+        
         query = f"""
             INSERT INTO {TABLE_ACTIONS} (
                 action_id, created_at, started_at, finished_at,
@@ -325,7 +358,11 @@ class HealingEngine:
                 status, dry_run, parameters, result_message,
                 before_snapshot, after_snapshot
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
+                :action_id, :created_at, :started_at, :finished_at,
+                :playbook, :target_service, :target_instance, :platform,
+                :incident_id, :anomaly_id, :trigger_reason, :confidence,
+                :status, :dry_run, :parameters::jsonb, :result_message,
+                :before_snapshot::jsonb, :after_snapshot::jsonb
             )
             ON CONFLICT (action_id) DO UPDATE SET
                 started_at = EXCLUDED.started_at,
@@ -337,24 +374,26 @@ class HealingEngine:
 
         await self.db.execute(
             query,
-            action.action_id,
-            action.created_at,
-            action.started_at,
-            action.finished_at,
-            action.playbook,
-            action.target_service,
-            action.target_instance,
-            action.platform,
-            action.incident_id,
-            action.anomaly_id,
-            action.trigger_reason,
-            action.confidence,
-            action.status,
-            action.dry_run,
-            action.parameters,
-            action.result_message,
-            action.before_snapshot,
-            action.after_snapshot,
+            {
+                "action_id": action.action_id,
+                "created_at": action.created_at,
+                "started_at": action.started_at,
+                "finished_at": action.finished_at,
+                "playbook": action.playbook,
+                "target_service": action.target_service,
+                "target_instance": action.target_instance,
+                "platform": action.platform,
+                "incident_id": action.incident_id,
+                "anomaly_id": action.anomaly_id,
+                "trigger_reason": action.trigger_reason,
+                "confidence": action.confidence,
+                "status": action.status,
+                "dry_run": action.dry_run,
+                "parameters": json.dumps(action.parameters),
+                "result_message": action.result_message,
+                "before_snapshot": json.dumps(action.before_snapshot),
+                "after_snapshot": json.dumps(action.after_snapshot),
+            },
         )
 
     async def _publish_action(self, action: HealingAction) -> None:
