@@ -32,7 +32,7 @@ from typing import Any, Self, cast
 import orjson
 import redis.asyncio as redis
 from pydantic import BaseModel
-from redis.exceptions import ResponseError, ConnectionError, TimeoutError
+from redis.exceptions import ConnectionError, ResponseError, TimeoutError
 
 from .config import RedisSettings, get_settings
 from .constants import Stream
@@ -147,11 +147,11 @@ class EventBus:
             "published_at": utc_now().isoformat(),
             "data": _dumps(data),
         }
-        
+
         # Retry logic with exponential backoff for transient failures
         max_retries = 3
         base_delay = 0.1
-        
+
         for attempt in range(max_retries):
             try:
                 message_id = await self.client.xadd(
@@ -160,15 +160,18 @@ class EventBus:
                     maxlen=maxlen or self._settings.stream_maxlen,
                     approximate=True,
                 )
-                
+
                 log.debug(
-                    "event.published", stream=str(stream), event_id=event_id, message_id=message_id
+                    "event.published",
+                    stream=str(stream),
+                    event_id=event_id,
+                    message_id=message_id,
                 )
                 return str(message_id)
-                
+
             except (ConnectionError, TimeoutError) as exc:
                 if attempt < max_retries - 1:
-                    delay = base_delay * (2 ** attempt)
+                    delay = base_delay * (2**attempt)
                     log.warning(
                         "event.publish_retry",
                         stream=str(stream),
@@ -181,12 +184,16 @@ class EventBus:
                     # Try to reconnect
                     try:
                         await self.ping()
-                    except Exception:
-                        pass
+                    except EventBusError:
+                        log.debug("bus.reconnect_ping_failed", stream=str(stream))
                 else:
-                    raise EventBusError("Failed to publish event after retries", stream=str(stream)) from exc
+                    raise EventBusError(
+                        "Failed to publish event after retries", stream=str(stream)
+                    ) from exc
             except Exception as exc:
                 raise EventBusError("Failed to publish event", stream=str(stream)) from exc
+
+        raise EventBusError("Failed to publish event after retries", stream=str(stream))
 
     # -- consuming ---------------------------------------------------------
     async def ensure_group(self, stream: Stream | str, group: str) -> None:
@@ -215,7 +222,7 @@ class EventBus:
         max_retries = 2
         base_delay = 0.1
         response = None
-        
+
         for attempt in range(max_retries):
             try:
                 response = await self.client.xreadgroup(
@@ -241,7 +248,7 @@ class EventBus:
                     raise EventBusError("Stream error", stream=str(stream)) from exc
             except (ConnectionError, TimeoutError) as exc:
                 if attempt < max_retries - 1:
-                    delay = base_delay * (2 ** attempt)
+                    delay = base_delay * (2**attempt)
                     log.warning(
                         "event.read_retry",
                         stream=str(stream),
@@ -254,10 +261,12 @@ class EventBus:
                     # Try to reconnect
                     try:
                         await self.ping()
-                    except Exception:
-                        pass
+                    except EventBusError:
+                        log.debug("bus.reconnect_ping_failed", stream=str(stream))
                 else:
-                    raise EventBusError("Failed to read stream after retries", stream=str(stream)) from exc
+                    raise EventBusError(
+                        "Failed to read stream after retries", stream=str(stream)
+                    ) from exc
             except Exception as exc:
                 raise EventBusError("Failed to read stream", stream=str(stream)) from exc
 

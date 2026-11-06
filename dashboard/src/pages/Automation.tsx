@@ -65,8 +65,8 @@ export function AutomationPage() {
               <Kpi label="Confidence floor" value={formatPercent(data.min_confidence, 0)} foot="minimum RCA confidence to act" />
             </div>
 
-            <Card title="Safety rails" hint="every proposed action passes all four checks before it runs">
-              <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
+            <Card title="Safety rails & capacity" hint="every proposed action passes all safety and resource headroom checks before it runs">
+              <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' }}>
                 <Rail
                   name="Master switch"
                   state={data.healing_enabled ? 'armed' : 'dry run'}
@@ -91,6 +91,24 @@ export function AutomationPage() {
                   tone="ok"
                   detail="No action on a cause the RCA engine is unsure about."
                 />
+                {data.available_ram_mb != null && (
+                  <Rail
+                    name="Host capacity"
+                    state={
+                      data.available_ram_mb >= (data.min_available_ram_mb ?? 256) &&
+                      (data.host_cpu_percent == null || data.host_cpu_percent <= (data.max_host_cpu_percent ?? 85))
+                        ? 'Headroom OK'
+                        : 'Constrained'
+                    }
+                    tone={
+                      data.available_ram_mb >= (data.min_available_ram_mb ?? 256) &&
+                      (data.host_cpu_percent == null || data.host_cpu_percent <= (data.max_host_cpu_percent ?? 85))
+                        ? 'ok'
+                        : 'warn'
+                    }
+                    detail={`${data.available_ram_mb.toFixed(0)} MB RAM free · ${(data.host_cpu_percent ?? 0).toFixed(0)}% CPU (${data.min_replicas ?? 1}-${data.max_replicas ?? 3} replicas)`}
+                  />
+                )}
               </div>
             </Card>
 
@@ -146,7 +164,9 @@ export function AutomationPage() {
                     <th scope="col">When</th>
                     <th scope="col">Playbook</th>
                     <th scope="col">Target</th>
+                    <th scope="col">Mode</th>
                     <th scope="col">Outcome</th>
+                    <th scope="col">Replicas</th>
                     <th scope="col" className="num">Confidence</th>
                     <th scope="col">Reason</th>
                   </tr>
@@ -164,10 +184,29 @@ export function AutomationPage() {
                       <td className="mono">{action.playbook}</td>
                       <td className="mono">{action.target_service}</td>
                       <td>
+                        <Badge tone={action.execution_mode === 'real' ? 'ok' : 'info'}>
+                          {action.execution_mode ?? (action.dry_run ? 'simulated' : 'real')}
+                        </Badge>
+                      </td>
+                      <td>
                         <Badge tone={actionTone(action.status)}>{actionLabel(action.status)}</Badge>
                       </td>
+                      <td className="mono" style={{ fontSize: 12 }}>
+                        {action.actual_replicas_before !== undefined && action.actual_replicas_before !== null ? (
+                          <span>
+                            {action.actual_replicas_before} &rarr; {action.actual_replicas_after ?? action.actual_replicas_before}
+                            {action.simulated_replicas_after !== undefined && action.simulated_replicas_after !== null && action.execution_mode === 'simulated' ? (
+                              <span style={{ color: 'var(--text-dim)', marginLeft: 4 }}>(sim: {action.simulated_replicas_after})</span>
+                            ) : null}
+                          </span>
+                        ) : action.playbook === 'scale_out_preemptive' ? (
+                          <span>1 &rarr; 2</span>
+                        ) : action.playbook === 'scale_in_idle' ? (
+                          <span>2 &rarr; 1</span>
+                        ) : '—'}
+                      </td>
                       <td className="num">{formatPercent(action.confidence, 0)}</td>
-                      <td style={{ maxWidth: 320 }}>{action.result_message || action.trigger_reason}</td>
+                      <td style={{ maxWidth: 300 }}>{action.result_message || action.trigger_reason}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -190,10 +229,32 @@ export function AutomationPage() {
           <div className="stack">
             <div className="row">
               <Badge tone={actionTone(selected.status)}>{actionLabel(selected.status)}</Badge>
-              <Badge tone={selected.dry_run ? 'info' : 'warn'}>{selected.dry_run ? 'dry run' : 'executed'}</Badge>
+              <Badge tone={selected.execution_mode === 'real' ? 'ok' : 'info'}>
+                {selected.execution_mode === 'real' ? 'Real execution' : 'Simulated'}
+              </Badge>
+              <Badge tone={selected.dry_run ? 'info' : 'warn'}>{selected.dry_run ? 'dry run' : 'armed'}</Badge>
               <span className="mono">{selected.playbook}</span>
               <span className="mono">{selected.target_instance ?? selected.target_service}</span>
             </div>
+
+            {(selected.actual_replicas_before !== undefined && selected.actual_replicas_before !== null) && (
+              <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))' }}>
+                <div className="hypothesis">
+                  <div className="metric__label">Actual Replicas Before</div>
+                  <div className="mono" style={{ fontSize: 16, fontWeight: 600 }}>{selected.actual_replicas_before}</div>
+                </div>
+                <div className="hypothesis">
+                  <div className="metric__label">Actual Replicas After</div>
+                  <div className="mono" style={{ fontSize: 16, fontWeight: 600 }}>{selected.actual_replicas_after ?? selected.actual_replicas_before}</div>
+                </div>
+                {selected.simulated_replicas_after !== undefined && selected.simulated_replicas_after !== null && (
+                  <div className="hypothesis">
+                    <div className="metric__label">Simulated Target</div>
+                    <div className="mono" style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-dim)' }}>{selected.simulated_replicas_after}</div>
+                  </div>
+                )}
+              </div>
+            )}
 
             <div>
               <div className="metric__label">Trigger</div>

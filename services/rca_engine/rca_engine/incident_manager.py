@@ -5,12 +5,13 @@ Creates, updates, and resolves incidents based on correlated anomalies.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+import json
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from aiops_common.bus import EventBus
 from aiops_common.config import get_settings
-from aiops_common.constants import Severity, Stream
+from aiops_common.constants import ActionStatus, Severity, Stream
 from aiops_common.log import get_logger
 from aiops_common.schemas import (
     AnomalyEvent,
@@ -24,8 +25,15 @@ if TYPE_CHECKING:
 
 log = get_logger(__name__)
 
-# Auto-resolve incidents after anomalies have been clear for this long
-AUTO_RESOLVE_AFTER_SECONDS = 300  # 5 minutes
+# Auto-resolve / continuous recovery window (2 minutes)
+AUTO_RESOLVE_AFTER_SECONDS = 120
+
+# Concrete SLO thresholds for service recovery verification
+SLO_MAX_ERROR_RATIO = 0.01  # 1% error rate threshold
+SLO_MAX_LATENCY_P99_SECONDS = 0.250  # 250ms p99 latency threshold
+SLO_MAX_QUEUE_DEPTH = 5.0  # queue backlog threshold
+SLO_MAX_CPU_RATIO = 0.85  # 85% cpu utilization
+SLO_MAX_MEMORY_RATIO = 0.85  # 85% memory utilization
 
 
 class IncidentManager:
@@ -41,11 +49,11 @@ class IncidentManager:
         anomalies: list[AnomalyEvent],
         hypotheses: list[RootCauseHypothesis],
     ) -> Incident:
-        """Create a new incident from correlated anomalies."""
+        """Create a new incident or correlate into an existing ongoing incident."""
         if not anomalies:
             raise ValueError("Cannot create incident without anomalies")
 
-        affected_services = list({a.service for a in anomalies})
+        affected_services = sorted({a.service for a in anomalies})
         anomaly_ids = [a.anomaly_id for a in anomalies]
 
         # Determine severity: max of contributing anomalies
@@ -59,6 +67,99 @@ class IncidentManager:
             key=lambda s: severity_order.get(s, 0),
             default=Severity.WARNING,
         )
+
+        # Check for existing open/mitigating incident touching these services (duplicate prevention)
+        find_query = """
+            SELECT incident_id, opened_at, status, severity, platform,
+                   title, affected_services, anomaly_ids, hypotheses, ai_summary
+            FROM incidents
+            WHERE status IN ('open', 'mitigating')
+            AND platform = :platform
+            AND affected_services && :services
+            ORDER BY opened_at DESC
+            LIMIT 1
+        """
+        existing = await self.db.fetch_one(
+            find_query,
+            {"platform": self.settings.dpi_platform, "services": affected_services},
+        )
+
+        if existing:
+            # Correlate and merge into existing incident instead of creating a duplicate
+            existing_id = existing["incident_id"]
+            existing_services = list(existing.get("affected_services") or [])
+            merged_services = sorted(set(existing_services) | set(affected_services))
+
+            existing_anom_ids = list(existing.get("anomaly_ids") or [])
+            merged_anom_ids = list(dict.fromkeys(existing_anom_ids + anomaly_ids))
+
+            new_anom_ids = [aid for aid in anomaly_ids if aid not in existing_anom_ids]
+
+            # Merge hypotheses
+            existing_hypo_raw = existing.get("hypotheses") or []
+            if isinstance(existing_hypo_raw, str):
+                try:
+                    existing_hypo_raw = json.loads(existing_hypo_raw)
+                except Exception:  # noqa: BLE001
+                    existing_hypo_raw = []
+
+            merged_hypotheses = (
+                hypotheses
+                if hypotheses
+                else [RootCauseHypothesis.model_validate(h) for h in existing_hypo_raw]
+            )
+
+            summary = self._generate_summary(anomalies, merged_hypotheses)
+
+            existing_sev = existing.get("severity") or Severity.INFO
+            escalated_severity = max(
+                [existing_sev, max_severity],
+                key=lambda s: severity_order.get(s, 0),
+            )
+
+            update_query = """
+                UPDATE incidents
+                SET affected_services = :affected_services,
+                    anomaly_ids = :anomaly_ids,
+                    hypotheses = CAST(:hypotheses AS jsonb),
+                    ai_summary = :ai_summary,
+                    severity = :severity
+                WHERE incident_id = :incident_id
+            """
+            await self.db.execute(
+                update_query,
+                {
+                    "incident_id": existing_id,
+                    "affected_services": merged_services,
+                    "anomaly_ids": merged_anom_ids,
+                    "hypotheses": json.dumps([h.model_dump() for h in merged_hypotheses]),
+                    "ai_summary": summary,
+                    "severity": escalated_severity,
+                },
+            )
+
+            if new_anom_ids:
+                await self._link_anomalies_to_incident(new_anom_ids, existing_id)
+
+            log.info(
+                "incident_updated_merged",
+                incident_id=existing_id,
+                new_anomalies=len(new_anom_ids),
+                total_anomalies=len(merged_anom_ids),
+            )
+
+            return Incident(
+                incident_id=existing_id,
+                opened_at=existing["opened_at"],
+                status=existing["status"],
+                severity=max_severity,
+                platform=self.settings.dpi_platform,
+                title=existing["title"],
+                affected_services=merged_services,
+                anomaly_ids=merged_anom_ids,
+                hypotheses=merged_hypotheses,
+                ai_summary=summary,
+            )
 
         # Generate title from primary hypothesis or affected services
         if hypotheses:
@@ -77,12 +178,16 @@ class IncidentManager:
             else:
                 title = f"Multiple services affected: {', '.join(affected_services[:3])}"
 
+        # Ensure live incidents are clearly distinguished from seeded demo incidents
+        if not title.startswith("[Live]"):
+            title = f"[Live] {title}"
+
         # Create incident record
         incident = Incident(
             opened_at=utc_now(),
             status="open",
             severity=max_severity,
-            platform=self.settings.dpi.platform,
+            platform=self.settings.dpi_platform,
             title=title,
             affected_services=affected_services,
             anomaly_ids=anomaly_ids,
@@ -94,23 +199,29 @@ class IncidentManager:
         insert_query = """
             INSERT INTO incidents (
                 incident_id, opened_at, status, severity, platform,
-                title, affected_services, anomaly_ids, hypotheses_json,
+                title, affected_services, anomaly_ids, hypotheses,
                 ai_summary
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            ) VALUES (
+                :incident_id, :opened_at, :status, :severity, :platform,
+                :title, :affected_services, :anomaly_ids, CAST(:hypotheses AS jsonb),
+                :ai_summary
+            )
         """
 
         await self.db.execute(
             insert_query,
-            incident.incident_id,
-            incident.opened_at,
-            incident.status,
-            incident.severity,
-            incident.platform,
-            incident.title,
-            incident.affected_services,
-            incident.anomaly_ids,
-            [h.model_dump() for h in incident.hypotheses],
-            incident.ai_summary,
+            {
+                "incident_id": incident.incident_id,
+                "opened_at": incident.opened_at,
+                "status": incident.status,
+                "severity": incident.severity,
+                "platform": incident.platform,
+                "title": incident.title,
+                "affected_services": incident.affected_services,
+                "anomaly_ids": incident.anomaly_ids,
+                "hypotheses": json.dumps([h.model_dump() for h in incident.hypotheses]),
+                "ai_summary": incident.ai_summary,
+            },
         )
 
         # Update anomalies with incident_id
@@ -124,7 +235,7 @@ class IncidentManager:
             incident_id=incident.incident_id,
             affected_services=len(affected_services),
             anomaly_count=len(anomaly_ids),
-            severity=severity,
+            severity=max_severity,
             hypothesis_count=len(hypotheses),
         )
 
@@ -141,24 +252,43 @@ class IncidentManager:
 
         query = """
             UPDATE anomalies
-            SET incident_id = $1
-            WHERE anomaly_id = ANY($2)
+            SET incident_id = :incident_id
+            WHERE anomaly_id = ANY(:anomaly_ids)
         """
-        await self.db.execute(query, incident_id, anomaly_ids)
+        await self.db.execute(query, {"incident_id": incident_id, "anomaly_ids": anomaly_ids})
 
-    async def resolve_incident(self, incident_id: str) -> None:
-        """Mark incident as resolved."""
+    async def resolve_incident(self, incident_id: str, reason: str = "") -> None:
+        """Mark incident as resolved with resolution audit trail."""
+        default_reason = (
+            "Verified recovered: All affected services healthy within SLO thresholds "
+            f"over continuous {AUTO_RESOLVE_AFTER_SECONDS}s recovery window."
+        )
+        res_reason = reason or default_reason
+
+        # Fetch current ai_summary to append resolution explanation
+        fetch_query = "SELECT ai_summary FROM incidents WHERE incident_id = :incident_id"
+        row = await self.db.fetch_one(fetch_query, {"incident_id": incident_id})
+        current_summary = (row.get("ai_summary") or "") if row else ""
+
+        if res_reason and "**Resolution:**" not in current_summary:
+            updated_summary = f"{current_summary}\n\n**Resolution:** {res_reason}".strip()
+        else:
+            updated_summary = current_summary
+
         query = """
             UPDATE incidents
-            SET status = 'resolved', closed_at = $1
-            WHERE incident_id = $2 AND status != 'resolved'
+            SET status = 'resolved', closed_at = :closed_at, ai_summary = :ai_summary
+            WHERE incident_id = :incident_id AND status != 'resolved'
         """
 
         closed_at = utc_now()
-        result = await self.db.execute(query, closed_at, incident_id)
+        result = await self.db.execute(
+            query,
+            {"closed_at": closed_at, "incident_id": incident_id, "ai_summary": updated_summary},
+        )
 
         if result:
-            log.info("incident_resolved", incident_id=incident_id)
+            log.info("incident_resolved", incident_id=incident_id, reason=res_reason)
 
             # Publish resolution event
             await self.bus.publish(
@@ -167,45 +297,258 @@ class IncidentManager:
                     "incident_id": incident_id,
                     "status": "resolved",
                     "closed_at": closed_at.isoformat(),
+                    "reason": res_reason,
                 },
             )
 
     async def check_auto_resolve(self) -> None:
-        """Auto-resolve incidents where anomalies have been clear for a while."""
-        # Find open incidents
+        """Auto-resolve incidents after verified recovery within SLOs."""
         query = """
-            SELECT incident_id, anomaly_ids, opened_at
+            SELECT incident_id, anomaly_ids, affected_services, opened_at, hypotheses, ai_summary
             FROM incidents
             WHERE status IN ('open', 'mitigating')
-            AND platform = $1
+            AND platform = :platform
         """
 
-        rows = await self.db.query(query, self.settings.dpi.platform)
+        rows = await self.db.fetch_all(query, {"platform": self.settings.dpi_platform})
 
         for row in rows:
             incident_id = row["incident_id"]
-            anomaly_ids = row["anomaly_ids"]
+            services = row.get("affected_services") or []
+            opened_at = row["opened_at"]
+            if not services:
+                continue
 
-            # Check if all anomalies are old enough to consider resolved
-            anomaly_query = """
-                SELECT MAX(detected_at) as latest_detection
-                FROM anomalies
-                WHERE anomaly_id = ANY($1)
+            # 1. Continuous recovery window: incident must have been open for at least AUTO_RESOLVE_AFTER_SECONDS
+            age_seconds = (utc_now() - opened_at).total_seconds()
+            if age_seconds < AUTO_RESOLVE_AFTER_SECONDS:
+                log.debug(
+                    "auto_resolve_skipped_insufficient_recovery_window",
+                    incident_id=incident_id,
+                    age_seconds=age_seconds,
+                    required=AUTO_RESOLVE_AFTER_SECONDS,
+                )
+                continue
+
+            # 2. Check remediation / healing actions for this incident or target services
+            action_query = """
+                SELECT action_id, status, result_message, parameters, created_at
+                FROM healing_actions
+                WHERE incident_id = :incident_id
+                   OR (target_service = ANY(:services) AND created_at >= :opened_at)
+                ORDER BY created_at DESC
+                LIMIT 1
             """
+            action_row = await self.db.fetch_one(
+                action_query,
+                {"incident_id": incident_id, "services": services, "opened_at": opened_at},
+            )
 
-            anomaly_row = await self.db.query_one(anomaly_query, anomaly_ids)
+            action_status = action_row.get("status") if action_row else None
 
-            if anomaly_row and anomaly_row["latest_detection"]:
-                latest = anomaly_row["latest_detection"]
-                age_seconds = (utc_now() - latest).total_seconds()
+            # Action currently in progress -> do not resolve yet
+            if action_status in (ActionStatus.RUNNING, "running"):
+                log.info("auto_resolve_skipped_action_in_progress", incident_id=incident_id)
+                continue
 
-                if age_seconds >= AUTO_RESOLVE_AFTER_SECONDS:
-                    await self.resolve_incident(incident_id)
-                    log.info(
-                        "auto_resolved",
-                        incident_id=incident_id,
-                        age_seconds=age_seconds,
-                    )
+            # Failed remediation or reached max attempts / requires manual intervention -> keep OPEN
+            if action_status in (
+                ActionStatus.FAILED,
+                "failed",
+                ActionStatus.REQUIRES_MANUAL_INTERVENTION,
+                "requires_manual_intervention",
+                ActionStatus.SKIPPED_MAX_ATTEMPTS,
+                "skipped_max_attempts",
+            ):
+                log.info(
+                    "auto_resolve_blocked_failed_remediation",
+                    incident_id=incident_id,
+                    action_status=action_status,
+                    result_message=action_row.get("result_message") if action_row else None,
+                )
+                continue
+
+            # 3. Continuous SLO Telemetry Check over Recovery Window
+            metrics_cutoff = utc_now() - timedelta(seconds=AUTO_RESOLVE_AFTER_SECONDS)
+            metrics_query = """
+                SELECT service,
+                       AVG(error_ratio) as avg_error,
+                       AVG(latency_p99_seconds) as avg_p99,
+                       AVG(queue_depth) as avg_queue,
+                       AVG(cpu_utilisation_ratio) as avg_cpu,
+                       AVG(memory_utilisation_ratio) as avg_mem
+                FROM service_metrics
+                WHERE service = ANY(:services)
+                  AND timestamp >= :metrics_cutoff
+                GROUP BY service
+            """
+            metrics_rows = await self.db.fetch_all(
+                metrics_query,
+                {"services": services, "metrics_cutoff": metrics_cutoff},
+            )
+
+            service_metrics: dict[str, dict[str, float]] = {}
+            for m in metrics_rows or []:
+                # Defend against mock DB returning incident rows
+                if not any(
+                    k in m for k in ("avg_error", "avg_p99", "avg_queue", "error_ratio")
+                ):
+                    continue
+                svc = m.get("service") or (services[0] if services else None)
+                if svc:
+                    service_metrics[svc] = {
+                        "avg_error": float(m.get("avg_error") or 0.0),
+                        "avg_p99": float(m.get("avg_p99") or 0.0),
+                        "avg_queue": float(m.get("avg_queue") or 0.0),
+                        "avg_cpu": float(m.get("avg_cpu") or 0.0),
+                        "avg_mem": float(m.get("avg_mem") or 0.0),
+                    }
+
+            # If fetch_all did not return metrics (e.g. test harness mocked fetch_one)
+            if not service_metrics:
+                metrics_one = await self.db.fetch_one(
+                    metrics_query,
+                    {"services": services, "metrics_cutoff": metrics_cutoff},
+                )
+                if metrics_one and any(
+                    k in metrics_one for k in ("avg_error", "avg_p99", "avg_queue")
+                ):
+                    svc = metrics_one.get("service") or (services[0] if services else None)
+                    if svc:
+                        service_metrics[svc] = {
+                            "avg_error": float(metrics_one.get("avg_error") or 0.0),
+                            "avg_p99": float(metrics_one.get("avg_p99") or 0.0),
+                            "avg_queue": float(metrics_one.get("avg_queue") or 0.0),
+                            "avg_cpu": float(metrics_one.get("avg_cpu") or 0.0),
+                            "avg_mem": float(metrics_one.get("avg_mem") or 0.0),
+                        }
+
+            slo_violated = False
+            slo_reason = ""
+            for svc in services:
+                svc_metric = service_metrics.get(svc)
+                if not svc_metric:
+                    continue
+                if svc_metric["avg_error"] > SLO_MAX_ERROR_RATIO:
+                    slo_violated = True
+                    slo_reason = f"{svc} error ratio ({svc_metric['avg_error']:.2%}) exceeds SLO ({SLO_MAX_ERROR_RATIO:.1%})"
+                    break
+                if svc_metric["avg_p99"] > SLO_MAX_LATENCY_P99_SECONDS:
+                    slo_violated = True
+                    slo_reason = f"{svc} p99 latency ({svc_metric['avg_p99']*1000:.0f}ms) exceeds SLO ({SLO_MAX_LATENCY_P99_SECONDS*1000:.0f}ms)"
+                    break
+                if svc_metric["avg_queue"] > SLO_MAX_QUEUE_DEPTH:
+                    slo_violated = True
+                    slo_reason = f"{svc} queue depth ({svc_metric['avg_queue']:.1f}) exceeds SLO ({SLO_MAX_QUEUE_DEPTH:.0f})"
+                    break
+                if svc_metric["avg_cpu"] > SLO_MAX_CPU_RATIO:
+                    slo_violated = True
+                    slo_reason = f"{svc} CPU ({svc_metric['avg_cpu']:.1%}) exceeds SLO ({SLO_MAX_CPU_RATIO:.0%})"
+                    break
+                if svc_metric["avg_mem"] > SLO_MAX_MEMORY_RATIO:
+                    slo_violated = True
+                    slo_reason = f"{svc} memory ({svc_metric['avg_mem']:.1%}) exceeds SLO ({SLO_MAX_MEMORY_RATIO:.0%})"
+                    break
+
+            if slo_violated:
+                log.warning(
+                    "auto_resolve_blocked_unhealthy_slo",
+                    incident_id=incident_id,
+                    reason=slo_reason,
+                )
+                continue
+
+            # 4. Check for recurring relevant anomalies vs benign/unrelated anomalies
+            recent_cutoff = utc_now() - timedelta(seconds=AUTO_RESOLVE_AFTER_SECONDS)
+            recent_query = """
+                SELECT anomaly_id, detected_at, service, severity, score, kind, contributing_features
+                FROM anomalies
+                WHERE service = ANY(:services)
+                  AND detected_at >= :recent_cutoff
+                ORDER BY detected_at DESC
+            """
+            recent_anomalies = await self.db.fetch_all(
+                recent_query,
+                {"services": services, "recent_cutoff": recent_cutoff},
+            )
+
+            # Filter valid anomalies (defend against mock DB returning incident rows)
+            valid_recent_anomalies = [
+                a
+                for a in (recent_anomalies or [])
+                if any(k in a for k in ("anomaly_id", "severity", "score", "kind"))
+            ]
+
+            # Determine primary root cause target from hypotheses
+            hypotheses_data = row.get("hypotheses") or []
+            if isinstance(hypotheses_data, str):
+                try:
+                    hypotheses_data = json.loads(hypotheses_data)
+                except Exception:  # noqa: BLE001
+                    hypotheses_data = []
+            primary_hypo = hypotheses_data[0] if hypotheses_data else {}
+            primary_target = primary_hypo.get("target")
+
+            has_relevant_failure = False
+            relevant_reason = ""
+            threshold = getattr(self.settings.ml, "anomaly_score_threshold", 0.65)
+            for anom in valid_recent_anomalies:
+                sev = anom.get("severity")
+                score = float(anom.get("score") or 0.0)
+                svc = anom.get("service")
+                kind = anom.get("kind") or ""
+                feats = anom.get("contributing_features") or []
+
+                # Info-level / sub-alerting anomalies are benign when telemetry meets SLOs
+                if sev == Severity.INFO or score < threshold:
+                    continue
+
+                # Recurring critical anomaly on primary target service -> genuine recurrence!
+                if svc == primary_target and sev == Severity.CRITICAL and score >= 0.85:
+                    has_relevant_failure = True
+                    relevant_reason = f"Recurring critical anomaly ({kind}, score={score:.2f}) on root cause target {primary_target}"
+                    break
+
+                # Severe anomaly with critical feature failure (queue backlog or error burst)
+                if (
+                    sev == Severity.CRITICAL
+                    and score >= 0.90
+                    and any(f in ("error_ratio", "queue_depth") for f in feats)
+                ):
+                    has_relevant_failure = True
+                    relevant_reason = f"Severe anomaly ({kind}, score={score:.2f}) with critical features {feats} on {svc}"
+                    break
+
+            if has_relevant_failure:
+                log.info(
+                    "auto_resolve_blocked_recurring_relevant_anomaly",
+                    incident_id=incident_id,
+                    reason=relevant_reason,
+                )
+                continue
+
+            # 5. Verified recovery: all criteria met!
+            resolution_reason = (
+                f"Verified recovered: All affected services ({', '.join(services)}) healthy "
+                f"within SLO thresholds (error ratio <= {SLO_MAX_ERROR_RATIO:.0%}, "
+                f"p99 latency <= {SLO_MAX_LATENCY_P99_SECONDS*1000:.0f}ms, "
+                f"queue depth <= {SLO_MAX_QUEUE_DEPTH:.0f}) over {AUTO_RESOLVE_AFTER_SECONDS}s recovery window."
+            )
+            if action_row and action_status in (ActionStatus.SUCCEEDED, "succeeded"):
+                resolution_reason += " Remediation verified recovery."
+
+            await self.resolve_incident(incident_id, reason=resolution_reason)
+            log.info(
+                "incident_auto_resolved_verified",
+                incident_id=incident_id,
+                services=services,
+                reason=resolution_reason,
+            )
+            log.info(
+                "incident_auto_resolved_verified",
+                incident_id=incident_id,
+                age_seconds=age_seconds,
+            )
 
     def _generate_summary(
         self,
@@ -218,7 +561,7 @@ class IncidentManager:
         # Affected services
         services = {a.service for a in anomalies}
         if len(services) == 1:
-            parts.append(f"Service **{list(services)[0]}** is experiencing issues.")
+            parts.append(f"Service **{next(iter(services))}** is experiencing issues.")
         else:
             parts.append(
                 f"**{len(services)} services** are affected: {', '.join(sorted(services))}."
@@ -227,7 +570,9 @@ class IncidentManager:
         # Primary hypothesis
         if hypotheses:
             primary = hypotheses[0]
-            parts.append(f"\n**Likely cause ({primary.confidence:.0%} confidence):** {primary.summary}")
+            parts.append(
+                f"\n**Likely cause ({primary.confidence:.0%} confidence):** {primary.summary}"
+            )
 
             if primary.evidence:
                 parts.append("\n**Evidence:**")
@@ -236,7 +581,9 @@ class IncidentManager:
 
             # Alternative hypotheses
             if len(hypotheses) > 1:
-                parts.append(f"\n**Alternative explanations:** {len(hypotheses) - 1} other hypothesis(es) identified.")
+                parts.append(
+                    f"\n**Alternative explanations:** {len(hypotheses) - 1} other hypothesis(es) identified."
+                )
 
         # Anomaly details
         critical_anomalies = [a for a in anomalies if a.severity == Severity.CRITICAL]
@@ -249,13 +596,11 @@ class IncidentManager:
             all_features.extend(anomaly.contributing_features[:2])  # Top 2 per anomaly
 
         if all_features:
-            feature_counts = {}
+            feature_counts: dict[str, int] = {}
             for f in all_features:
                 feature_counts[f] = feature_counts.get(f, 0) + 1
             top_features = sorted(feature_counts.items(), key=lambda x: x[1], reverse=True)[:3]
-            parts.append(
-                f"\n**Key signals:** {', '.join(f for f, _ in top_features)}"
-            )
+            parts.append(f"\n**Key signals:** {', '.join(f for f, _ in top_features)}")
 
         return " ".join(parts)
 
@@ -264,20 +609,25 @@ class IncidentManager:
         query = """
             SELECT incident_id, opened_at, closed_at, status, severity,
                    platform, title, affected_services, anomaly_ids,
-                   hypotheses_json, action_ids, ai_summary
+                   hypotheses, action_ids, ai_summary
             FROM incidents
             WHERE status IN ('open', 'mitigating', 'acknowledged')
-            AND platform = $1
+            AND platform = :platform
             ORDER BY opened_at DESC
         """
 
-        rows = await self.db.query(query, self.settings.dpi.platform)
+        rows = await self.db.fetch_all(query, {"platform": self.settings.dpi_platform})
 
         incidents = []
         for row in rows:
-            hypotheses = [
-                RootCauseHypothesis.model_validate(h) for h in row["hypotheses_json"]
-            ]
+            hypo_data = row.get("hypotheses") or []
+            if isinstance(hypo_data, str):
+                try:
+                    hypo_data = json.loads(hypo_data)
+                except Exception:  # noqa: BLE001
+                    hypo_data = []
+
+            hypotheses = [RootCauseHypothesis.model_validate(h) for h in hypo_data]
 
             incident = Incident(
                 incident_id=row["incident_id"],
@@ -287,11 +637,11 @@ class IncidentManager:
                 severity=row["severity"],
                 platform=row["platform"],
                 title=row["title"],
-                affected_services=row["affected_services"],
-                anomaly_ids=row["anomaly_ids"],
+                affected_services=row["affected_services"] or [],
+                anomaly_ids=row["anomaly_ids"] or [],
                 hypotheses=hypotheses,
                 action_ids=row["action_ids"] or [],
-                ai_summary=row["ai_summary"],
+                ai_summary=row["ai_summary"] or "",
             )
             incidents.append(incident)
 

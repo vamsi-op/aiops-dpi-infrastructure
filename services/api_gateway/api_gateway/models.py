@@ -176,6 +176,10 @@ class HealingAction(ViewModel):
     confidence: float = 0.0
     status: str = "proposed"
     dry_run: bool = True
+    execution_mode: str = "simulated"
+    actual_replicas_before: int | None = None
+    actual_replicas_after: int | None = None
+    simulated_replicas_after: int | None = None
     parameters: dict[str, Any] = Field(default_factory=dict)
     result_message: str = ""
     before_snapshot: dict[str, float] = Field(default_factory=dict)
@@ -275,5 +279,13 @@ class AutomationSummary(ViewModel):
     max_actions_per_hour: int
     cooldown_seconds: int
     min_confidence: float
+    min_replicas: int = 1
+    max_replicas: int = 3
+    replica_memory_limit_mb: float = 256.0
+    replica_cpu_limit: float = 0.40
+    min_available_ram_mb: float = 256.0
+    max_host_cpu_percent: float = 85.0
+    available_ram_mb: float | None = None
+    host_cpu_percent: float | None = None
     counts_by_status: dict[str, int] = Field(default_factory=dict)
     recent: list[HealingAction] = Field(default_factory=list)

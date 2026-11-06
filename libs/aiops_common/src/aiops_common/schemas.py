@@ -297,6 +297,12 @@ class HealingAction(AiopsModel):
 
     status: ActionStatus = ActionStatus.PROPOSED
     dry_run: bool = True
+    execution_mode: str = "simulated"
+    attempt_number: int = Field(default=1, ge=1)
+    requires_manual_intervention: bool = Field(default=False)
+    actual_replicas_before: int | None = None
+    actual_replicas_after: int | None = None
+    simulated_replicas_after: int | None = None
     parameters: dict[str, Any] = Field(default_factory=dict)
     result_message: str = ""
     # Metric snapshots either side of the action, to prove it worked.

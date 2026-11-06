@@ -27,10 +27,8 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
-import time
 import urllib.error
 import urllib.request
-from datetime import UTC, datetime
 from typing import Any
 
 from aiops_common.constants import TABLE_ACTIONS
@@ -95,7 +93,7 @@ def check_healing_engine_up() -> dict[str, Any]:
     except OSError as exc:
         fail(f"Healing engine unreachable at {HEALING_ENGINE} ({exc}) - is -Layer all running?")
         return {}
-    
+
     ok(f"Healing engine up, enabled: {root.get('enabled')}")
 
     try:
@@ -103,7 +101,7 @@ def check_healing_engine_up() -> dict[str, Any]:
     except urllib.error.HTTPError as exc:
         fail(f"/ready returned {exc.code}: {exc.read().decode()[:200]}")
         return {}
-    
+
     for name, state in (ready.get("dependencies") or {}).items():
         if state == "ok":
             ok(f"dependency {name}")
@@ -118,10 +116,12 @@ def check_healing_engine_up() -> dict[str, Any]:
     ok(f"Healing engine running, handled anomalies: {status.get('handled_anomalies')}")
 
     config = get_json(f"{HEALING_ENGINE}/config")
-    ok(f"Config: enabled={config.get('enabled')}, "
-       f"max_actions/hr={config.get('max_actions_per_hour')}, "
-       f"cooldown={config.get('cooldown_seconds')}s, "
-       f"min_confidence={config.get('min_confidence')}")
+    ok(
+        f"Config: enabled={config.get('enabled')}, "
+        f"max_actions/hr={config.get('max_actions_per_hour')}, "
+        f"cooldown={config.get('cooldown_seconds')}s, "
+        f"min_confidence={config.get('min_confidence')}"
+    )
 
     return status
 
@@ -137,8 +137,10 @@ async def check_dry_run_mode() -> None:
     try:
         config = get_json(f"{HEALING_ENGINE}/config")
         if config.get("enabled"):
-            warn("HEALING_ENABLED=true - cannot test dry-run mode. "
-                 "Set HEALING_ENABLED=false in .env and restart.")
+            warn(
+                "HEALING_ENABLED=true - cannot test dry-run mode. "
+                "Set HEALING_ENABLED=false in .env and restart."
+            )
             return
 
         # Clear faults
@@ -154,14 +156,17 @@ async def check_dry_run_mode() -> None:
         )
 
         # Inject memory pressure fault
-        print(f"  Injecting memory_hog into central-ledger")
-        post_json(f"http://localhost:{SIM_PORTS['central-ledger']}/faults", {
-            "fault_type": "memory_hog",
-            "magnitude": 0.8,
-        })
+        print("  Injecting memory_hog into central-ledger")
+        post_json(
+            f"http://localhost:{SIM_PORTS['central-ledger']}/faults",
+            {
+                "fault_type": "memory_hog",
+                "magnitude": 0.8,
+            },
+        )
 
         # Wait for detection and healing attempt
-        print(f"  Waiting 60s for detection and healing...")
+        print("  Waiting 60s for detection and healing...")
         await asyncio.sleep(60)
 
         # Check for dry-run action
@@ -170,8 +175,10 @@ async def check_dry_run_mode() -> None:
         )
 
         if new_count > initial_count:
-            ok(f"Action recorded as skipped_dry_run ({new_count - initial_count} new action(s))")
-            
+            ok(
+                f"Action recorded as skipped_dry_run ({new_count - initial_count} new action(s))"
+            )
+
             # Get latest action
             action = await db.fetchrow(f"""
                 SELECT action_id, playbook, target_service, result_message
@@ -180,7 +187,7 @@ async def check_dry_run_mode() -> None:
                 ORDER BY created_at DESC
                 LIMIT 1
             """)
-            
+
             if action:
                 ok(f"Action details: {action['playbook']} on {action['target_service']}")
                 if "dry-run" in action["result_message"].lower():
@@ -219,7 +226,7 @@ async def check_safety_rails() -> None:
                 f"SELECT COUNT(*) FROM {TABLE_ACTIONS} WHERE status = $1",
                 status,
             )
-            
+
             if count > 0:
                 ok(f"Found {count} action(s) with status '{status}'")
             else:
@@ -250,8 +257,10 @@ async def check_idempotency() -> None:
 
         if duplicates:
             for row in duplicates:
-                warn(f"Service {row['target_service']} has {row['action_count']} actions in 5 minutes - "
-                     "may indicate duplicate handling")
+                warn(
+                    f"Service {row['target_service']} has {row['action_count']} actions in 5 minutes - "
+                    "may indicate duplicate handling"
+                )
         else:
             ok("No duplicate actions detected (idempotency verified)")
 
@@ -279,7 +288,9 @@ async def check_action_persistence() -> None:
         """)
 
         if stats["total"] == 0:
-            warn("No actions found in database - engine may not have processed any anomalies yet")
+            warn(
+                "No actions found in database - engine may not have processed any anomalies yet"
+            )
         else:
             ok(f"Total actions persisted: {stats['total']}")
             ok(f"  Succeeded: {stats['succeeded']}")
@@ -309,6 +320,7 @@ def main() -> int:
     except Exception as exc:
         fail(f"Check failed with exception: {exc}")
         import traceback
+
         traceback.print_exc()
 
     # Summary

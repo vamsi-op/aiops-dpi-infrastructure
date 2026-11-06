@@ -98,7 +98,6 @@ services:
   # ---------------------------------------------------------------------------
   ml-api-adapter:
     <<: *sim-common
-    container_name: ml-api-adapter
     environment:
       <<: *sim-env
       SIM_SERVICE: ml-api-adapter
@@ -109,7 +108,6 @@ services:
 
   central-ledger:
     <<: *sim-common
-    container_name: central-ledger
     environment:
       <<: *sim-env
       SIM_SERVICE: central-ledger
@@ -120,7 +118,6 @@ services:
 
   quoting-service:
     <<: *sim-common
-    container_name: quoting-service
     environment:
       <<: *sim-env
       SIM_SERVICE: quoting-service
@@ -131,7 +128,6 @@ services:
 
   account-lookup-service:
     <<: *sim-common
-    container_name: account-lookup-service
     environment:
       <<: *sim-env
       SIM_SERVICE: account-lookup-service
@@ -142,7 +138,6 @@ services:
 
   transaction-request-service:
     <<: *sim-common
-    container_name: transaction-request-service
     environment:
       <<: *sim-env
       SIM_SERVICE: transaction-request-service

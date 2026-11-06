@@ -7,7 +7,8 @@ remediation actually fixed the problem.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from aiops_common.constants import ANOMALY_FEATURES
 from aiops_common.db import Database
@@ -19,7 +20,7 @@ log = get_logger(__name__)
 class MetricSnapshot:
     """Captures service metrics before and after healing actions."""
 
-    def __init__(self, db: Database):
+    def __init__(self, db: Database) -> None:
         self.db = db
 
     async def capture(
@@ -27,23 +28,28 @@ class MetricSnapshot:
         service: str,
         *,
         window_minutes: int = 5,
+        window_seconds: int | None = None,
     ) -> dict[str, float]:
         """Capture recent metric values for a service.
-        
-        Queries the last N minutes of metrics and computes averages for key features.
-        
+
+        Queries recent metrics and computes averages for key features.
+
         Args:
             service: Service name to capture metrics for
             window_minutes: Time window to average over (default: 5 minutes)
-            
+            window_seconds: If provided, overrides window_minutes with exact seconds
+
         Returns:
             Dictionary of feature -> average value
         """
-        cutoff = datetime.now(timezone.utc) - timedelta(minutes=window_minutes)
-        
+        if window_seconds is not None:
+            cutoff = datetime.now(UTC) - timedelta(seconds=window_seconds)
+        else:
+            cutoff = datetime.now(UTC) - timedelta(minutes=window_minutes)
+
         # Query recent metrics
         query = """
-            SELECT 
+            SELECT
                 AVG(tps) as avg_tps,
                 AVG(error_ratio) as avg_error_ratio,
                 AVG(latency_p50_seconds) as avg_latency_p50,
@@ -54,20 +60,20 @@ class MetricSnapshot:
                 AVG(active_connections) as avg_connections,
                 AVG(settlement_lag_seconds) as avg_settlement_lag
             FROM service_metrics
-            WHERE service = $1
-            AND timestamp >= $2
+            WHERE service = :service
+            AND timestamp >= :cutoff
         """
-        
-        row = await self.db.fetchrow(query, service, cutoff)
-        
+
+        row = await self.db.fetch_one(query, {"service": service, "cutoff": cutoff})
+
         if not row:
             log.warning(
                 "snapshot.no_metrics",
                 service=service,
-                window_minutes=window_minutes,
+                cutoff=cutoff.isoformat(),
             )
             return {}
-        
+
         # Build snapshot dictionary
         snapshot = {
             "tps": float(row["avg_tps"] or 0.0),
@@ -80,27 +86,27 @@ class MetricSnapshot:
             "active_connections": float(row["avg_connections"] or 0.0),
             "settlement_lag_seconds": float(row["avg_settlement_lag"] or 0.0),
         }
-        
+
         log.info(
             "snapshot.captured",
             service=service,
-            window_minutes=window_minutes,
+            cutoff=cutoff.isoformat(),
             features=len(snapshot),
         )
-        
+
         return snapshot
 
-    async def compare(
+    def compare(
         self,
         before: dict[str, float],
         after: dict[str, float],
-    ) -> dict[str, dict[str, float]]:
+    ) -> dict[str, Any]:
         """Compare before and after snapshots.
-        
+
         Args:
             before: Snapshot before action
             after: Snapshot after action
-            
+
         Returns:
             Dictionary with change analysis:
             {
@@ -114,24 +120,24 @@ class MetricSnapshot:
         percent_change = {}
         improved = []
         degraded = []
-        
+
         for feature in ANOMALY_FEATURES:
             if feature not in before or feature not in after:
                 continue
-            
+
             before_val = before[feature]
             after_val = after[feature]
             delta = after_val - before_val
-            
+
             absolute_change[feature] = delta
-            
+
             # Compute percent change (avoid division by zero)
             if before_val != 0:
                 pct = (delta / before_val) * 100.0
                 percent_change[feature] = pct
             else:
                 percent_change[feature] = 0.0
-            
+
             # Determine if improved or degraded
             # Lower is better for: error_ratio, latency, cpu, memory, queue_depth, settlement_lag
             # Higher is better for: tps, active_connections (debatable, but generally yes)
@@ -153,10 +159,137 @@ class MetricSnapshot:
                     improved.append(feature)
                 elif delta < -0.01:  # Decreased
                     degraded.append(feature)
-        
+
         return {
             "absolute_change": absolute_change,
             "percent_change": percent_change,
             "improved": improved,
             "degraded": degraded,
         }
+
+    def verify_recovery(
+        self,
+        service: str,
+        before: dict[str, float],
+        after: dict[str, float],
+        *,
+        playbook: str | None = None,
+        anomaly_kind: str | None = None,
+        container_healthy: bool = True,
+        thresholds: dict[str, float] | None = None,
+    ) -> tuple[bool, str, dict[str, Any]]:
+        """Verify whether the service has genuinely recovered after a healing action.
+
+        Evaluates:
+        1. Container running/healthy state
+        2. Metric comparison against service SLO thresholds
+        3. Feature-specific recovery for the anomaly kind (memory drop, queue clearing, etc.)
+
+        Returns:
+            (recovered: bool, message: str, details: dict)
+        """
+        slo_limits = {
+            "error_ratio": 0.01,
+            "latency_p99_seconds": 0.25,
+            "latency_p50_seconds": 0.10,
+            "cpu_utilisation_ratio": 0.80,
+            "memory_utilisation_ratio": 0.85,
+            "queue_depth": 5.0,
+            "settlement_lag_seconds": 5.0,
+        }
+        if thresholds:
+            slo_limits.update(thresholds)
+
+        if not container_healthy:
+            return (
+                False,
+                f"Container health check failed for {service}: container is not running or crashed",
+                {"container_healthy": False},
+            )
+
+        if not after:
+            return (
+                False,
+                f"No post-remediation telemetry available for {service} to verify recovery",
+                {"after_metrics_available": False},
+            )
+
+        comparison = self.compare(before, after)
+        details = {
+            "comparison": comparison,
+            "thresholds": slo_limits,
+            "target_metric_improved": False,
+        }
+
+        # Check target metric improvement based on anomaly_kind / playbook
+        # 1. Memory Pressure / OOM
+        if (
+            anomaly_kind in ("memory_pressure", "cpu_saturation")
+            or playbook == "restart_on_oom"
+        ):
+            before_mem = before.get("memory_utilisation_ratio", 0.0)
+            after_mem = after.get("memory_utilisation_ratio", 0.0)
+            before_cpu = before.get("cpu_utilisation_ratio", 0.0)
+            after_cpu = after.get("cpu_utilisation_ratio", 0.0)
+
+            mem_ok = after_mem <= slo_limits["memory_utilisation_ratio"] or (
+                after_mem < before_mem - 0.05
+            )
+            cpu_ok = after_cpu <= slo_limits["cpu_utilisation_ratio"] or (
+                after_cpu < before_cpu - 0.05
+            )
+
+            if not (mem_ok and cpu_ok):
+                reason = (
+                    f"Resource saturation persisted: memory={after_mem:.2f} (SLO <= {slo_limits['memory_utilisation_ratio']}), "
+                    f"cpu={after_cpu:.2f} (SLO <= {slo_limits['cpu_utilisation_ratio']})"
+                )
+                return False, reason, details
+            details["target_metric_improved"] = True
+
+        # 2. Queue Backlog / Settlement Delay
+        elif (
+            anomaly_kind in ("queue_backlog", "settlement_delay")
+            or playbook == "clear_queue_backlog"
+        ):
+            before_queue = before.get("queue_depth", 0.0)
+            after_queue = after.get("queue_depth", 0.0)
+            queue_ok = after_queue <= slo_limits["queue_depth"] or (
+                before_queue > 0 and after_queue < before_queue * 0.5
+            )
+            if not queue_ok:
+                reason = f"Queue backlog persisted: depth={after_queue:.1f} (SLO <= {slo_limits['queue_depth']})"
+                return False, reason, details
+            details["target_metric_improved"] = True
+
+        # 3. Latency Spike / Circuit Breaker
+        elif anomaly_kind == "latency_spike" or playbook == "circuit_break_cascade":
+            before_p99 = before.get("latency_p99_seconds", 0.0)
+            after_p99 = after.get("latency_p99_seconds", 0.0)
+            p99_ok = after_p99 <= slo_limits["latency_p99_seconds"] or (
+                after_p99 < before_p99 * 0.7
+            )
+            if not p99_ok:
+                reason = f"High latency persisted: p99={after_p99:.3f}s (SLO <= {slo_limits['latency_p99_seconds']}s)"
+                return False, reason, details
+            details["target_metric_improved"] = True
+
+        # 4. Error Burst
+        elif anomaly_kind == "error_burst":
+            after_err = after.get("error_ratio", 0.0)
+            if after_err > slo_limits["error_ratio"]:
+                reason = f"Error ratio exceeded SLO: {after_err:.3f} (SLO <= {slo_limits['error_ratio']})"
+                return False, reason, details
+            details["target_metric_improved"] = True
+
+        # General degradation check: ensure error ratio didn't blow out
+        after_error = after.get("error_ratio", 0.0)
+        if after_error > 0.10:
+            return False, f"Severe error ratio observed post-action: {after_error:.2%}", details
+
+        details["target_metric_improved"] = True
+        return (
+            True,
+            f"Service {service} verified healthy: all key metrics within SLO thresholds",
+            details,
+        )

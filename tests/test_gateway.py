@@ -202,3 +202,36 @@ def test_clean_chaos_timings_none_when_undetected() -> None:
     assert cleaned["time_to_detect_seconds"] is None
     assert cleaned["time_to_remediate_seconds"] is None
     assert cleaned["parameters"] == {}
+
+
+def test_chaos_start_request_model() -> None:
+    from api_gateway.routes import DEFAULT_CHAOS_TARGETS, StartChaosRequest
+
+    req = StartChaosRequest(experiment="cpu_hog")
+    assert req.experiment == "cpu_hog"
+    assert req.duration_seconds == 60
+    assert DEFAULT_CHAOS_TARGETS["cpu_hog"] == "account-lookup-service"
+    assert DEFAULT_CHAOS_TARGETS["kill_service"] == "central-ledger"
+    assert DEFAULT_CHAOS_TARGETS["network_latency"] == "ml-api-adapter"
+    assert DEFAULT_CHAOS_TARGETS["error_injection"] == "central-ledger"
+    assert DEFAULT_CHAOS_TARGETS["bad_deploy"] == "quoting-service"
+
+
+@pytest.mark.asyncio
+async def test_inject_simulator_fault_mock() -> None:
+    from unittest.mock import AsyncMock, patch
+
+    from api_gateway.routes import _inject_simulator_fault
+
+    mock_resp = AsyncMock()
+    mock_resp.status_code = 200
+
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
+        mock_post.return_value = mock_resp
+        success = await _inject_simulator_fault(
+            target_service="account-lookup-service",
+            experiment="cpu_hog",
+            duration_seconds=30,
+        )
+        assert success is True
+        mock_post.assert_awaited()

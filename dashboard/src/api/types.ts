@@ -157,6 +157,10 @@ export interface HealingAction {
   confidence: number;
   status: string;
   dry_run: boolean;
+  execution_mode?: 'real' | 'simulated';
+  actual_replicas_before?: number | null;
+  actual_replicas_after?: number | null;
+  simulated_replicas_after?: number | null;
   parameters: Record<string, unknown>;
   result_message: string;
   before_snapshot: Record<string, number>;
@@ -256,6 +260,14 @@ export interface AutomationSummary {
   max_actions_per_hour: number;
   cooldown_seconds: number;
   min_confidence: number;
+  min_replicas?: number;
+  max_replicas?: number;
+  replica_memory_limit_mb?: number;
+  replica_cpu_limit?: number;
+  min_available_ram_mb?: number;
+  max_host_cpu_percent?: number;
+  available_ram_mb?: number | null;
+  host_cpu_percent?: number | null;
   counts_by_status: Record<string, number>;
   recent: HealingAction[];
 }

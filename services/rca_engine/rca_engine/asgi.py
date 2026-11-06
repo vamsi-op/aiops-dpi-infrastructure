@@ -101,7 +101,7 @@ configure_tracing(SERVICE_NAME, app=app)
 async def root() -> dict[str, Any]:
     return {
         "service": SERVICE_NAME,
-        "platform": settings.dpi.platform,
+        "platform": settings.dpi_platform,
         "correlation_methods": ["temporal", "topological", "change", "event"],
         "endpoints": {
             "status": "/status",

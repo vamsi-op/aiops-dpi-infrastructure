@@ -60,14 +60,22 @@ ignore = [
 "scripts/check_anomaly_detector.py" = ["S608"]
 "services/traffic_predictor/traffic_predictor/predictor.py" = ["S608"]
 "scripts/check_traffic_predictor.py" = ["S608"]
+"services/healing_engine/healing_engine/engine.py" = ["S608"]
+"scripts/check_healing_engine.py" = ["S608", "BLE", "S110", "B007"]
+"scripts/check_rca_engine.py" = ["S608", "BLE", "S110", "B007"]
+"scripts/demo_quick_healing.py" = ["S310", "BLE"]
+"scripts/demo_scale_proof.py" = ["E402", "S603", "S607"]
+"scripts/execute_all_playbooks.py" = ["S608", "BLE"]
 
 [tool.ruff.lint.isort]
 known-first-party = [
     "aiops_common",
     "anomaly_detector",
     "api_gateway",
+    "healing_engine",
     "metrics_agent",
     "mojaloop_sim",
+    "rca_engine",
     "traffic_predictor",
 ]
 
@@ -93,7 +101,7 @@ disallow_untyped_defs = false
 
 [[tool.mypy.overrides]]
 # Third-party packages without bundled type hints.
-module = ["sklearn.*", "statsmodels.*", "docker.*", "kubernetes.*", "joblib.*"]
+module = ["sklearn.*", "statsmodels.*", "docker.*", "kubernetes.*", "joblib.*", "psutil.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
@@ -116,10 +124,13 @@ testpaths = ["tests", "libs", "services"]
 # on the path here. Doing it once centrally beats a sys.path hack repeated in every test
 # module, which is what this replaced.
 pythonpath = [
+    "libs/aiops_common/src",
     "services/anomaly_detector",
     "services/api_gateway",
+    "services/healing_engine",
     "services/metrics_agent",
     "services/mojaloop_sim",
+    "services/rca_engine",
     "services/traffic_predictor",
 ]
 python_files = ["test_*.py"]

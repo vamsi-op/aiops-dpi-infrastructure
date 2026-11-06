@@ -10,12 +10,14 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
+import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
+from pydantic import BaseModel, Field
 
 from aiops_common.config import get_settings
 from aiops_common.constants import MOJALOOP_DEPENDENCIES, MOJALOOP_SERVICES
 from aiops_common.log import get_logger
-from aiops_common.schemas import utc_now
+from aiops_common.schemas import new_id, utc_now
 
 from . import health_rules
 from .health_rules import DEFAULT_THRESHOLDS
@@ -343,6 +345,17 @@ async def automation(
 ) -> AutomationSummary:
     repo = _repo(request)
     healing = get_settings().healing
+
+    try:
+        import psutil
+
+        vm = psutil.virtual_memory()
+        avail_ram = round(vm.available / (1024 * 1024), 2)
+        host_cpu = psutil.cpu_percent(interval=None)
+    except Exception:  # noqa: BLE001
+        avail_ram = None
+        host_cpu = None
+
     return AutomationSummary(
         healing_enabled=healing.enabled,
         dry_run_note=(
@@ -354,6 +367,14 @@ async def automation(
         max_actions_per_hour=healing.max_actions_per_hour,
         cooldown_seconds=healing.cooldown_seconds,
         min_confidence=healing.min_confidence,
+        min_replicas=getattr(healing, "min_replicas", 1),
+        max_replicas=getattr(healing, "max_replicas", 3),
+        replica_memory_limit_mb=getattr(healing, "replica_memory_limit_mb", 256.0),
+        replica_cpu_limit=getattr(healing, "replica_cpu_limit", 0.40),
+        min_available_ram_mb=getattr(healing, "min_available_ram_mb", 256.0),
+        max_host_cpu_percent=getattr(healing, "max_host_cpu_percent", 85.0),
+        available_ram_mb=avail_ram,
+        host_cpu_percent=host_cpu,
         counts_by_status=await repo.action_summary(hours=hours),
         recent=[HealingAction(**row) for row in await repo.actions(hours=hours, limit=100)],
     )
@@ -385,17 +406,147 @@ async def list_chaos_runs(
     return [ChaosRun(**row) for row in rows]
 
 
-@router.post("/chaos", status_code=501, summary="Start a chaos experiment")
-async def start_chaos_run() -> dict[str, str]:
-    # Declared now so the UI can be built against a stable contract, and so the failure
-    # is an honest, specific message rather than a 404 that looks like a bug.
-    raise HTTPException(
-        status_code=501,
-        detail=(
-            "The chaos agent is not deployed yet (module 9). This endpoint will proxy "
-            "experiment requests to it once it exists."
-        ),
+class StartChaosRequest(BaseModel):
+    experiment: str
+    target_service: str | None = None
+    duration_seconds: int = 60
+    magnitude: float | None = None
+    parameters: dict[str, Any] = Field(default_factory=dict)
+
+
+DEFAULT_CHAOS_TARGETS: dict[str, str] = {
+    "kill_service": "central-ledger",
+    "memory_hog": "account-lookup-service",
+    "cpu_hog": "account-lookup-service",
+    "network_latency": "ml-api-adapter",
+    "error_injection": "central-ledger",
+    "traffic_spike": "central-ledger",
+    "bad_deploy": "quoting-service",
+}
+
+LOCAL_PORT_MAP: dict[str, int] = {
+    "ml-api-adapter": 8011,
+    "central-ledger": 8012,
+    "quoting-service": 8013,
+    "account-lookup-service": 8014,
+    "transaction-request-service": 8015,
+}
+
+
+async def _inject_simulator_fault(
+    target_service: str,
+    experiment: str,
+    duration_seconds: int,
+    magnitude: float | None = None,
+    parameters: dict[str, Any] | None = None,
+) -> bool:
+    urls_to_try = [
+        f"http://{target_service}:8000",
+        f"http://localhost:{LOCAL_PORT_MAP.get(target_service, 8000)}",
+    ]
+    async with httpx.AsyncClient(timeout=4.0) as client:
+        for base_url in urls_to_try:
+            try:
+                if experiment == "kill_service":
+                    resp = await client.post(
+                        f"{base_url}/sim/kill",
+                        params={"after_seconds": 0.5, "injected_by": "chaos-experiment"},
+                    )
+                else:
+                    payload: dict[str, Any] = {
+                        "kind": experiment,
+                        "duration_seconds": duration_seconds,
+                        "injected_by": "chaos-experiment",
+                        "notes": f"Chaos experiment: {experiment}",
+                        "parameters": parameters or {},
+                    }
+                    if magnitude is not None:
+                        payload["magnitude"] = magnitude
+                    resp = await client.post(f"{base_url}/sim/faults", json=payload)
+                if resp.status_code in (200, 201, 202):
+                    log.info(
+                        "chaos.injected",
+                        target=target_service,
+                        experiment=experiment,
+                        url=base_url,
+                    )
+                    return True
+            except Exception as e:  # noqa: BLE001
+                log.warning(
+                    "chaos.inject_retry", target=target_service, url=base_url, error=str(e)
+                )
+                continue
+    return False
+
+
+@router.post("/chaos", response_model=ChaosRun, summary="Start a chaos experiment")
+async def start_chaos_run(
+    request: Request,
+    body: StartChaosRequest,
+) -> ChaosRun:
+    repo = _repo(request)
+    target_service = body.target_service or DEFAULT_CHAOS_TARGETS.get(
+        body.experiment, "central-ledger"
     )
+
+    # 1. Inject the fault into the target service simulator
+    injected = await _inject_simulator_fault(
+        target_service=target_service,
+        experiment=body.experiment,
+        duration_seconds=body.duration_seconds,
+        magnitude=body.magnitude,
+        parameters=body.parameters,
+    )
+    if not injected:
+        log.warning(
+            "chaos.injection_failed_continuing",
+            target=target_service,
+            experiment=body.experiment,
+        )
+
+    # 2. If it's a bad deploy experiment, also record a canary deployment
+    if body.experiment == "bad_deploy":
+        await repo.record_deployment(
+            deployment_id=new_id("dep"),
+            service=target_service,
+            from_version="v1.0.4",
+            to_version="v1.0.5-canary",
+            change_type="deploy",
+            triggered_by="chaos-agent",
+            notes=f"Canary deployment injected for {body.experiment} experiment",
+        )
+
+    # 3. Create the chaos run record in TimescaleDB
+    run_id = new_id("chaos")
+    run = await repo.record_chaos_run(
+        run_id=run_id,
+        experiment=body.experiment,
+        target_service=target_service,
+        duration_seconds=body.duration_seconds,
+        parameters={
+            "magnitude": body.magnitude,
+            "parameters": body.parameters,
+        },
+        notes=f"Injected {body.experiment} on {target_service}",
+    )
+
+    # 4. Notify live clients if relay is active
+    live_relay = getattr(request.app.state, "live_relay", None)
+    if live_relay:
+        try:
+            await live_relay.broadcast(
+                "chaos",
+                {
+                    "event": "chaos.started",
+                    "run_id": run_id,
+                    "experiment": body.experiment,
+                    "target_service": target_service,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.debug("chaos.stream_publish_failed", error=str(exc))
+
+    return ChaosRun(**run)
 
 
 # ---------------------------------------------------------------------------

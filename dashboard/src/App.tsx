@@ -14,8 +14,6 @@ import { useApi } from './api/hooks';
 import { useLive } from './api/live';
 import { Badge } from './components/primitives';
 import { ServiceTile } from './components/ServiceTile';
-import { formatPercent, formatRelative } from './lib/format';
-import { statusLabel, statusTone } from './lib/status';
 import { AnomaliesPage } from './pages/Anomalies';
 import { AutomationPage } from './pages/Automation';
 import { ChaosPage } from './pages/Chaos';
@@ -38,9 +36,8 @@ const PAGES: { id: PageId; label: string; title: string; subtitle: string }[] = 
   { id: 'anomalies', label: 'Anomalies', title: 'Anomaly detection', subtitle: 'Unusual behaviour, and the signals that gave it away' },
   { id: 'incidents', label: 'Incidents', title: 'Incidents and root cause', subtitle: 'Correlated anomalies with a ranked explanation' },
   { id: 'forecast', label: 'Forecast', title: 'Traffic forecasting', subtitle: 'Predicted load and pre-emptive scaling decisions' },
-  // Temporarily hidden - healing engine database persist issue
-  // { id: 'automation', label: 'Automation', title: 'Self-healing', subtitle: 'Playbooks, safety rails, and every action taken' },
-  // { id: 'chaos', label: 'Chaos', title: 'Chaos engineering', subtitle: 'Deliberate failures and how fast the platform responded' },
+  { id: 'automation', label: 'Automation', title: 'Self-healing', subtitle: 'Playbooks, safety rails, and every action taken' },
+  { id: 'chaos', label: 'Chaos', title: 'Chaos engineering', subtitle: 'Deliberate failures and how fast the platform responded' },
 ];
 
 function parseHash(): Route {
@@ -164,6 +161,7 @@ export function App() {
           <h1>{meta.title}</h1>
           <p>{meta.subtitle}</p>
         </div>
+        <div className="header__actions">{connectionBadge}</div>
       </header>
 
       {/* aria-live so a screen reader is told when the view changes after navigation. */}

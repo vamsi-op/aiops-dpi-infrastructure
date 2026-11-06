@@ -14,7 +14,7 @@ auto-resolves incidents after a configurable idle period.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from aiops_common.bus import EventBus, Stream
@@ -113,7 +113,7 @@ class RCAEngine:
 
     async def _bootstrap_window(self) -> None:
         """Load recent anomalies from database to initialize correlation window."""
-        cutoff = datetime.now(timezone.utc) - timedelta(seconds=self.window_seconds)
+        cutoff = datetime.now(UTC) - timedelta(seconds=self.window_seconds)
 
         query = """
             SELECT anomaly_id, detected_at, service, severity,
@@ -175,12 +175,10 @@ class RCAEngine:
 
     def _trim_window(self) -> None:
         """Remove anomalies older than window_seconds from memory."""
-        cutoff = datetime.now(timezone.utc) - timedelta(seconds=self.window_seconds)
+        cutoff = datetime.now(UTC) - timedelta(seconds=self.window_seconds)
 
         # Remove old anomalies
-        self.recent_anomalies = [
-            a for a in self.recent_anomalies if a.detected_at >= cutoff
-        ]
+        self.recent_anomalies = [a for a in self.recent_anomalies if a.detected_at >= cutoff]
 
     async def _process_anomaly(self, anomaly: AnomalyEvent) -> None:
         """Correlate new anomaly and create/update incidents."""
@@ -247,5 +245,7 @@ class RCAEngine:
             "window_size": len(self.recent_anomalies),
             "window_seconds": self.window_seconds,
             "auto_resolve_seconds": self.auto_resolve_seconds,
-            "unassigned_anomalies": len([a for a in self.recent_anomalies if not a.incident_id]),
+            "unassigned_anomalies": len(
+                [a for a in self.recent_anomalies if not a.incident_id]
+            ),
         }

@@ -107,7 +107,7 @@ configure_tracing(SERVICE_NAME, app=app)
 async def root() -> dict[str, Any]:
     return {
         "service": SERVICE_NAME,
-        "platform": settings.dpi.platform,
+        "platform": settings.dpi_platform,
         "enabled": settings.healing.enabled,
         "playbooks": [
             "restart_on_oom",
