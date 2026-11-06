@@ -30,7 +30,7 @@ import urllib.request
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from aiops_common.constants import TABLE_INCIDENTS, RootCauseCategory, Stream
+from aiops_common.constants import TABLE_INCIDENTS
 from aiops_common.db import Database
 
 RCA_ENGINE = "http://localhost:8023"
@@ -106,7 +106,7 @@ def check_rca_engine_up() -> dict[str, Any]:
     except urllib.error.HTTPError as exc:
         fail(f"/ready returned {exc.code}: {exc.read().decode()[:200]}")
         return {}
-    
+
     for name, state in (ready.get("dependencies") or {}).items():
         if state == "ok":
             ok(f"dependency {name}")
@@ -118,12 +118,16 @@ def check_rca_engine_up() -> dict[str, Any]:
         fail("RCA engine loop is not running")
         return {}
 
-    ok(f"RCA engine running, window size: {status.get('window_size')}, "
-       f"unassigned: {status.get('unassigned_anomalies')}")
+    ok(
+        f"RCA engine running, window size: {status.get('window_size')}, "
+        f"unassigned: {status.get('unassigned_anomalies')}"
+    )
 
     config = get_json(f"{RCA_ENGINE}/config")
-    ok(f"correlation window: {config.get('window_seconds')}s, "
-       f"auto-resolve: {config.get('auto_resolve_seconds')}s")
+    ok(
+        f"correlation window: {config.get('window_seconds')}s, "
+        f"auto-resolve: {config.get('auto_resolve_seconds')}s"
+    )
 
     return status
 
@@ -131,7 +135,7 @@ def check_rca_engine_up() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 async def check_cascade_detection() -> None:
     """Acceptance criterion 1: detect cascades through dependency graph.
-    
+
     Inject fault into central-ledger, expect downstream services to show anomalies,
     and verify they are correlated into a single incident with topological hypothesis.
     """
@@ -149,29 +153,37 @@ async def check_cascade_detection() -> None:
                 pass
 
         # Record baseline incident count
-        initial_count = await db.fetchval("SELECT COUNT(*) FROM incidents WHERE status = 'open'")
-        
+        await db.fetchval("SELECT COUNT(*) FROM incidents WHERE status = 'open'")
+
         # Inject fault into central-ledger
         fault_start = time.time()
-        print(f"  Injecting error_injection into central-ledger at {datetime.now(UTC).isoformat()}")
-        post_json(f"http://localhost:{SIM_PORTS['central-ledger']}/faults", {
-            "fault_type": "error_injection",
-            "magnitude": 0.30,
-        })
+        print(
+            f"  Injecting error_injection into central-ledger at {datetime.now(UTC).isoformat()}"
+        )
+        post_json(
+            f"http://localhost:{SIM_PORTS['central-ledger']}/faults",
+            {
+                "fault_type": "error_injection",
+                "magnitude": 0.30,
+            },
+        )
 
         # Wait for cascade to develop and be detected
         print(f"  Waiting {SETTLE_SECONDS}s for cascade to develop...")
         await asyncio.sleep(SETTLE_SECONDS)
 
         # Check for incident with topological correlation
-        incidents = await db.fetch(f"""
+        incidents = await db.fetch(
+            f"""
             SELECT incident_id, opened_at, affected_services, hypotheses_json, ai_summary
             FROM {TABLE_INCIDENTS}
             WHERE status = 'open'
             AND opened_at >= $1
             ORDER BY opened_at DESC
             LIMIT 5
-        """, datetime.fromtimestamp(fault_start, tz=UTC))
+        """,
+            datetime.fromtimestamp(fault_start, tz=UTC),
+        )
 
         if not incidents:
             fail("No incident created after fault injection")
@@ -188,8 +200,10 @@ async def check_cascade_detection() -> None:
             fail("No incident found affecting central-ledger")
             return
 
-        ok(f"Incident created: {cascade_incident['incident_id']}, "
-           f"affecting {len(cascade_incident['affected_services'])} service(s)")
+        ok(
+            f"Incident created: {cascade_incident['incident_id']}, "
+            f"affecting {len(cascade_incident['affected_services'])} service(s)"
+        )
 
         # Check for topological hypothesis
         hypotheses = cascade_incident["hypotheses_json"]
@@ -202,8 +216,10 @@ async def check_cascade_detection() -> None:
             warn("No SERVICE hypothesis found (expected for cascade detection)")
         else:
             primary = topological[0]
-            ok(f"Topological hypothesis: {primary['summary'][:100]}... "
-               f"(confidence: {primary['confidence']:.0%})")
+            ok(
+                f"Topological hypothesis: {primary['summary'][:100]}... "
+                f"(confidence: {primary['confidence']:.0%})"
+            )
 
             if primary["confidence"] >= 0.70:
                 ok(f"High confidence cascade detection ({primary['confidence']:.0%})")
@@ -227,7 +243,7 @@ async def check_cascade_detection() -> None:
 # ---------------------------------------------------------------------------
 async def check_change_correlation() -> None:
     """Acceptance criterion 2: correlate anomalies with deployments.
-    
+
     Insert a deployment record, inject fault, verify CHANGE hypothesis.
     """
     section("Change correlation (deployment → anomaly)")
@@ -238,30 +254,39 @@ async def check_change_correlation() -> None:
     try:
         # Insert a fake deployment
         deploy_time = datetime.now(UTC)
-        await db.execute("""
+        await db.execute(
+            """
             INSERT INTO deployments (service, version, deployed_at, deployed_by, deployment_id)
             VALUES ($1, $2, $3, $4, $5)
             ON CONFLICT DO NOTHING
-        """, "quoting-service", "v1.2.3-test", deploy_time, "check-script", 
-            f"deploy-{int(deploy_time.timestamp())}")
-        
+        """,
+            "quoting-service",
+            "v1.2.3-test",
+            deploy_time,
+            "check-script",
+            f"deploy-{int(deploy_time.timestamp())}",
+        )
+
         print(f"  Inserted deployment for quoting-service at {deploy_time.isoformat()}")
 
         # Inject fault shortly after
         await asyncio.sleep(5)
-        fault_start = time.time()
-        print(f"  Injecting fault into quoting-service")
-        post_json(f"http://localhost:{SIM_PORTS['quoting-service']}/faults", {
-            "fault_type": "error_injection",
-            "magnitude": 0.25,
-        })
+        print("  Injecting fault into quoting-service")
+        post_json(
+            f"http://localhost:{SIM_PORTS['quoting-service']}/faults",
+            {
+                "fault_type": "error_injection",
+                "magnitude": 0.25,
+            },
+        )
 
         # Wait for detection and correlation
         print(f"  Waiting {SETTLE_SECONDS}s for detection and correlation...")
         await asyncio.sleep(SETTLE_SECONDS)
 
         # Check for incident with change correlation
-        incidents = await db.fetch(f"""
+        incidents = await db.fetch(
+            f"""
             SELECT incident_id, affected_services, hypotheses_json
             FROM {TABLE_INCIDENTS}
             WHERE status = 'open'
@@ -269,7 +294,9 @@ async def check_change_correlation() -> None:
             AND 'quoting-service' = ANY(affected_services)
             ORDER BY opened_at DESC
             LIMIT 3
-        """, deploy_time - timedelta(seconds=10))
+        """,
+            deploy_time - timedelta(seconds=10),
+        )
 
         if not incidents:
             warn("No incident found for quoting-service after deployment+fault")
@@ -277,13 +304,15 @@ async def check_change_correlation() -> None:
 
         incident = incidents[0]
         hypotheses = incident["hypotheses_json"]
-        
+
         change = [h for h in hypotheses if h.get("category") == "CHANGE"]
         if not change:
             warn("No CHANGE hypothesis found (expected when fault follows deployment)")
         else:
-            ok(f"Change correlation detected: {change[0]['summary'][:100]}... "
-               f"(confidence: {change[0]['confidence']:.0%})")
+            ok(
+                f"Change correlation detected: {change[0]['summary'][:100]}... "
+                f"(confidence: {change[0]['confidence']:.0%})"
+            )
 
         # Clean up
         delete(f"http://localhost:{SIM_PORTS['quoting-service']}/faults")
@@ -304,27 +333,37 @@ async def check_event_correlation() -> None:
     try:
         # Insert a chaos event
         chaos_time = datetime.now(UTC)
-        await db.execute("""
+        await db.execute(
+            """
             INSERT INTO events (event_id, event_type, service, description, created_at)
             VALUES ($1, $2, $3, $4, $5)
             ON CONFLICT DO NOTHING
-        """, f"chaos-{int(chaos_time.timestamp())}", "chaos_experiment",
-            "ml-api-adapter", "Network latency injection", chaos_time)
-        
+        """,
+            f"chaos-{int(chaos_time.timestamp())}",
+            "chaos_experiment",
+            "ml-api-adapter",
+            "Network latency injection",
+            chaos_time,
+        )
+
         print(f"  Inserted chaos event for ml-api-adapter at {chaos_time.isoformat()}")
 
         # Inject fault
         await asyncio.sleep(5)
-        post_json(f"http://localhost:{SIM_PORTS['ml-api-adapter']}/faults", {
-            "fault_type": "network_latency",
-            "magnitude": 0.5,
-        })
+        post_json(
+            f"http://localhost:{SIM_PORTS['ml-api-adapter']}/faults",
+            {
+                "fault_type": "network_latency",
+                "magnitude": 0.5,
+            },
+        )
 
         print(f"  Waiting {SETTLE_SECONDS}s for detection and correlation...")
         await asyncio.sleep(SETTLE_SECONDS)
 
         # Check for incident with event correlation
-        incidents = await db.fetch(f"""
+        incidents = await db.fetch(
+            f"""
             SELECT incident_id, hypotheses_json
             FROM {TABLE_INCIDENTS}
             WHERE status = 'open'
@@ -332,7 +371,9 @@ async def check_event_correlation() -> None:
             AND 'ml-api-adapter' = ANY(affected_services)
             ORDER BY opened_at DESC
             LIMIT 3
-        """, chaos_time - timedelta(seconds=10))
+        """,
+            chaos_time - timedelta(seconds=10),
+        )
 
         if not incidents:
             warn("No incident found for ml-api-adapter after chaos event")
@@ -340,13 +381,15 @@ async def check_event_correlation() -> None:
 
         hypotheses = incidents[0]["hypotheses_json"]
         event = [h for h in hypotheses if h.get("category") == "EVENT"]
-        
+
         if not event:
             warn("No EVENT hypothesis found (expected for chaos experiment)")
         else:
-            ok(f"Event correlation detected: {event[0]['summary'][:100]}... "
-               f"(confidence: {event[0]['confidence']:.0%})")
-            
+            ok(
+                f"Event correlation detected: {event[0]['summary'][:100]}... "
+                f"(confidence: {event[0]['confidence']:.0%})"
+            )
+
             if event[0]["confidence"] >= 0.95:
                 ok("High confidence event correlation (chaos = expected disruption)")
             else:
@@ -378,6 +421,7 @@ def main() -> int:
     except Exception as exc:
         fail(f"Check failed with exception: {exc}")
         import traceback
+
         traceback.print_exc()
 
     # Summary

@@ -34,7 +34,7 @@ from aiops_common.constants import (
 )
 from aiops_common.db import Database
 from aiops_common.log import get_logger
-from aiops_common.schemas import new_id, utc_now
+from aiops_common.schemas import utc_now
 
 log = get_logger(__name__)
 
@@ -495,7 +495,11 @@ class DashboardRepository:
         row["execution_mode"] = (
             row.get("execution_mode")
             or params.get("execution_mode")
-            or ("real" if not row.get("dry_run", True) and row.get("status") == "succeeded" else "simulated")
+            or (
+                "real"
+                if not row.get("dry_run", True) and row.get("status") == "succeeded"
+                else "simulated"
+            )
         )
         row["actual_replicas_before"] = (
             row.get("actual_replicas_before")
@@ -672,7 +676,7 @@ class DashboardRepository:
     async def chaos_runs(self, *, limit: int = 50) -> list[dict[str, Any]]:
         try:
             await self.sync_chaos_runs()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             log.warning("chaos.sync_failed", error=str(e))
         rows = await self._db.fetch_all(
             f"SELECT * FROM {TABLE_CHAOS_RUNS} ORDER BY started_at DESC LIMIT :limit",

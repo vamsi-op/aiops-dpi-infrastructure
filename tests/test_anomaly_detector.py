@@ -63,7 +63,9 @@ def test_anomaly_emission_cooldown_is_per_service() -> None:
     detector._last_anomaly_emitted[SERVICE] = first_emission
 
     assert ANOMALY_COOLDOWN_SECONDS > 0
-    assert detector._in_anomaly_cooldown(SERVICE, first_emission + ANOMALY_COOLDOWN_SECONDS - 0.1)
+    assert detector._in_anomaly_cooldown(
+        SERVICE, first_emission + ANOMALY_COOLDOWN_SECONDS - 0.1
+    )
     assert not detector._in_anomaly_cooldown(SERVICE, first_emission + ANOMALY_COOLDOWN_SECONDS)
     assert not detector._in_anomaly_cooldown("quoting-service", first_emission + 1.0)
 

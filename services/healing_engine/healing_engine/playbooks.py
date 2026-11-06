@@ -11,7 +11,7 @@ Playbooks are idempotent and safe to retry.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 from aiops_common.constants import AnomalyKind, PlaybookName, RootCauseCategory
 from aiops_common.log import get_logger
@@ -24,7 +24,7 @@ log = get_logger(__name__)
 
 class PlaybookRegistry:
     """Maps anomaly kinds, telemetry signals, and incident root causes to specific playbooks.
-    
+
     Distinguishes:
     1. Process / container failure -> restart_on_oom
     2. Traffic overload (tps >= capacity threshold) -> scale_out_preemptive
@@ -35,7 +35,7 @@ class PlaybookRegistry:
     """
 
     # Anomaly kind -> default playbook fallback mapping
-    ANOMALY_PLAYBOOK_MAP = {
+    ANOMALY_PLAYBOOK_MAP: ClassVar[dict[AnomalyKind, PlaybookName]] = {
         AnomalyKind.MEMORY_PRESSURE: PlaybookName.RESTART_ON_OOM,
         AnomalyKind.CPU_SATURATION: PlaybookName.RESTART_ON_OOM,
         AnomalyKind.QUEUE_BACKLOG: PlaybookName.CLEAR_QUEUE_BACKLOG,
@@ -56,19 +56,22 @@ class PlaybookRegistry:
         previous_actions: list[dict[str, Any]] | None = None,
     ) -> tuple[PlaybookName, dict[str, Any]]:
         """Select appropriate playbook based on root-cause analysis, telemetry, and action history.
-        
+
         Args:
             anomaly: The anomaly event
             incident: Optional incident with root cause hypotheses
             snapshot: Current telemetry snapshot (tps, capacity, queue_depth, cpu, mem)
             previous_actions: Prior remediation attempts for this incident/service
-            
+
         Returns:
             (playbook_name, parameters): Playbook to execute and its parameters
         """
         parameters: dict[str, Any] = {
-            "anomaly_kind": getattr(anomaly, "kind", None) or getattr(anomaly, "predicted_kind", None) or AnomalyKind.MULTIVARIATE,
-            "anomaly_score": getattr(anomaly, "score", None) or getattr(anomaly, "anomaly_score", 0.0),
+            "anomaly_kind": getattr(anomaly, "kind", None)
+            or getattr(anomaly, "predicted_kind", None)
+            or AnomalyKind.MULTIVARIATE,
+            "anomaly_score": getattr(anomaly, "score", None)
+            or getattr(anomaly, "anomaly_score", 0.0),
         }
 
         # -------------------------------------------------------------
@@ -80,7 +83,11 @@ class PlaybookRegistry:
             for act in previous_actions:
                 act_playbook = act.get("playbook")
                 act_status = act.get("status")
-                if act_playbook in (PlaybookName.CLEAR_QUEUE_BACKLOG, PlaybookName.RESTART_ON_OOM) and act_status == "failed":
+                if (
+                    act_playbook
+                    in (PlaybookName.CLEAR_QUEUE_BACKLOG, PlaybookName.RESTART_ON_OOM)
+                    and act_status == "failed"
+                ):
                     prior_failed_restart = True
                 if act_playbook == PlaybookName.SCALE_OUT_PREEMPTIVE:
                     prior_scale_out_attempted = True
@@ -114,7 +121,9 @@ class PlaybookRegistry:
                     )
                     parameters["root_cause"] = "downstream_dependency_failure"
                     parameters["downstream_target"] = primary.target
-                    parameters["reason"] = f"Downstream service '{primary.target}' failure cascading to {anomaly.service}"
+                    parameters["reason"] = (
+                        f"Downstream service '{primary.target}' failure cascading to {anomaly.service}"
+                    )
                     return PlaybookName.CIRCUIT_BREAK_CASCADE, parameters
 
         # -------------------------------------------------------------
@@ -147,11 +156,18 @@ class PlaybookRegistry:
                 f"Traffic overload: TPS ({tps:.1f}) exceeds 80% of capacity ({capacity:.1f}) "
                 f"with load factor {load_factor:.2f}"
             )
-            log.info("playbook.selected_traffic_overload", service=anomaly.service, parameters=parameters)
+            log.info(
+                "playbook.selected_traffic_overload",
+                service=anomaly.service,
+                parameters=parameters,
+            )
             return PlaybookName.SCALE_OUT_PREEMPTIVE, parameters
 
         # Case B: Persistent Queue Backlog with prior failed restart
-        if kind in (AnomalyKind.QUEUE_BACKLOG, AnomalyKind.SETTLEMENT_DELAY) or queue_depth > 5.0:
+        if (
+            kind in (AnomalyKind.QUEUE_BACKLOG, AnomalyKind.SETTLEMENT_DELAY)
+            or queue_depth > 5.0
+        ):
             if prior_failed_restart:
                 # Restart previously failed to clear the queue! Do not blindly repeat restart.
                 if not prior_scale_out_attempted:
@@ -162,7 +178,11 @@ class PlaybookRegistry:
                         f"Persistent queue backlog ({queue_depth:.1f}): previous restart failed to recover queue. "
                         f"Escalating to scale-out to add consumer capacity."
                     )
-                    log.info("playbook.escalated_to_scale_out", service=anomaly.service, parameters=parameters)
+                    log.info(
+                        "playbook.escalated_to_scale_out",
+                        service=anomaly.service,
+                        parameters=parameters,
+                    )
                     return PlaybookName.SCALE_OUT_PREEMPTIVE, parameters
                 else:
                     # Both restart and scale-out failed or already attempted: require manual intervention
@@ -175,11 +195,17 @@ class PlaybookRegistry:
                     return PlaybookName.CLEAR_QUEUE_BACKLOG, parameters
             else:
                 parameters["root_cause"] = "queue_backlog"
-                parameters["reason"] = f"Queue backlog detected ({queue_depth:.1f} items). Clearing in-memory backlog."
+                parameters["reason"] = (
+                    f"Queue backlog detected ({queue_depth:.1f} items). Clearing in-memory backlog."
+                )
                 return PlaybookName.CLEAR_QUEUE_BACKLOG, parameters
 
         # Case C: CPU or Memory Exhaustion
-        if mem > 0.85 or cpu > 0.85 or kind in (AnomalyKind.MEMORY_PRESSURE, AnomalyKind.CPU_SATURATION):
+        if (
+            mem > 0.85
+            or cpu > 0.85
+            or kind in (AnomalyKind.MEMORY_PRESSURE, AnomalyKind.CPU_SATURATION)
+        ):
             parameters["root_cause"] = "resource_exhaustion"
             parameters["reason"] = f"Resource exhaustion: CPU={cpu:.1%}, Memory={mem:.1%}"
             return PlaybookName.RESTART_ON_OOM, parameters
@@ -200,7 +226,9 @@ class PlaybookRegistry:
         # Default Fallback based on anomaly kind
         playbook = cls.ANOMALY_PLAYBOOK_MAP.get(kind, PlaybookName.RESTART_ON_OOM)
         parameters["root_cause"] = "general_anomaly"
-        parameters["reason"] = f"Anomaly {kind} detected (score: {parameters['anomaly_score']:.2f})"
+        parameters["reason"] = (
+            f"Anomaly {kind} detected (score: {parameters['anomaly_score']:.2f})"
+        )
         return playbook, parameters
 
 
@@ -217,44 +245,46 @@ class PlaybookExecutor:
         parameters: dict[str, Any],
     ) -> tuple[bool, str]:
         """Execute a playbook.
-        
+
         Args:
             playbook: Which playbook to run
             target_service: Service to heal
             parameters: Playbook-specific parameters
-            
+
         Returns:
             (success, message): True if succeeded, False if failed, plus message
         """
         if playbook == PlaybookName.RESTART_ON_OOM:
             success, msg = await self._restart_on_oom(target_service)
             return ScaleResult(success, msg, {"execution_mode": "real"})
-        
+
         elif playbook == PlaybookName.CIRCUIT_BREAK_CASCADE:
             success, msg = await self._circuit_break_cascade(target_service)
             return ScaleResult(success, msg, {"execution_mode": "real"})
-        
+
         elif playbook == PlaybookName.ROLLBACK_BAD_DEPLOY:
             success, msg = await self._rollback_bad_deploy(target_service)
             return ScaleResult(success, msg, {"execution_mode": "real"})
-        
+
         elif playbook == PlaybookName.SCALE_OUT_PREEMPTIVE:
             return await self._scale_out_preemptive(target_service, parameters)
-        
+
         elif playbook == PlaybookName.SCALE_IN_IDLE:
             return await self._scale_in_idle(target_service, parameters)
-        
+
         elif playbook == PlaybookName.CLEAR_QUEUE_BACKLOG:
             success, msg = await self._clear_queue_backlog(target_service)
             return ScaleResult(success, msg, {"execution_mode": "real"})
-        
+
         else:
             log.error("playbook.unknown", playbook=playbook)
-            return ScaleResult(False, f"Unknown playbook: {playbook}", {"execution_mode": "simulated"})
+            return ScaleResult(
+                False, f"Unknown playbook: {playbook}", {"execution_mode": "simulated"}
+            )
 
     async def _restart_on_oom(self, service: str) -> tuple[bool, str]:
         """Restart container(s) to clear memory pressure or general faults.
-        
+
         Applies to: MEMORY_PRESSURE, CPU_SATURATION, ERROR_BURST, LATENCY_SPIKE, MULTIVARIATE
         """
         log.info("playbook.restart_on_oom", service=service)
@@ -262,18 +292,21 @@ class PlaybookExecutor:
 
     async def _circuit_break_cascade(self, service: str) -> tuple[bool, str]:
         """Remediate the root dependency in a cascade to break the failure chain.
-        
+
         Applies to: SERVICE root cause with cascade pattern. Note: network-level
         traffic rejection/proxy circuit breaking is not configured on this container path;
         restarting the root dependency clears the failure chain.
         """
         log.info("playbook.circuit_break_cascade", service=service)
         success, msg = await self.executor.restart_container(service)
-        return success, f"{msg} (Remediated root dependency; network circuit breaker proxy not present)"
+        return (
+            success,
+            f"{msg} (Remediated root dependency; network circuit breaker proxy not present)",
+        )
 
     async def _rollback_bad_deploy(self, service: str) -> tuple[bool, str]:
         """Rollback to previous version when deployment preceded anomaly.
-        
+
         Applies to: CHANGE root cause hypothesis
         """
         log.info("playbook.rollback_bad_deploy", service=service)
@@ -285,19 +318,19 @@ class PlaybookExecutor:
         parameters: dict[str, Any],
     ) -> tuple[bool, str]:
         """Scale out service to handle traffic surge.
-        
+
         Applies to: TRAFFIC_SURGE
         """
         current = await self.executor.get_replica_count(service)
         target = current + 1  # Increment by 1
-        
+
         log.info(
             "playbook.scale_out",
             service=service,
             current_replicas=current,
             target_replicas=target,
         )
-        
+
         return await self.executor.scale_service(service, target)
 
     async def _scale_in_idle(
@@ -306,24 +339,24 @@ class PlaybookExecutor:
         parameters: dict[str, Any],
     ) -> tuple[bool, str]:
         """Scale in service when traffic drops.
-        
+
         Applies to: TRAFFIC_DROP
         """
         current = await self.executor.get_replica_count(service)
         target = max(1, current - 1)  # Decrement by 1, minimum 1
-        
+
         log.info(
             "playbook.scale_in",
             service=service,
             current_replicas=current,
             target_replicas=target,
         )
-        
+
         return await self.executor.scale_service(service, target)
 
     async def _clear_queue_backlog(self, service: str) -> tuple[bool, str]:
         """Restart service to clear queue backlog or settlement delays.
-        
+
         Applies to: QUEUE_BACKLOG, SETTLEMENT_DELAY
         """
         log.info("playbook.clear_queue_backlog", service=service)

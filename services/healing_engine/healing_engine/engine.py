@@ -15,17 +15,23 @@ All actions are recorded, including skipped ones, so safety rail effectiveness i
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from aiops_common.bus import EventBus, Stream
 from aiops_common.config import get_settings
-from aiops_common.constants import TABLE_ACTIONS, AiopsService, ActionStatus
+from aiops_common.constants import (
+    TABLE_ACTIONS,
+    TABLE_INCIDENTS,
+    ActionStatus,
+    AiopsService,
+    PlaybookName,
+)
 from aiops_common.db import Database
 from aiops_common.log import get_logger
 from aiops_common.schemas import AnomalyEvent, HealingAction, Incident
 
-from .executor import DockerExecutor, ExecutorInterface
+from .executor import ExecutorInterface
 from .playbooks import PlaybookExecutor, PlaybookRegistry
 from .safety import SafetyRails
 from .snapshot import MetricSnapshot
@@ -47,13 +53,14 @@ class HealingEngine:
         safety: SafetyRails,
         snapshot: MetricSnapshot,
         playbook_executor: PlaybookExecutor,
-    ):
+    ) -> None:
         self.db = db
         self.bus = bus
         self.executor = executor
         self.safety = safety
         self.snapshot = snapshot
         self.playbook_executor = playbook_executor
+        self.settings = get_settings().healing
 
         self._anomaly_consumer_task: asyncio.Task[None] | None = None
         self._incident_consumer_task: asyncio.Task[None] | None = None
@@ -155,7 +162,7 @@ class HealingEngine:
                 log.error(
                     "healing_engine.anomaly_consume_error",
                     error=str(exc),
-                    event=event,
+                    stream_event=str(event),
                     exc_info=True,
                 )
 
@@ -179,7 +186,7 @@ class HealingEngine:
                     # Fetch the first anomaly for this incident
                     anomaly_id = incident.anomaly_ids[0]
                     anomaly = await self._fetch_anomaly(anomaly_id)
-                    
+
                     if anomaly:
                         await self._process_anomaly(anomaly, incident=incident)
 
@@ -187,7 +194,7 @@ class HealingEngine:
                 log.error(
                     "healing_engine.incident_consume_error",
                     error=str(exc),
-                    event=event,
+                    stream_event=str(event),
                     exc_info=True,
                 )
 
@@ -199,12 +206,12 @@ class HealingEngine:
             FROM anomalies
             WHERE anomaly_id = :anomaly_id
         """
-        
+
         row = await self.db.fetch_one(query, {"anomaly_id": anomaly_id})
-        
+
         if not row:
             return None
-        
+
         return AnomalyEvent(
             anomaly_id=row["anomaly_id"],
             detected_at=row["detected_at"],
@@ -222,7 +229,7 @@ class HealingEngine:
         incident: Incident | None,
     ) -> None:
         """Process an anomaly and execute healing action if appropriate.
-        
+
         Args:
             anomaly: The anomaly event
             incident: Optional incident with RCA hypotheses
@@ -239,7 +246,7 @@ class HealingEngine:
                 """
                 rows = await self.db.fetch_all(query, {"incident_id": incident.incident_id})
                 previous_actions = [dict(r) for r in rows]
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 log.warning("healing_engine.fetch_previous_actions_failed", error=str(exc))
 
         attempt_number = len(previous_actions) + 1
@@ -324,18 +331,20 @@ class HealingEngine:
                     action.simulated_replicas_after = curr + 1
                 elif playbook == PlaybookName.SCALE_IN_IDLE:
                     action.simulated_replicas_after = max(1, curr - 1)
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                log.debug("healing_engine.replica_count_failed", error=str(exc))
 
-            action.parameters.update({
-                "execution_mode": action.execution_mode,
-                "actual_replicas_before": action.actual_replicas_before,
-                "actual_replicas_after": action.actual_replicas_after,
-                "simulated_replicas_after": action.simulated_replicas_after,
-            })
+            action.parameters.update(
+                {
+                    "execution_mode": action.execution_mode,
+                    "actual_replicas_before": action.actual_replicas_before,
+                    "actual_replicas_after": action.actual_replicas_after,
+                    "simulated_replicas_after": action.simulated_replicas_after,
+                }
+            )
             await self._persist_action(action)
             await self._publish_action(action)
-            
+
             log.info(
                 "healing_engine.action_blocked",
                 action_id=action.action_id,
@@ -348,8 +357,8 @@ class HealingEngine:
 
         # Execute playbook
         action.status = ActionStatus.RUNNING
-        action.started_at = datetime.now(timezone.utc)
-        
+        action.started_at = datetime.now(UTC)
+
         log.info(
             "healing_engine.calling_playbook_executor",
             action_id=action.action_id,
@@ -362,10 +371,10 @@ class HealingEngine:
             anomaly.service,
             parameters,
         )
-        
+
         success = res[0]
         message = res[1]
-        metadata = getattr(res, "metadata", {}) or (res[2] if len(res) > 2 else {})
+        metadata = getattr(res, "metadata", {})
 
         log.info(
             "healing_engine.playbook_executor_returned",
@@ -376,7 +385,7 @@ class HealingEngine:
         )
 
         # Update action status and metadata
-        action.finished_at = datetime.now(timezone.utc)
+        action.finished_at = datetime.now(UTC)
         action.result_message = message
 
         if "status" in metadata:
@@ -386,24 +395,32 @@ class HealingEngine:
 
         action.execution_mode = metadata.get(
             "execution_mode",
-            "real" if not action.dry_run and action.status == ActionStatus.SUCCEEDED else "simulated",
+            "real"
+            if not action.dry_run and action.status == ActionStatus.SUCCEEDED
+            else "simulated",
         )
         action.actual_replicas_before = metadata.get("actual_replicas_before")
         action.actual_replicas_after = metadata.get("actual_replicas_after")
         action.simulated_replicas_after = metadata.get("simulated_replicas_after")
 
-        action.parameters.update({
-            "execution_mode": action.execution_mode,
-            "actual_replicas_before": action.actual_replicas_before,
-            "actual_replicas_after": action.actual_replicas_after,
-            "simulated_replicas_after": action.simulated_replicas_after,
-            **{k: v for k, v in metadata.items() if k not in action.parameters},
-        })
+        action.parameters.update(
+            {
+                "execution_mode": action.execution_mode,
+                "actual_replicas_before": action.actual_replicas_before,
+                "actual_replicas_after": action.actual_replicas_after,
+                "simulated_replicas_after": action.simulated_replicas_after,
+                **{k: v for k, v in metadata.items() if k not in action.parameters},
+            }
+        )
 
         if success and action.status == ActionStatus.SUCCEEDED:
             # Configurable recovery stabilization wait
             settle_seconds = 5
-            log.info("healing_engine.waiting_recovery", seconds=settle_seconds, service=anomaly.service)
+            log.info(
+                "healing_engine.waiting_recovery",
+                seconds=settle_seconds,
+                service=anomaly.service,
+            )
             await asyncio.sleep(settle_seconds)
 
             # Check container health where applicable
@@ -422,11 +439,13 @@ class HealingEngine:
                             if c.status not in ("running", "restarting"):
                                 container_healthy = False
                                 break
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     log.warning("healing_engine.container_health_check_failed", error=str(exc))
 
             # Capture post-action metric snapshot
-            action.after_snapshot = await self.snapshot.capture(anomaly.service, window_seconds=60)
+            action.after_snapshot = await self.snapshot.capture(
+                anomaly.service, window_seconds=60
+            )
 
             # Actual Recovery Verification
             recovered, rec_reason, rec_details = self.snapshot.verify_recovery(
@@ -479,12 +498,16 @@ class HealingEngine:
                 if attempt_number >= max_att:
                     action.requires_manual_intervention = True
                     action.parameters["requires_manual_intervention"] = True
-                    action.result_message += f" (Reached maximum attempts {max_att}; manual intervention required)"
+                    action.result_message += (
+                        f" (Reached maximum attempts {max_att}; manual intervention required)"
+                    )
 
         # Update associated incident status and link action
         if incident:
             try:
-                new_incident_status = "mitigating" if action.status == ActionStatus.SUCCEEDED else "open"
+                new_incident_status = (
+                    "mitigating" if action.status == ActionStatus.SUCCEEDED else "open"
+                )
                 update_inc_sql = f"""
                     UPDATE {TABLE_INCIDENTS}
                     SET action_ids = array_append(action_ids, :action_id),
@@ -499,7 +522,7 @@ class HealingEngine:
                         "incident_id": incident.incident_id,
                     },
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 log.warning("healing_engine.update_incident_failed", error=str(exc))
 
         # Persist and publish
@@ -526,10 +549,7 @@ class HealingEngine:
             primary = incident.hypotheses[0]
             return f"Incident {incident.incident_id}: {primary.summary[:100]}"
         else:
-            return (
-                f"Anomaly detected: {anomaly.kind} "
-                f"(score: {anomaly.score:.2f})"
-            )
+            return f"Anomaly detected: {anomaly.kind} " f"(score: {anomaly.score:.2f})"
 
     async def _persist_action(self, action: HealingAction) -> None:
         """Save action to healing_actions table with full audit trail."""
@@ -598,7 +618,8 @@ class HealingEngine:
                     "simulated_replicas_after": action.simulated_replicas_after,
                 },
             )
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            log.debug("healing_engine.insert_with_replica_columns_failed", error=str(exc))
             # Fallback if table doesn't have the dedicated replica columns yet
             query_fallback = f"""
                 INSERT INTO {TABLE_ACTIONS} (

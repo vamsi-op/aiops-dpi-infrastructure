@@ -12,6 +12,8 @@ skipped_budget, skipped_low_confidence) so the reason is auditable.
 
 from __future__ import annotations
 
+from typing import Any
+
 from aiops_common.bus import EventBus
 from aiops_common.config import HealingSettings
 from aiops_common.constants import (
@@ -20,7 +22,6 @@ from aiops_common.constants import (
     HEALING_COOLDOWN_KEY,
     ActionStatus,
 )
-from aiops_common.errors import RemediationBlockedError
 from aiops_common.log import get_logger
 
 log = get_logger(__name__)
@@ -28,7 +29,7 @@ log = get_logger(__name__)
 
 class SafetyRails:
     """Enforces four safety checks before allowing remediation actions.
-    
+
     All state is stored in Redis (cooldowns, budget) so the engine can restart
     without losing track of recent actions.
     """
@@ -37,7 +38,7 @@ class SafetyRails:
         self,
         bus: EventBus,
         settings: HealingSettings,
-    ):
+    ) -> None:
         self.bus = bus
         self.settings = settings
 
@@ -49,13 +50,13 @@ class SafetyRails:
         playbook: Any = None,
     ) -> tuple[bool, ActionStatus, str]:
         """Run all safety checks in order.
-        
+
         Args:
             target_service: Service being healed
             confidence: RCA confidence for the action (0.0-1.0)
             incident_id: Optional incident being remediated
             playbook: Playbook proposed
-            
+
         Returns:
             (allowed, status, reason):
                 - allowed: True if all checks pass
@@ -133,21 +134,24 @@ class SafetyRails:
 
     async def _check_cooldown(self, target_service: str) -> tuple[bool, str]:
         """Check if target service is in cooldown period.
-        
+
         Returns:
             (in_cooldown, reason): True if cooling down, False if available
         """
         cooldown_key = f"{HEALING_COOLDOWN_KEY}:{target_service}"
         flag = await self.bus.get_flag(cooldown_key)
-        
+
         if flag:
-            return True, f"Service {target_service} in cooldown ({self.settings.cooldown_seconds}s)"
-        
+            return (
+                True,
+                f"Service {target_service} in cooldown ({self.settings.cooldown_seconds}s)",
+            )
+
         return False, ""
 
     async def _check_budget(self) -> tuple[bool, str]:
         """Check if hourly action budget is exhausted.
-        
+
         Returns:
             (over_budget, reason): True if budget exceeded, False if available
         """
@@ -156,17 +160,17 @@ class SafetyRails:
             HEALING_BUDGET_KEY,
             ttl_seconds=3600,
         )
-        
+
         if count > self.settings.max_actions_per_hour:
             return (
                 True,
                 f"Hourly budget exhausted ({count}/{self.settings.max_actions_per_hour})",
             )
-        
+
         # Decrement since we're just checking, not executing yet
         # Actual execution will increment again
         await self.bus.client.decr(HEALING_BUDGET_KEY)
-        
+
         return False, ""
 
     async def get_attempt_count(self, incident_id: str) -> int:
@@ -185,12 +189,14 @@ class SafetyRails:
         playbook: str | None = None,
     ) -> None:
         """Mark that an action executed.
-        
+
         Sets cooldown for the target service (longer for success, failure cooldown for failure)
         and increments budget and attempt counters.
         """
         cooldown_duration = (
-            self.settings.cooldown_seconds if success else getattr(self.settings, "failure_cooldown_seconds", 120)
+            self.settings.cooldown_seconds
+            if success
+            else getattr(self.settings, "failure_cooldown_seconds", 120)
         )
         cooldown_key = f"{HEALING_COOLDOWN_KEY}:{target_service}"
         await self.bus.set_flag(
@@ -198,7 +204,7 @@ class SafetyRails:
             value="1",
             ttl_seconds=cooldown_duration,
         )
-        
+
         # Increment budget counter
         await self.bus.incr_with_ttl(
             HEALING_BUDGET_KEY,
@@ -212,7 +218,7 @@ class SafetyRails:
                 attempts_key,
                 ttl_seconds=3600,
             )
-        
+
         log.info(
             "safety.action_recorded",
             target=target_service,

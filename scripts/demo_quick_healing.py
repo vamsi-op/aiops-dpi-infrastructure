@@ -1,9 +1,10 @@
 """Quick self-healing demo using error_injection for immediate detection.
 
-This script uses error_injection instead of memory_hog because errors are 
+This script uses error_injection instead of memory_hog because errors are
 detected immediately (within one 15-second metrics cycle), whereas memory
 pressure requires multiple cycles to establish a pattern.
 """
+
 import json
 import sys
 import time
@@ -14,11 +15,13 @@ from datetime import datetime
 CENTRAL_LEDGER_PORT = 8012
 API_BASE = "http://localhost:8000"
 
+
 def http_get(url: str, timeout: int = 10) -> dict:
     """Make HTTP GET request and return JSON response."""
     request = urllib.request.Request(url, method="GET")
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.load(response)
+
 
 def http_post(url: str, body: dict, timeout: int = 15) -> dict:
     """Make HTTP POST request and return JSON response."""
@@ -30,6 +33,7 @@ def http_post(url: str, body: dict, timeout: int = 15) -> dict:
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.load(response)
+
 
 print("=" * 80)
 print("QUICK SELF-HEALING DEMO - ERROR INJECTION")
@@ -47,14 +51,14 @@ fault_result = http_post(
         "magnitude": 0.50,  # 50% error rate - high enough to detect quickly
         "injected_by": "demo_quick_healing.py",
         "notes": "Quick healing demo - error injection",
-    }
+    },
 )
 fault_time = datetime.fromisoformat(
     fault_result["injected"]["started_at"].replace("Z", "+00:00")
 )
 print(f"✓ Fault injected (ID: {fault_result['injected']['fault_id']})")
 print(f"  Magnitude: {fault_result['injected']['magnitude']} (50% error rate)")
-print(f"  Duration: 180 seconds")
+print("  Duration: 180 seconds")
 
 # Step 2: Wait for anomaly detection (errors are detected quickly)
 print("\n[2] Waiting for anomaly detection (timeout: 60s)...")
@@ -67,17 +71,17 @@ while time.time() - start < 60:
     time.sleep(5)
     elapsed = int(time.time() - start)
     print(f"   {elapsed}s elapsed...")
-    
+
     try:
         anomalies = http_get(f"{API_BASE}/api/anomalies?service=central-ledger&limit=10")
-        
+
         # Look for anomaly after fault injection
         for anom in anomalies:
             anom_time = datetime.fromisoformat(anom["detected_at"].replace("Z", "+00:00"))
             if anom_time >= fault_time:
                 anomaly = anom
                 break
-        
+
         if anomaly:
             detection_time = int(time.time() - start)
             print(f"\n✓ Anomaly detected after {detection_time} seconds!")
@@ -86,22 +90,21 @@ while time.time() - start < 60:
             print(f"  Severity: {anomaly['severity']}")
             print(f"  Score: {anomaly['score']:.3f}")
             print(f"  Description: {anomaly['description'][:100]}...")
-            
+
             # Clear the fault immediately to prevent anomaly spam
-            print(f"\n[Cleanup] Clearing fault to prevent additional anomalies...")
+            print("\n[Cleanup] Clearing fault to prevent additional anomalies...")
             try:
                 request = urllib.request.Request(
-                    f"http://localhost:{CENTRAL_LEDGER_PORT}/sim/faults",
-                    method="DELETE"
+                    f"http://localhost:{CENTRAL_LEDGER_PORT}/sim/faults", method="DELETE"
                 )
                 with urllib.request.urlopen(request, timeout=5) as response:
                     result = json.load(response)
                     print(f"✓ Fault cleared ({result.get('cleared', 0)} fault(s) removed)")
             except Exception as e:
                 print(f"  Warning: Could not clear fault: {e}")
-            
+
             break
-            
+
     except Exception as e:
         print(f"   Error checking anomalies: {e}")
 
@@ -119,24 +122,24 @@ time.sleep(5)
 
 try:
     incidents = http_get(f"{API_BASE}/api/incidents?limit=20")
-    
+
     # Look for incident with this anomaly
     incident = None
     for inc in incidents:
-        if anomaly['anomaly_id'] in inc.get('anomaly_ids', []):
+        if anomaly["anomaly_id"] in inc.get("anomaly_ids", []):
             incident = inc
             break
-    
+
     if incident:
         print(f"✓ Incident created: {incident['incident_id']}")
         print(f"  Severity: {incident['severity']}")
-        if incident.get('root_cause_hypotheses'):
-            hypothesis = incident['root_cause_hypotheses'][0]
+        if incident.get("root_cause_hypotheses"):
+            hypothesis = incident["root_cause_hypotheses"][0]
             print(f"  Root Cause: {hypothesis['category']}")
             print(f"  Confidence: {hypothesis['confidence']:.1%}")
     else:
         print("  No incident created yet (RCA may need more time)")
-        
+
 except Exception as e:
     print(f"  Error checking incidents: {e}")
 
@@ -145,19 +148,19 @@ print("\n" + "=" * 80)
 print("DEMO COMPLETE")
 print("=" * 80)
 print("\n✅ Self-healing system successfully detected the fault!")
-print(f"\nTimeline:")
-print(f"  T+0s:  Fault injected (50% error rate)")
+print("\nTimeline:")
+print("  T+0s:  Fault injected (50% error rate)")
 print(f"  T+{detection_time}s: Anomaly detected")
-print(f"\nNext steps in the full workflow:")
+print("\nNext steps in the full workflow:")
 print("  • RCA engine analyzes root cause")
 print("  • Incident created and correlated with other anomalies")
 print("  • Healing engine evaluates playbook eligibility")
 print("  • Automated action executed (if configured)")
-print(f"\nView the dashboard: http://localhost:5173/")
-print(f"\n✓ Fault automatically cleared after detection")
-print(f"  No additional anomalies will be generated")
-print(f"\nTo inject another fault:")
-print(f"  python scripts/demo_quick_healing.py")
-print(f"\nTo check current state:")
-print(f"  curl http://localhost:8012/sim/faults")
+print("\nView the dashboard: http://localhost:5173/")
+print("\n✓ Fault automatically cleared after detection")
+print("  No additional anomalies will be generated")
+print("\nTo inject another fault:")
+print("  python scripts/demo_quick_healing.py")
+print("\nTo check current state:")
+print("  curl http://localhost:8012/sim/faults")
 print(f"  curl {API_BASE}/api/anomalies?service=central-ledger")

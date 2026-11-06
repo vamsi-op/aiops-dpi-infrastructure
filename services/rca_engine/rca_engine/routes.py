@@ -104,19 +104,21 @@ async def list_incidents(
 
     incidents = []
     for row in rows:
-        incidents.append({
-            "incident_id": row["incident_id"],
-            "opened_at": row["opened_at"].isoformat(),
-            "closed_at": row["closed_at"].isoformat() if row["closed_at"] else None,
-            "status": row["status"],
-            "severity": row["severity"],
-            "platform": row["platform"],
-            "title": row["title"],
-            "affected_services": row["affected_services"],
-            "anomaly_count": len(row["anomaly_ids"]),
-            "hypothesis_count": len(row["hypotheses"]),
-            "ai_summary": row["ai_summary"],
-        })
+        incidents.append(
+            {
+                "incident_id": row["incident_id"],
+                "opened_at": row["opened_at"].isoformat(),
+                "closed_at": row["closed_at"].isoformat() if row["closed_at"] else None,
+                "status": row["status"],
+                "severity": row["severity"],
+                "platform": row["platform"],
+                "title": row["title"],
+                "affected_services": row["affected_services"],
+                "anomaly_count": len(row["anomaly_ids"]),
+                "hypothesis_count": len(row["hypotheses"]),
+                "ai_summary": row["ai_summary"],
+            }
+        )
 
     return {
         "incidents": incidents,
@@ -209,7 +211,9 @@ async def correlate(
     }
 
 
-@router.post("/incidents/{incident_id}/resolve", tags=["incidents"], summary="Resolve an incident")
+@router.post(
+    "/incidents/{incident_id}/resolve", tags=["incidents"], summary="Resolve an incident"
+)
 async def resolve_incident(
     request: Request,
     incident_id: str,

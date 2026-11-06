@@ -15,7 +15,7 @@ log = get_logger(__name__)
 
 def get_host_resources() -> dict[str, Any]:
     """Retrieve current host RAM and CPU utilisation metrics.
-    
+
     Returns:
         dict with available_ram_mb, total_ram_mb, ram_percent, cpu_percent, cpu_count
     """
@@ -34,7 +34,7 @@ def get_host_resources() -> dict[str, Any]:
             "cpu_percent": cpu_pct,
             "cpu_count": cpu_count,
         }
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         log.warning("resources.check_failed", error=str(exc))
         return {
             "error": str(exc),
@@ -62,16 +62,20 @@ def check_resource_capacity(
             reason: Human-readable explanation of capacity or limitation
             metrics: Snapshot of evaluated host metrics
     """
-    try:
-        import psutil
-    except ImportError:
+    import importlib.util
+
+    if importlib.util.find_spec("psutil") is None:
         log.error("resources.psutil_missing")
         return False, "Host capacity could not be reliably determined: psutil not installed", {}
 
     try:
         metrics = get_host_resources()
         if "error" in metrics:
-            return False, f"Host capacity could not be reliably determined: {metrics['error']}", metrics
+            return (
+                False,
+                f"Host capacity could not be reliably determined: {metrics['error']}",
+                metrics,
+            )
 
         available_ram = metrics["available_ram_mb"]
         cpu_percent = metrics["cpu_percent"]
@@ -82,7 +86,11 @@ def check_resource_capacity(
                 f"Insufficient RAM: {available_ram:.1f} MB available, but {required_ram:.1f} MB required "
                 f"({replica_memory_limit_mb:.0f} MB container limit + {min_available_ram_mb:.0f} MB buffer)"
             )
-            log.info("resources.insufficient_ram", available_mb=available_ram, required_mb=required_ram)
+            log.info(
+                "resources.insufficient_ram",
+                available_mb=available_ram,
+                required_mb=required_ram,
+            )
             return False, reason, metrics
 
         if cpu_percent > max_host_cpu_percent:
@@ -90,7 +98,11 @@ def check_resource_capacity(
                 f"Insufficient CPU: Host CPU utilisation is {cpu_percent:.1f}%, exceeding safety threshold "
                 f"of {max_host_cpu_percent:.1f}%"
             )
-            log.info("resources.insufficient_cpu", cpu_percent=cpu_percent, threshold=max_host_cpu_percent)
+            log.info(
+                "resources.insufficient_cpu",
+                cpu_percent=cpu_percent,
+                threshold=max_host_cpu_percent,
+            )
             return False, reason, metrics
 
         reason = (
@@ -102,4 +114,3 @@ def check_resource_capacity(
     except Exception as exc:
         log.error("resources.validation_error", error=str(exc), exc_info=True)
         return False, f"Host capacity could not be reliably determined: {exc}", {}
-

@@ -348,10 +348,11 @@ async def automation(
 
     try:
         import psutil
+
         vm = psutil.virtual_memory()
         avail_ram = round(vm.available / (1024 * 1024), 2)
         host_cpu = psutil.cpu_percent(interval=None)
-    except Exception:
+    except Exception:  # noqa: BLE001
         avail_ram = None
         host_cpu = None
 
@@ -463,10 +464,17 @@ async def _inject_simulator_fault(
                         payload["magnitude"] = magnitude
                     resp = await client.post(f"{base_url}/sim/faults", json=payload)
                 if resp.status_code in (200, 201, 202):
-                    log.info("chaos.injected", target=target_service, experiment=experiment, url=base_url)
+                    log.info(
+                        "chaos.injected",
+                        target=target_service,
+                        experiment=experiment,
+                        url=base_url,
+                    )
                     return True
-            except Exception as e:
-                log.warning("chaos.inject_retry", target=target_service, url=base_url, error=str(e))
+            except Exception as e:  # noqa: BLE001
+                log.warning(
+                    "chaos.inject_retry", target=target_service, url=base_url, error=str(e)
+                )
                 continue
     return False
 
@@ -477,7 +485,9 @@ async def start_chaos_run(
     body: StartChaosRequest,
 ) -> ChaosRun:
     repo = _repo(request)
-    target_service = body.target_service or DEFAULT_CHAOS_TARGETS.get(body.experiment, "central-ledger")
+    target_service = body.target_service or DEFAULT_CHAOS_TARGETS.get(
+        body.experiment, "central-ledger"
+    )
 
     # 1. Inject the fault into the target service simulator
     injected = await _inject_simulator_fault(
@@ -488,7 +498,11 @@ async def start_chaos_run(
         parameters=body.parameters,
     )
     if not injected:
-        log.warning("chaos.injection_failed_continuing", target=target_service, experiment=body.experiment)
+        log.warning(
+            "chaos.injection_failed_continuing",
+            target=target_service,
+            experiment=body.experiment,
+        )
 
     # 2. If it's a bad deploy experiment, also record a canary deployment
     if body.experiment == "bad_deploy":
@@ -529,8 +543,8 @@ async def start_chaos_run(
                     "target_service": target_service,
                 },
             )
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            log.debug("chaos.stream_publish_failed", error=str(exc))
 
     return ChaosRun(**run)
 

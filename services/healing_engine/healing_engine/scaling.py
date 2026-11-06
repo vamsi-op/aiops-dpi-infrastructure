@@ -11,7 +11,7 @@ import asyncio
 from typing import Any
 
 from docker import DockerClient
-from docker.errors import DockerException, NotFound
+from docker.errors import DockerException
 
 from aiops_common.log import get_logger
 
@@ -186,7 +186,7 @@ class DockerComposeScaler:
                     # Disconnect default and connect with explicit alias if needed
                     network_obj.disconnect(created_container)
                     network_obj.connect(created_container, aliases=[service])
-                except Exception as net_exc:
+                except Exception as net_exc:  # noqa: BLE001
                     log.warning("scaler.network_alias_notice", error=str(net_exc))
 
                 # Start the replica
@@ -211,8 +211,10 @@ class DockerComposeScaler:
                     try:
                         created_container.stop(timeout=5)
                         created_container.remove(force=True)
-                    except Exception:
-                        pass
+                    except Exception as clean_exc:  # noqa: BLE001
+                        log.debug(
+                            "scaler.cleanup_unverified_replica_failed", error=str(clean_exc)
+                        )
                     return (
                         False,
                         f"New replica '{replica_name}' failed to reach running/healthy state within 15s",
@@ -226,7 +228,12 @@ class DockerComposeScaler:
 
                 new_count = current_count + 1
                 msg = f"Scaled out '{service}' from {current_count} to {new_count} replica(s) (created '{replica_name}')"
-                log.info("scaler.scale_out_success", service=service, new_count=new_count, replica=replica_name)
+                log.info(
+                    "scaler.scale_out_success",
+                    service=service,
+                    new_count=new_count,
+                    replica=replica_name,
+                )
 
                 return (
                     True,
@@ -241,7 +248,9 @@ class DockerComposeScaler:
                 )
 
             except Exception as exc:
-                log.error("scaler.scale_out_failed", service=service, error=str(exc), exc_info=True)
+                log.error(
+                    "scaler.scale_out_failed", service=service, error=str(exc), exc_info=True
+                )
                 return (
                     False,
                     f"Docker scaling error: {exc}",
@@ -313,7 +322,12 @@ class DockerComposeScaler:
                 new_count = len(remaining)
 
                 msg = f"Scaled in '{service}' from {current_count} to {new_count} replica(s) (removed '{victim_name}')"
-                log.info("scaler.scale_in_success", service=service, new_count=new_count, removed=victim_name)
+                log.info(
+                    "scaler.scale_in_success",
+                    service=service,
+                    new_count=new_count,
+                    removed=victim_name,
+                )
 
                 return (
                     True,
@@ -327,8 +341,13 @@ class DockerComposeScaler:
                     },
                 )
 
-            except Exception as exc:
-                log.error("scaler.scale_in_failed", service=service, container=victim_name, error=str(exc))
+            except Exception as exc:  # noqa: BLE001
+                log.error(
+                    "scaler.scale_in_failed",
+                    service=service,
+                    container=victim_name,
+                    error=str(exc),
+                )
                 return (
                     False,
                     f"Docker scale-in error on '{victim_name}': {exc}",
@@ -339,4 +358,3 @@ class DockerComposeScaler:
                         "execution_mode": "real",
                     },
                 )
-

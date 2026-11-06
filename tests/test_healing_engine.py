@@ -115,9 +115,7 @@ async def test_safety_master_switch_allows_when_enabled(mock_bus, healing_settin
 
 
 @pytest.mark.asyncio
-async def test_safety_confidence_threshold_blocks_low_confidence(
-    mock_bus, healing_settings
-):
+async def test_safety_confidence_threshold_blocks_low_confidence(mock_bus, healing_settings):
     """Confidence threshold: Below min_confidence blocks as skipped_low_confidence."""
     safety = SafetyRails(mock_bus, healing_settings)
 
@@ -130,9 +128,7 @@ async def test_safety_confidence_threshold_blocks_low_confidence(
 
 
 @pytest.mark.asyncio
-async def test_safety_confidence_threshold_allows_high_confidence(
-    mock_bus, healing_settings
-):
+async def test_safety_confidence_threshold_allows_high_confidence(mock_bus, healing_settings):
     """Confidence threshold: Above min_confidence allows action."""
     safety = SafetyRails(mock_bus, healing_settings)
 
@@ -322,7 +318,10 @@ async def test_playbook_selection_cascade_hypothesis_maps_to_circuit_breaker():
                 category=RootCauseCategory.SERVICE,
                 confidence=0.88,
                 summary="Cascade from central-ledger to downstream services",
-                evidence=["central-ledger failed at T", "account-lookup-service errors at T+45s"],
+                evidence=[
+                    "central-ledger failed at T",
+                    "account-lookup-service errors at T+45s",
+                ],
             )
         ],
     )
@@ -384,7 +383,11 @@ async def test_scale_out_real_1_to_2(mock_docker_client, healing_settings):
 
     with patch(
         "healing_engine.executor.check_resource_capacity",
-        return_value=(True, "Sufficient headroom", {"available_ram_mb": 4096.0, "cpu_percent": 15.0}),
+        return_value=(
+            True,
+            "Sufficient headroom",
+            {"available_ram_mb": 4096.0, "cpu_percent": 15.0},
+        ),
     ):
         result = await executor.scale_service("central-ledger", replicas=2)
 
@@ -417,7 +420,11 @@ async def test_scale_out_real_2_to_3(mock_docker_client, healing_settings):
 
     with patch(
         "healing_engine.executor.check_resource_capacity",
-        return_value=(True, "Sufficient headroom", {"available_ram_mb": 3000.0, "cpu_percent": 25.0}),
+        return_value=(
+            True,
+            "Sufficient headroom",
+            {"available_ram_mb": 3000.0, "cpu_percent": 25.0},
+        ),
     ):
         result = await executor.scale_service("central-ledger", replicas=3)
 
@@ -457,7 +464,11 @@ async def test_scale_out_insufficient_ram_fallback(mock_docker_client, healing_s
     ram_metrics = {"available_ram_mb": 120.0, "required_ram_mb": 256.0, "cpu_percent": 20.0}
     with patch(
         "healing_engine.executor.check_resource_capacity",
-        return_value=(False, "Available RAM 120.0 MB is below requirement 256.0 MB", ram_metrics),
+        return_value=(
+            False,
+            "Available RAM 120.0 MB is below requirement 256.0 MB",
+            ram_metrics,
+        ),
     ):
         result = await executor.scale_service("central-ledger", replicas=2)
 

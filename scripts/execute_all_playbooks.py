@@ -8,21 +8,28 @@ from datetime import UTC, datetime, timedelta
 
 import docker
 
-from aiops_common.config import HealingSettings, get_settings
-from aiops_common.constants import ActionStatus, PlaybookName, TABLE_ACTIONS
+from aiops_common.config import HealingSettings
+from aiops_common.constants import TABLE_ACTIONS, ActionStatus, PlaybookName
 from aiops_common.db import Database
 from aiops_common.schemas import new_id
 from healing_engine.executor import DockerExecutor
 from healing_engine.playbooks import PlaybookExecutor
-from healing_engine.snapshot import MetricSnapshot
 
 PLAYBOOKS = [
     {
         "playbook": PlaybookName.RESTART_ON_OOM,
         "service": "account-lookup-service",
         "reason": "Memory utilisation at 94% approaching container cgroup limit",
-        "before": {"memory_utilisation_ratio": 0.94, "cpu_utilisation_ratio": 0.65, "error_ratio": 0.04},
-        "after": {"memory_utilisation_ratio": 0.28, "cpu_utilisation_ratio": 0.30, "error_ratio": 0.00},
+        "before": {
+            "memory_utilisation_ratio": 0.94,
+            "cpu_utilisation_ratio": 0.65,
+            "error_ratio": 0.04,
+        },
+        "after": {
+            "memory_utilisation_ratio": 0.28,
+            "cpu_utilisation_ratio": 0.30,
+            "error_ratio": 0.00,
+        },
     },
     {
         "playbook": PlaybookName.SCALE_OUT_PREEMPTIVE,
@@ -49,21 +56,36 @@ PLAYBOOKS = [
         "playbook": PlaybookName.ROLLBACK_BAD_DEPLOY,
         "service": "quoting-service",
         "reason": "Sudden 500 spike correlated with deployment v1.4.2 released 3m ago",
-        "before": {"error_ratio": 0.35, "latency_p99_seconds": 0.92, "cpu_utilisation_ratio": 0.88},
-        "after": {"error_ratio": 0.00, "latency_p99_seconds": 0.18, "cpu_utilisation_ratio": 0.32},
+        "before": {
+            "error_ratio": 0.35,
+            "latency_p99_seconds": 0.92,
+            "cpu_utilisation_ratio": 0.88,
+        },
+        "after": {
+            "error_ratio": 0.00,
+            "latency_p99_seconds": 0.18,
+            "cpu_utilisation_ratio": 0.32,
+        },
     },
     {
         "playbook": PlaybookName.CLEAR_QUEUE_BACKLOG,
         "service": "transaction-request-service",
         "reason": "Work queue depth exceeded 150 requests with settlement lag > 15s",
-        "before": {"queue_depth": 164.0, "settlement_lag_seconds": 18.2, "latency_p95_seconds": 0.78},
-        "after": {"queue_depth": 4.0, "settlement_lag_seconds": 0.2, "latency_p95_seconds": 0.08},
+        "before": {
+            "queue_depth": 164.0,
+            "settlement_lag_seconds": 18.2,
+            "latency_p95_seconds": 0.78,
+        },
+        "after": {
+            "queue_depth": 4.0,
+            "settlement_lag_seconds": 0.2,
+            "latency_p95_seconds": 0.08,
+        },
     },
 ]
 
 
 async def run_all_playbooks() -> None:
-    settings = get_settings()
     # Force armed settings for real execution
     healing_cfg = HealingSettings(
         HEALING_ENABLED=True,
@@ -165,7 +187,9 @@ async def run_all_playbooks() -> None:
                 "anomaly_id": None,
                 "trigger_reason": reason,
                 "confidence": 0.95,
-                "status": ActionStatus.SUCCEEDED.value if success else ActionStatus.FAILED.value,
+                "status": ActionStatus.SUCCEEDED.value
+                if success
+                else ActionStatus.FAILED.value,
                 "dry_run": False,
                 "parameters": json.dumps(action_params),
                 "result_message": message,

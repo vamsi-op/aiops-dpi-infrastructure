@@ -112,26 +112,33 @@ async def list_actions(
 
     actions = []
     for row in rows:
-        actions.append({
-            "action_id": row["action_id"],
-            "created_at": row["created_at"].isoformat(),
-            "started_at": row["started_at"].isoformat() if row["started_at"] else None,
-            "finished_at": row["finished_at"].isoformat() if row["finished_at"] else None,
-            "playbook": row["playbook"],
-            "target_service": row["target_service"],
-            "platform": row["platform"],
-            "incident_id": row["incident_id"],
-            "anomaly_id": row["anomaly_id"],
-            "trigger_reason": row["trigger_reason"],
-            "confidence": row["confidence"],
-            "status": row["status"],
-            "dry_run": row["dry_run"],
-            "execution_mode": row.get("execution_mode") or ("real" if not row.get("dry_run", True) and row.get("status") == "succeeded" else "simulated"),
-            "actual_replicas_before": row.get("actual_replicas_before"),
-            "actual_replicas_after": row.get("actual_replicas_after"),
-            "simulated_replicas_after": row.get("simulated_replicas_after"),
-            "result_message": row["result_message"],
-        })
+        actions.append(
+            {
+                "action_id": row["action_id"],
+                "created_at": row["created_at"].isoformat(),
+                "started_at": row["started_at"].isoformat() if row["started_at"] else None,
+                "finished_at": row["finished_at"].isoformat() if row["finished_at"] else None,
+                "playbook": row["playbook"],
+                "target_service": row["target_service"],
+                "platform": row["platform"],
+                "incident_id": row["incident_id"],
+                "anomaly_id": row["anomaly_id"],
+                "trigger_reason": row["trigger_reason"],
+                "confidence": row["confidence"],
+                "status": row["status"],
+                "dry_run": row["dry_run"],
+                "execution_mode": row.get("execution_mode")
+                or (
+                    "real"
+                    if not row.get("dry_run", True) and row.get("status") == "succeeded"
+                    else "simulated"
+                ),
+                "actual_replicas_before": row.get("actual_replicas_before"),
+                "actual_replicas_after": row.get("actual_replicas_after"),
+                "simulated_replicas_after": row.get("simulated_replicas_after"),
+                "result_message": row["result_message"],
+            }
+        )
 
     return {
         "actions": actions,
@@ -177,7 +184,12 @@ async def get_action(request: Request, action_id: str) -> dict[str, Any]:
         "confidence": row["confidence"],
         "status": row["status"],
         "dry_run": row["dry_run"],
-        "execution_mode": row.get("execution_mode") or ("real" if not row.get("dry_run", True) and row.get("status") == "succeeded" else "simulated"),
+        "execution_mode": row.get("execution_mode")
+        or (
+            "real"
+            if not row.get("dry_run", True) and row.get("status") == "succeeded"
+            else "simulated"
+        ),
         "actual_replicas_before": row.get("actual_replicas_before"),
         "actual_replicas_after": row.get("actual_replicas_after"),
         "simulated_replicas_after": row.get("simulated_replicas_after"),

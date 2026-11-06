@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from aiops_common.bus import EventBus
-from aiops_common.config import HealingSettings, Settings
+from aiops_common.config import HealingSettings
 from aiops_common.constants import (
     ActionStatus,
     AnomalyKind,
@@ -31,18 +31,17 @@ from aiops_common.constants import (
     Severity,
 )
 from aiops_common.schemas import AnomalyEvent, Incident, RootCauseHypothesis
-from healing_engine.engine import HealingEngine
-from healing_engine.executor import ExecutorInterface, ScaleResult
+from healing_engine.executor import ExecutorInterface
 from healing_engine.playbooks import PlaybookExecutor, PlaybookRegistry
 from healing_engine.safety import SafetyRails
 from healing_engine.snapshot import MetricSnapshot
 from rca_engine.correlator import RCACorrelator
 from rca_engine.incident_manager import IncidentManager
 
-
 # ---------------------------------------------------------------------------
 # Fixtures and Helpers
 # ---------------------------------------------------------------------------
+
 
 class MockAsyncDB:
     """Mock database implementing fetch_all, fetch_one, execute for isolated tests."""
@@ -53,13 +52,17 @@ class MockAsyncDB:
         self.mock_fetch_all_result: list[dict[str, Any]] | None = None
         self.mock_fetch_one_result: dict[str, Any] | None = None
 
-    async def fetch_all(self, sql: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    async def fetch_all(
+        self, sql: str, params: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
         self.executed_queries.append((sql, params))
         if self.mock_fetch_all_result is not None:
             return self.mock_fetch_all_result
         return self.rows
 
-    async def fetch_one(self, sql: str, params: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    async def fetch_one(
+        self, sql: str, params: dict[str, Any] | None = None
+    ) -> dict[str, Any] | None:
         self.executed_queries.append((sql, params))
         if self.mock_fetch_one_result is not None:
             return self.mock_fetch_one_result
@@ -85,6 +88,7 @@ def mock_bus():
 # ---------------------------------------------------------------------------
 # Scenario 1: Multiple Related Anomalies Correlate into One Incident
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_scenario_1_multiple_anomalies_correlate_one_incident(mock_bus):
@@ -132,6 +136,7 @@ async def test_scenario_1_multiple_anomalies_correlate_one_incident(mock_bus):
 # Scenario 2: Duplicate Incident Prevention
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_scenario_2_duplicate_incident_prevention(mock_bus):
     """Subsequent anomalies for an ongoing problem update the existing incident instead of creating a duplicate."""
@@ -147,7 +152,16 @@ async def test_scenario_2_duplicate_incident_prevention(mock_bus):
         "title": "[Live] Service central-ledger failure",
         "affected_services": ["central-ledger"],
         "anomaly_ids": ["anom-old-1"],
-        "hypotheses": json.dumps([{"category": "service", "target": "central-ledger", "confidence": 0.85, "summary": "issue"}]),
+        "hypotheses": json.dumps(
+            [
+                {
+                    "category": "service",
+                    "target": "central-ledger",
+                    "confidence": 0.85,
+                    "summary": "issue",
+                }
+            ]
+        ),
         "ai_summary": "Existing summary",
     }
 
@@ -189,6 +203,7 @@ async def test_scenario_2_duplicate_incident_prevention(mock_bus):
 # Scenario 3: Live vs Seeded Incident Distinction
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_scenario_3_live_vs_seeded_distinction(mock_bus):
     """Live incidents generated from live telemetry carry the [Live] distinction."""
@@ -207,22 +222,24 @@ async def test_scenario_3_live_vs_seeded_distinction(mock_bus):
     ]
 
     incident = await incident_mgr.create_incident(anomalies, [])
-    assert incident.title.startswith("[Live]"), f"Title '{incident.title}' must start with [Live]"
+    assert incident.title.startswith(
+        "[Live]"
+    ), f"Title '{incident.title}' must start with [Live]"
 
 
 # ---------------------------------------------------------------------------
 # Scenario 4: Genuine Remediation Execution when HEALING_ENABLED=true
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_scenario_4_genuine_healing_execution(mock_bus):
     """When HEALING_ENABLED=true, real operations execute and are logged as real."""
-    db = MockAsyncDB()
-    snapshot = MetricSnapshot(db=db)
-
     # Mock real executor
     mock_executor = MagicMock(spec=ExecutorInterface)
-    mock_executor.restart_container = AsyncMock(return_value=(True, "Restarted container central-ledger-1"))
+    mock_executor.restart_container = AsyncMock(
+        return_value=(True, "Restarted container central-ledger-1")
+    )
     mock_executor.get_replica_count = AsyncMock(return_value=1)
     mock_executor.client = MagicMock()
     mock_container = MagicMock()
@@ -250,6 +267,7 @@ async def test_scenario_4_genuine_healing_execution(mock_bus):
 # Scenario 5: Dry-Run Behaviour when HEALING_ENABLED=false
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_scenario_5_dry_run_behaviour(mock_bus):
     """When HEALING_ENABLED=false, safety rails block execution with SKIPPED_DRY_RUN."""
@@ -266,6 +284,7 @@ async def test_scenario_5_dry_run_behaviour(mock_bus):
 # ---------------------------------------------------------------------------
 # Scenario 6: Safety-Rail Blocking (Cooldown, Budget, Low Confidence)
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_scenario_6_safety_rails_enforcement(mock_bus):
@@ -293,6 +312,7 @@ async def test_scenario_6_safety_rails_enforcement(mock_bus):
 # ---------------------------------------------------------------------------
 # Scenario 7: Successful Recovery Verification
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_scenario_7_successful_recovery_verification():
@@ -336,6 +356,7 @@ async def test_scenario_7_successful_recovery_verification():
 # Scenario 8: Failed Recovery Verification
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_scenario_8_failed_recovery_verification():
     """Post-remediation metrics that still violate SLOs result in FAILED verification."""
@@ -377,6 +398,7 @@ async def test_scenario_8_failed_recovery_verification():
 # Scenario 9: Incident Resolution Integrity
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_scenario_9_incident_resolution_integrity(mock_bus):
     """Incident remains open/mitigating if recovery fails; resolves only after confirmed recovery."""
@@ -409,7 +431,9 @@ async def test_scenario_9_incident_resolution_integrity(mock_bus):
 
     # Verify that resolve_incident was NOT called
     resolve_queries = [q for q in db.executed_queries if "SET status = 'resolved'" in q[0]]
-    assert len(resolve_queries) == 0, "Incident should NOT resolve when metrics are unhealthy or action failed"
+    assert (
+        len(resolve_queries) == 0
+    ), "Incident should NOT resolve when metrics are unhealthy or action failed"
 
     # Test 9B: When metrics are verified healthy and quiet, incident resolves cleanly
     def mock_fetch_one_healthy(sql, params=None):
@@ -431,6 +455,7 @@ async def test_scenario_9_incident_resolution_integrity(mock_bus):
 # ---------------------------------------------------------------------------
 # Scenario 10: Traffic Overload Selection
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_scenario_10_traffic_overload_selects_scale_out():
@@ -468,6 +493,7 @@ async def test_scenario_10_traffic_overload_selects_scale_out():
 # ---------------------------------------------------------------------------
 # Scenario 11: Persistent Queue Backlog Prevents Repeated Restarts
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_scenario_11_persistent_queue_backlog_escalates_from_failed_restart():
@@ -523,6 +549,7 @@ async def test_scenario_11_persistent_queue_backlog_escalates_from_failed_restar
 # Scenario 12: Downstream Dependency Failure Handling
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_scenario_12_downstream_dependency_failure_identified():
     """Identifies when downstream service failure causes upstream anomalies, avoiding blind upstream restart."""
@@ -565,6 +592,7 @@ async def test_scenario_12_downstream_dependency_failure_identified():
 # Scenario 13: Insufficient Host Capacity Skips Scale-Out
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_scenario_13_insufficient_capacity_skips_scale_out(monkeypatch):
     """When host RAM or CPU is insufficient, scale-out is safely skipped."""
@@ -575,8 +603,13 @@ async def test_scenario_13_insufficient_capacity_skips_scale_out(monkeypatch):
     settings = HealingSettings(HEALING_ENABLED=True)
     executor = DockerExecutor(client=client, settings=settings)
 
-    with patch.object(executor, "get_replica_count", AsyncMock(return_value=1)), \
-         patch("healing_engine.executor.check_resource_capacity", return_value=(False, "Host RAM buffer exhausted", {})):
+    with (
+        patch.object(executor, "get_replica_count", AsyncMock(return_value=1)),
+        patch(
+            "healing_engine.executor.check_resource_capacity",
+            return_value=(False, "Host RAM buffer exhausted", {}),
+        ),
+    ):
         result = await executor.scale_service("account-lookup-service", replicas=2)
         assert result.success is False
         assert result.metadata.get("status") == ActionStatus.SKIPPED_INSUFFICIENT_CAPACITY
@@ -586,6 +619,7 @@ async def test_scenario_13_insufficient_capacity_skips_scale_out(monkeypatch):
 # ---------------------------------------------------------------------------
 # Scenario 14: Global Container Limit (20 Containers) Enforced
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_scenario_14_global_container_limit_enforced(monkeypatch):
@@ -615,6 +649,7 @@ async def test_scenario_14_global_container_limit_enforced(monkeypatch):
 # Scenario 15: Cooldown Recorded on Remediation Failure
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_scenario_15_cooldown_recorded_on_failure(mock_bus):
     """Failed actions record failure cooldown in Redis, preventing rapid restart loops."""
@@ -642,6 +677,7 @@ async def test_scenario_15_cooldown_recorded_on_failure(mock_bus):
 # ---------------------------------------------------------------------------
 # Scenario 16: Remediation Attempt Limit Enforced (Max 2 Attempts)
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_scenario_16_attempt_limit_enforced(mock_bus, monkeypatch):

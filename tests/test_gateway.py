@@ -205,7 +205,7 @@ def test_clean_chaos_timings_none_when_undetected() -> None:
 
 
 def test_chaos_start_request_model() -> None:
-    from api_gateway.routes import StartChaosRequest, DEFAULT_CHAOS_TARGETS
+    from api_gateway.routes import DEFAULT_CHAOS_TARGETS, StartChaosRequest
 
     req = StartChaosRequest(experiment="cpu_hog")
     assert req.experiment == "cpu_hog"
@@ -220,6 +220,7 @@ def test_chaos_start_request_model() -> None:
 @pytest.mark.asyncio
 async def test_inject_simulator_fault_mock() -> None:
     from unittest.mock import AsyncMock, patch
+
     from api_gateway.routes import _inject_simulator_fault
 
     mock_resp = AsyncMock()
@@ -234,4 +235,3 @@ async def test_inject_simulator_fault_mock() -> None:
         )
         assert success is True
         mock_post.assert_awaited()
-

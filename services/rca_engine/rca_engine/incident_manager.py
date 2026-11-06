@@ -6,7 +6,7 @@ Creates, updates, and resolves incidents based on correlated anomalies.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from aiops_common.bus import EventBus
@@ -53,7 +53,7 @@ class IncidentManager:
         if not anomalies:
             raise ValueError("Cannot create incident without anomalies")
 
-        affected_services = sorted(list({a.service for a in anomalies}))
+        affected_services = sorted({a.service for a in anomalies})
         anomaly_ids = [a.anomaly_id for a in anomalies]
 
         # Determine severity: max of contributing anomalies
@@ -88,7 +88,7 @@ class IncidentManager:
             # Correlate and merge into existing incident instead of creating a duplicate
             existing_id = existing["incident_id"]
             existing_services = list(existing.get("affected_services") or [])
-            merged_services = sorted(list(set(existing_services) | set(affected_services)))
+            merged_services = sorted(set(existing_services) | set(affected_services))
 
             existing_anom_ids = list(existing.get("anomaly_ids") or [])
             merged_anom_ids = list(dict.fromkeys(existing_anom_ids + anomaly_ids))
@@ -100,12 +100,14 @@ class IncidentManager:
             if isinstance(existing_hypo_raw, str):
                 try:
                     existing_hypo_raw = json.loads(existing_hypo_raw)
-                except Exception:
+                except Exception:  # noqa: BLE001
                     existing_hypo_raw = []
-            
-            merged_hypotheses = hypotheses if hypotheses else [
-                RootCauseHypothesis.model_validate(h) for h in existing_hypo_raw
-            ]
+
+            merged_hypotheses = (
+                hypotheses
+                if hypotheses
+                else [RootCauseHypothesis.model_validate(h) for h in existing_hypo_raw]
+            )
 
             summary = self._generate_summary(anomalies, merged_hypotheses)
 
@@ -386,9 +388,11 @@ class IncidentManager:
             )
 
             service_metrics: dict[str, dict[str, float]] = {}
-            for m in (metrics_rows or []):
+            for m in metrics_rows or []:
                 # Defend against mock DB returning incident rows
-                if not any(k in m for k in ("avg_error", "avg_p99", "avg_queue", "error_ratio")):
+                if not any(
+                    k in m for k in ("avg_error", "avg_p99", "avg_queue", "error_ratio")
+                ):
                     continue
                 svc = m.get("service") or (services[0] if services else None)
                 if svc:
@@ -406,7 +410,9 @@ class IncidentManager:
                     metrics_query,
                     {"services": services, "metrics_cutoff": metrics_cutoff},
                 )
-                if metrics_one and any(k in metrics_one for k in ("avg_error", "avg_p99", "avg_queue")):
+                if metrics_one and any(
+                    k in metrics_one for k in ("avg_error", "avg_p99", "avg_queue")
+                ):
                     svc = metrics_one.get("service") or (services[0] if services else None)
                     if svc:
                         service_metrics[svc] = {
@@ -420,28 +426,28 @@ class IncidentManager:
             slo_violated = False
             slo_reason = ""
             for svc in services:
-                m = service_metrics.get(svc)
-                if not m:
+                svc_metric = service_metrics.get(svc)
+                if not svc_metric:
                     continue
-                if m["avg_error"] > SLO_MAX_ERROR_RATIO:
+                if svc_metric["avg_error"] > SLO_MAX_ERROR_RATIO:
                     slo_violated = True
-                    slo_reason = f"{svc} error ratio ({m['avg_error']:.2%}) exceeds SLO ({SLO_MAX_ERROR_RATIO:.1%})"
+                    slo_reason = f"{svc} error ratio ({svc_metric['avg_error']:.2%}) exceeds SLO ({SLO_MAX_ERROR_RATIO:.1%})"
                     break
-                if m["avg_p99"] > SLO_MAX_LATENCY_P99_SECONDS:
+                if svc_metric["avg_p99"] > SLO_MAX_LATENCY_P99_SECONDS:
                     slo_violated = True
-                    slo_reason = f"{svc} p99 latency ({m['avg_p99']*1000:.0f}ms) exceeds SLO ({SLO_MAX_LATENCY_P99_SECONDS*1000:.0f}ms)"
+                    slo_reason = f"{svc} p99 latency ({svc_metric['avg_p99']*1000:.0f}ms) exceeds SLO ({SLO_MAX_LATENCY_P99_SECONDS*1000:.0f}ms)"
                     break
-                if m["avg_queue"] > SLO_MAX_QUEUE_DEPTH:
+                if svc_metric["avg_queue"] > SLO_MAX_QUEUE_DEPTH:
                     slo_violated = True
-                    slo_reason = f"{svc} queue depth ({m['avg_queue']:.1f}) exceeds SLO ({SLO_MAX_QUEUE_DEPTH:.0f})"
+                    slo_reason = f"{svc} queue depth ({svc_metric['avg_queue']:.1f}) exceeds SLO ({SLO_MAX_QUEUE_DEPTH:.0f})"
                     break
-                if m["avg_cpu"] > SLO_MAX_CPU_RATIO:
+                if svc_metric["avg_cpu"] > SLO_MAX_CPU_RATIO:
                     slo_violated = True
-                    slo_reason = f"{svc} CPU ({m['avg_cpu']:.1%}) exceeds SLO ({SLO_MAX_CPU_RATIO:.0%})"
+                    slo_reason = f"{svc} CPU ({svc_metric['avg_cpu']:.1%}) exceeds SLO ({SLO_MAX_CPU_RATIO:.0%})"
                     break
-                if m["avg_mem"] > SLO_MAX_MEMORY_RATIO:
+                if svc_metric["avg_mem"] > SLO_MAX_MEMORY_RATIO:
                     slo_violated = True
-                    slo_reason = f"{svc} memory ({m['avg_mem']:.1%}) exceeds SLO ({SLO_MAX_MEMORY_RATIO:.0%})"
+                    slo_reason = f"{svc} memory ({svc_metric['avg_mem']:.1%}) exceeds SLO ({SLO_MAX_MEMORY_RATIO:.0%})"
                     break
 
             if slo_violated:
@@ -468,7 +474,8 @@ class IncidentManager:
 
             # Filter valid anomalies (defend against mock DB returning incident rows)
             valid_recent_anomalies = [
-                a for a in (recent_anomalies or [])
+                a
+                for a in (recent_anomalies or [])
                 if any(k in a for k in ("anomaly_id", "severity", "score", "kind"))
             ]
 
@@ -477,7 +484,7 @@ class IncidentManager:
             if isinstance(hypotheses_data, str):
                 try:
                     hypotheses_data = json.loads(hypotheses_data)
-                except Exception:
+                except Exception:  # noqa: BLE001
                     hypotheses_data = []
             primary_hypo = hypotheses_data[0] if hypotheses_data else {}
             primary_target = primary_hypo.get("target")
@@ -503,7 +510,11 @@ class IncidentManager:
                     break
 
                 # Severe anomaly with critical feature failure (queue backlog or error burst)
-                if sev == Severity.CRITICAL and score >= 0.90 and any(f in ("error_ratio", "queue_depth") for f in feats):
+                if (
+                    sev == Severity.CRITICAL
+                    and score >= 0.90
+                    and any(f in ("error_ratio", "queue_depth") for f in feats)
+                ):
                     has_relevant_failure = True
                     relevant_reason = f"Severe anomaly ({kind}, score={score:.2f}) with critical features {feats} on {svc}"
                     break
@@ -550,7 +561,7 @@ class IncidentManager:
         # Affected services
         services = {a.service for a in anomalies}
         if len(services) == 1:
-            parts.append(f"Service **{list(services)[0]}** is experiencing issues.")
+            parts.append(f"Service **{next(iter(services))}** is experiencing issues.")
         else:
             parts.append(
                 f"**{len(services)} services** are affected: {', '.join(sorted(services))}."
@@ -559,7 +570,9 @@ class IncidentManager:
         # Primary hypothesis
         if hypotheses:
             primary = hypotheses[0]
-            parts.append(f"\n**Likely cause ({primary.confidence:.0%} confidence):** {primary.summary}")
+            parts.append(
+                f"\n**Likely cause ({primary.confidence:.0%} confidence):** {primary.summary}"
+            )
 
             if primary.evidence:
                 parts.append("\n**Evidence:**")
@@ -568,7 +581,9 @@ class IncidentManager:
 
             # Alternative hypotheses
             if len(hypotheses) > 1:
-                parts.append(f"\n**Alternative explanations:** {len(hypotheses) - 1} other hypothesis(es) identified.")
+                parts.append(
+                    f"\n**Alternative explanations:** {len(hypotheses) - 1} other hypothesis(es) identified."
+                )
 
         # Anomaly details
         critical_anomalies = [a for a in anomalies if a.severity == Severity.CRITICAL]
@@ -581,13 +596,11 @@ class IncidentManager:
             all_features.extend(anomaly.contributing_features[:2])  # Top 2 per anomaly
 
         if all_features:
-            feature_counts = {}
+            feature_counts: dict[str, int] = {}
             for f in all_features:
                 feature_counts[f] = feature_counts.get(f, 0) + 1
             top_features = sorted(feature_counts.items(), key=lambda x: x[1], reverse=True)[:3]
-            parts.append(
-                f"\n**Key signals:** {', '.join(f for f, _ in top_features)}"
-            )
+            parts.append(f"\n**Key signals:** {', '.join(f for f, _ in top_features)}")
 
         return " ".join(parts)
 
@@ -611,12 +624,10 @@ class IncidentManager:
             if isinstance(hypo_data, str):
                 try:
                     hypo_data = json.loads(hypo_data)
-                except Exception:
+                except Exception:  # noqa: BLE001
                     hypo_data = []
 
-            hypotheses = [
-                RootCauseHypothesis.model_validate(h) for h in hypo_data
-            ]
+            hypotheses = [RootCauseHypothesis.model_validate(h) for h in hypo_data]
 
             incident = Incident(
                 incident_id=row["incident_id"],

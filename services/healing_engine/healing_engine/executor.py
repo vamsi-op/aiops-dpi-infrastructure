@@ -13,7 +13,7 @@ from typing import Any
 import docker
 from docker.errors import DockerException, NotFound
 
-from aiops_common.config import get_settings
+from aiops_common.config import HealingSettings, get_settings
 from aiops_common.constants import ActionStatus, ExecutionMode
 from aiops_common.log import get_logger
 
@@ -23,8 +23,12 @@ from .scaling import DockerComposeScaler
 log = get_logger(__name__)
 
 
-class ScaleResult(tuple):
+class ScaleResult(tuple[Any, ...]):
     """Result of a scaling operation, backwards-compatible with (success, message) 2-tuples."""
+
+    success: bool
+    message: str
+    metadata: dict[str, Any]
 
     def __new__(
         cls,
@@ -126,7 +130,9 @@ class DockerExecutor(ExecutorInterface):
             if instance:
                 container = self.client.containers.get(instance)
                 container.restart(timeout=10)
-                log.info("docker_executor.container_restarted", service=service, instance=instance)
+                log.info(
+                    "docker_executor.container_restarted", service=service, instance=instance
+                )
                 return True, f"Restarted container {instance}"
 
             containers = self.client.containers.list(
@@ -145,7 +151,11 @@ class DockerExecutor(ExecutorInterface):
             for container in containers:
                 container.restart(timeout=10)
                 restarted.append(container.name)
-                log.info("docker_executor.container_restarted", service=service, container=container.name)
+                log.info(
+                    "docker_executor.container_restarted",
+                    service=service,
+                    container=container.name,
+                )
 
             return True, f"Restarted {len(restarted)} container(s): {', '.join(restarted)}"
 
@@ -155,7 +165,12 @@ class DockerExecutor(ExecutorInterface):
             return False, msg
         except DockerException as exc:
             msg = f"Docker error: {exc}"
-            log.error("docker_executor.restart_failed", service=service, instance=instance, error=str(exc))
+            log.error(
+                "docker_executor.restart_failed",
+                service=service,
+                instance=instance,
+                error=str(exc),
+            )
             return False, msg
 
     async def scale_service(
@@ -202,7 +217,12 @@ class DockerExecutor(ExecutorInterface):
             # Check maximum per-service replica limit
             if effective_current >= max_replicas:
                 msg = f"Service '{service}' already at maximum replicas ({max_replicas}). Scaling capped."
-                log.info("docker_executor.scale_capped_max", service=service, current=current, max_replicas=max_replicas)
+                log.info(
+                    "docker_executor.scale_capped_max",
+                    service=service,
+                    current=current,
+                    max_replicas=max_replicas,
+                )
                 return ScaleResult(
                     False,
                     msg,
@@ -225,7 +245,11 @@ class DockerExecutor(ExecutorInterface):
                             f"Global container limit ({global_max}) reached on host "
                             f"({len(all_containers)} running). Cannot scale out '{service}'."
                         )
-                        log.warning("docker_executor.global_container_limit_reached", count=len(all_containers), max=global_max)
+                        log.warning(
+                            "docker_executor.global_container_limit_reached",
+                            count=len(all_containers),
+                            max=global_max,
+                        )
                         return ScaleResult(
                             False,
                             msg,
@@ -237,7 +261,7 @@ class DockerExecutor(ExecutorInterface):
                                 "simulated_replicas_after": replicas,
                             },
                         )
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     log.warning("docker_executor.global_limit_check_failed", error=str(exc))
 
             # Check host resource availability
@@ -249,7 +273,9 @@ class DockerExecutor(ExecutorInterface):
 
             if not sufficient:
                 msg = f"Insufficient host capacity: {cap_reason}. Simulated scale-out from {current} to {replicas} replicas."
-                log.warning("docker_executor.insufficient_capacity", service=service, reason=cap_reason)
+                log.warning(
+                    "docker_executor.insufficient_capacity", service=service, reason=cap_reason
+                )
                 return ScaleResult(
                     False,
                     msg,
@@ -299,7 +325,12 @@ class DockerExecutor(ExecutorInterface):
             # Check minimum replica limit
             if effective_current <= min_replicas:
                 msg = f"Service '{service}' already at minimum replicas ({min_replicas}). Cannot scale in."
-                log.info("docker_executor.scale_capped_min", service=service, current=current, min_replicas=min_replicas)
+                log.info(
+                    "docker_executor.scale_capped_min",
+                    service=service,
+                    current=current,
+                    min_replicas=min_replicas,
+                )
                 return ScaleResult(
                     False,
                     msg,
@@ -358,7 +389,9 @@ class DockerExecutor(ExecutorInterface):
                 container.restart(timeout=10)
                 restarted.append(container.name)
 
-            log.info("docker_executor.rollback_simulated", service=service, containers=len(restarted))
+            log.info(
+                "docker_executor.rollback_simulated", service=service, containers=len(restarted)
+            )
             msg = f"Rolled back {service} ({len(restarted)} container(s) restarted)"
             return True, msg
 
@@ -371,6 +404,6 @@ class DockerExecutor(ExecutorInterface):
         """Count running containers for a service."""
         try:
             return await self.scaler.get_replica_count(service)
-        except Exception:
+        except Exception:  # noqa: BLE001
             containers = self.scaler.get_replicas(service)
             return len(containers)

@@ -9,7 +9,7 @@ Groups related anomalies across multiple dimensions:
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from aiops_common.config import get_settings
@@ -17,7 +17,6 @@ from aiops_common.constants import MOJALOOP_DEPENDENCIES, RootCauseCategory
 from aiops_common.log import get_logger
 from aiops_common.schemas import (
     AnomalyEvent,
-    DeploymentEvent,
     RootCauseHypothesis,
 )
 
@@ -37,6 +36,10 @@ MIN_HYPOTHESIS_CONFIDENCE = 0.3
 
 class Correlator:
     """Correlates anomalies to find root causes across 4 dimensions."""
+
+    temporal_window_seconds: int = TEMPORAL_WINDOW_SECONDS
+    change_window_seconds: int = CHANGE_WINDOW_SECONDS
+    event_window_seconds: int = EVENT_WINDOW_SECONDS
 
     def __init__(self, db: Database) -> None:
         self.db = db
@@ -101,7 +104,7 @@ class Correlator:
 
         if len(affected_services) == 1:
             # Single service - it's the root by definition
-            service = list(affected_services)[0]
+            service = next(iter(affected_services))
             return RootCauseHypothesis(
                 category=RootCauseCategory.SERVICE,
                 target=service,
@@ -109,7 +112,7 @@ class Correlator:
                 summary=f"Service {service} is experiencing issues",
                 evidence=[
                     f"Only {service} showing anomalies",
-                    f"No cascade detected to downstream services",
+                    "No cascade detected to downstream services",
                 ],
             )
 
@@ -119,7 +122,7 @@ class Correlator:
         for service in affected_services:
             downstream = MOJALOOP_DEPENDENCIES.get(service, ())
             # Remove services that are downstream of this one
-            root_services -= set(d for d in downstream if d in affected_services)
+            root_services -= {d for d in downstream if d in affected_services}
 
         if not root_services:
             # Cycle or no clear root - fall back to service with most severe anomaly
@@ -127,7 +130,7 @@ class Correlator:
             root_services = {most_severe.service}
 
         # Count affected downstream services per root candidate
-        root_service = list(root_services)[0]  # Take first if multiple
+        root_service = next(iter(root_services))  # Take first if multiple
         downstream_affected = [
             svc
             for svc in MOJALOOP_DEPENDENCIES.get(root_service, ())
