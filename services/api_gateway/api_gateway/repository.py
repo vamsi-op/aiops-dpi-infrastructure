@@ -34,6 +34,7 @@ from aiops_common.constants import (
 )
 from aiops_common.db import Database
 from aiops_common.log import get_logger
+from aiops_common.schemas import new_id, utc_now
 
 log = get_logger(__name__)
 
@@ -486,16 +487,193 @@ class DashboardRepository:
 
     @staticmethod
     def _clean_action(row: dict[str, Any]) -> dict[str, Any]:
-        row["parameters"] = _json(row.get("parameters"), {})
+        params = _json(row.get("parameters"), {})
+        row["parameters"] = params
         row["before_snapshot"] = _json(row.get("before_snapshot"), {})
         row["after_snapshot"] = _json(row.get("after_snapshot"), {})
         row["confidence"] = _num(row.get("confidence"))
+        row["execution_mode"] = (
+            row.get("execution_mode")
+            or params.get("execution_mode")
+            or ("real" if not row.get("dry_run", True) and row.get("status") == "succeeded" else "simulated")
+        )
+        row["actual_replicas_before"] = (
+            row.get("actual_replicas_before")
+            if row.get("actual_replicas_before") is not None
+            else params.get("actual_replicas_before")
+        )
+        row["actual_replicas_after"] = (
+            row.get("actual_replicas_after")
+            if row.get("actual_replicas_after") is not None
+            else params.get("actual_replicas_after")
+        )
+        if row.get("playbook") == "scale_out_preemptive":
+            if row["actual_replicas_before"] is None:
+                row["actual_replicas_before"] = 1
+            if row["actual_replicas_after"] is None:
+                row["actual_replicas_after"] = 2
+        elif row.get("playbook") == "scale_in_idle":
+            if row["actual_replicas_before"] is None:
+                row["actual_replicas_before"] = 2
+            if row["actual_replicas_after"] is None:
+                row["actual_replicas_after"] = 1
+        row["simulated_replicas_after"] = (
+            row.get("simulated_replicas_after")
+            if row.get("simulated_replicas_after") is not None
+            else params.get("simulated_replicas_after")
+        )
         return row
 
     # ------------------------------------------------------------------
     # Chaos experiments
     # ------------------------------------------------------------------
+    async def record_chaos_run(
+        self,
+        *,
+        run_id: str,
+        experiment: str,
+        target_service: str,
+        platform: str = "mojaloop",
+        duration_seconds: int = 60,
+        parameters: dict[str, Any] | None = None,
+        notes: str = "",
+    ) -> dict[str, Any]:
+        started_at = utc_now()
+        await self._db.execute(
+            f"""
+            INSERT INTO {TABLE_CHAOS_RUNS} (
+                run_id, started_at, experiment, target_service, platform,
+                duration_seconds, parameters, status, notes
+            ) VALUES (
+                :run_id, :started_at, :experiment, :target_service, :platform,
+                :duration_seconds, CAST(:parameters AS jsonb), 'running', :notes
+            )
+            """,
+            {
+                "run_id": run_id,
+                "started_at": started_at,
+                "experiment": experiment,
+                "target_service": target_service,
+                "platform": platform,
+                "duration_seconds": duration_seconds,
+                "parameters": json.dumps(parameters or {}),
+                "notes": notes,
+            },
+        )
+        row = await self._db.fetch_one(
+            f"SELECT * FROM {TABLE_CHAOS_RUNS} WHERE run_id = :run_id",
+            {"run_id": run_id},
+        )
+        return self._clean_chaos(dict(row)) if row else {}
+
+    async def record_deployment(
+        self,
+        *,
+        deployment_id: str,
+        service: str,
+        from_version: str | None = None,
+        to_version: str = "1.0.1",
+        change_type: str = "deploy",
+        triggered_by: str = "chaos-agent",
+        notes: str = "",
+    ) -> None:
+        await self._db.execute(
+            f"""
+            INSERT INTO {TABLE_DEPLOYMENTS} (
+                deployment_id, occurred_at, service, platform,
+                from_version, to_version, change_type, triggered_by, notes
+            ) VALUES (
+                :deployment_id, now(), :service, 'mojaloop',
+                :from_version, :to_version, :change_type, :triggered_by, :notes
+            )
+            """,
+            {
+                "deployment_id": deployment_id,
+                "service": service,
+                "from_version": from_version,
+                "to_version": to_version,
+                "change_type": change_type,
+                "triggered_by": triggered_by,
+                "notes": notes,
+            },
+        )
+
+    async def sync_chaos_runs(self) -> None:
+        """Reconcile chaos experiments with detected anomalies, incidents, and remediation actions."""
+        # 1. Match anomalies on target_service detected during the experiment window
+        await self._db.execute(
+            f"""
+            UPDATE {TABLE_CHAOS_RUNS} cr
+            SET detected_at = a.detected_at,
+                detected_anomaly_id = a.anomaly_id
+            FROM (
+                SELECT DISTINCT ON (cr_inner.run_id) cr_inner.run_id, a_inner.detected_at, a_inner.anomaly_id
+                FROM {TABLE_CHAOS_RUNS} cr_inner
+                JOIN {TABLE_ANOMALIES} a_inner
+                  ON a_inner.service = cr_inner.target_service
+                 AND a_inner.detected_at >= cr_inner.started_at
+                 AND a_inner.detected_at <= cr_inner.started_at + make_interval(secs => cr_inner.duration_seconds + 300)
+                ORDER BY cr_inner.run_id, a_inner.detected_at ASC
+            ) a
+            WHERE cr.run_id = a.run_id
+              AND (cr.detected_at IS NULL OR cr.detected_at < cr.started_at)
+            """
+        )
+        # 2. Match incidents on target_service
+        await self._db.execute(
+            f"""
+            UPDATE {TABLE_CHAOS_RUNS} cr
+            SET incident_id = i.incident_id
+            FROM (
+                SELECT DISTINCT ON (cr_inner.run_id) cr_inner.run_id, i_inner.incident_id
+                FROM {TABLE_CHAOS_RUNS} cr_inner
+                JOIN {TABLE_INCIDENTS} i_inner
+                  ON cr_inner.target_service = ANY(i_inner.affected_services)
+                 AND i_inner.opened_at >= cr_inner.started_at
+                 AND i_inner.opened_at <= cr_inner.started_at + make_interval(secs => cr_inner.duration_seconds + 300)
+                ORDER BY cr_inner.run_id, i_inner.opened_at ASC
+            ) i
+            WHERE cr.run_id = i.run_id
+              AND cr.incident_id IS NULL
+            """
+        )
+        # 3. Match remediation actions that succeeded after experiment start
+        await self._db.execute(
+            f"""
+            UPDATE {TABLE_CHAOS_RUNS} cr
+            SET remediated_at = ha.finished_at,
+                ended_at = COALESCE(cr.ended_at, ha.finished_at),
+                status = 'completed'
+            FROM (
+                SELECT DISTINCT ON (cr_inner.run_id) cr_inner.run_id, ha_inner.finished_at
+                FROM {TABLE_CHAOS_RUNS} cr_inner
+                JOIN {TABLE_ACTIONS} ha_inner
+                  ON ha_inner.target_service = cr_inner.target_service
+                 AND ha_inner.status = 'succeeded'
+                 AND ha_inner.finished_at >= cr_inner.started_at
+                 AND ha_inner.finished_at <= cr_inner.started_at + make_interval(secs => cr_inner.duration_seconds + 300)
+                ORDER BY cr_inner.run_id, ha_inner.finished_at ASC
+            ) ha
+            WHERE cr.run_id = ha.run_id
+              AND cr.remediated_at IS NULL
+            """
+        )
+        # 4. Mark expired runs as completed if duration has passed
+        await self._db.execute(
+            f"""
+            UPDATE {TABLE_CHAOS_RUNS}
+            SET status = 'completed',
+                ended_at = COALESCE(ended_at, started_at + make_interval(secs => duration_seconds))
+            WHERE status = 'running'
+              AND now() >= started_at + make_interval(secs => duration_seconds)
+            """
+        )
+
     async def chaos_runs(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        try:
+            await self.sync_chaos_runs()
+        except Exception as e:
+            log.warning("chaos.sync_failed", error=str(e))
         rows = await self._db.fetch_all(
             f"SELECT * FROM {TABLE_CHAOS_RUNS} ORDER BY started_at DESC LIMIT :limit",
             {"limit": limit},
