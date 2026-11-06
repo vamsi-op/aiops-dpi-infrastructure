@@ -11,7 +11,7 @@ Playbooks are idempotent and safe to retry.
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Final
 
 from aiops_common.constants import AnomalyKind, PlaybookName, RootCauseCategory
 from aiops_common.log import get_logger
@@ -20,6 +20,14 @@ from aiops_common.schemas import AnomalyEvent, Incident
 from .executor import ExecutorInterface, ScaleResult
 
 log = get_logger(__name__)
+
+DEFAULT_SERVICE_CAPACITY_TPS: Final[dict[str, float]] = {
+    "central-ledger": 25.0,
+    "quoting-service": 20.0,
+    "account-lookup-service": 25.0,
+    "ml-api-adapter": 20.0,
+    "transaction-request-service": 12.0,
+}
 
 
 class PlaybookRegistry:
@@ -136,24 +144,31 @@ class PlaybookRegistry:
         cpu = snap.get("cpu_utilisation_ratio", 0.0)
         mem = snap.get("memory_utilisation_ratio", 0.0)
         error_ratio = snap.get("error_ratio", 0.0)
-        load_factor = (tps / capacity) if capacity > 0 else (cpu if cpu > 0 else 0.0)
 
+        # Fallback to nominal service capacity if not explicitly provided in snapshot
+        if capacity <= 0.0:
+            capacity = DEFAULT_SERVICE_CAPACITY_TPS.get(anomaly.service, 30.0)
+
+        load_factor = (tps / capacity) if capacity > 0 else (cpu if cpu > 0 else 0.0)
         kind = parameters["anomaly_kind"]
 
         # Case A: Traffic Overload
-        # When incoming traffic nears or exceeds replica capacity (load_factor >= 0.80)
+        # When incoming traffic nears or exceeds replica capacity (load_factor >= 0.70)
+        # or when traffic surge is identified and memory is not at saturation
+        # or when queue depth is high and CPU is elevated under load without memory exhaustion
         is_traffic_overload = (
             kind == AnomalyKind.TRAFFIC_SURGE
-            or (capacity > 0 and tps >= 0.80 * capacity)
-            or (load_factor >= 0.82 and queue_depth > 0)
-        )
+            or (capacity > 0 and tps >= 0.70 * capacity)
+            or (load_factor >= 0.70 and (queue_depth > 0 or cpu > 0.60))
+            or (queue_depth > 10.0 and cpu > 0.60 and mem < 0.85)
+        ) and mem < 0.90
 
         if is_traffic_overload:
             parameters["root_cause"] = "traffic_overload"
             parameters["load_factor"] = round(load_factor, 2)
             parameters["target_replicas"] = "+1"
             parameters["reason"] = (
-                f"Traffic overload: TPS ({tps:.1f}) exceeds 80% of capacity ({capacity:.1f}) "
+                f"Traffic overload: TPS ({tps:.1f}) exceeds capacity threshold ({capacity:.1f}) "
                 f"with load factor {load_factor:.2f}"
             )
             log.info(
@@ -168,15 +183,15 @@ class PlaybookRegistry:
             kind in (AnomalyKind.QUEUE_BACKLOG, AnomalyKind.SETTLEMENT_DELAY)
             or queue_depth > 5.0
         ):
-            if prior_failed_restart:
-                # Restart previously failed to clear the queue! Do not blindly repeat restart.
+            if prior_failed_restart or (cpu > 0.60 and mem < 0.85):
+                # Under active processing load or when restart previously failed, scale out to drain backlog
                 if not prior_scale_out_attempted:
                     # Escalate to scaling out an additional worker replica to drain the persistent backlog
                     parameters["root_cause"] = "persistent_queue_backlog_escalated"
                     parameters["target_replicas"] = "+1"
                     parameters["reason"] = (
-                        f"Persistent queue backlog ({queue_depth:.1f}): previous restart failed to recover queue. "
-                        f"Escalating to scale-out to add consumer capacity."
+                        f"Queue backlog ({queue_depth:.1f} items, CPU {cpu*100:.0f}%): "
+                        f"scaling out worker replica to drain consumer queue."
                     )
                     log.info(
                         "playbook.escalated_to_scale_out",

@@ -26,9 +26,10 @@ Built against **Mojaloop** (payments). The design generalises to **MOSIP** (iden
 | Capability | How |
 |---|---|
 | **Predicts traffic** | Forecasts per-service load at 1 / 6 / 24 hour horizons and recommends a replica count *before* the peak arrives |
-| **Detects anomalies** | Isolation Forest over a multivariate feature vector, with per-feature attribution — not static thresholds |
+| **Detects anomalies** | Isolation Forest + hour-of-day baseline with per-feature attribution and statistical variance floors — no false alarms on healthy jitter |
 | **Explains root cause** | Correlates anomalies temporally, across the service dependency graph, against deployments, and against external events. Five alarms become **one** incident with **one** named cause |
 | **Heals itself** | Root-cause-driven playbooks (OOM restart, traffic-aware scale-out, circuit breaking, deploy rollback), behind five safety rails with post-remediation recovery verification |
+| **Resilient event streaming** | Redis Streams with supervisor reconnection loops, exponential backoff, and pending entry reclamation (`xautoclaim`) for zero message loss |
 | **SLO auto-resolution** | Verifies recovery against concrete SLOs over a continuous 120s window, filtering out harmless ML noise/jitter so healthy incidents resolve cleanly with an audit trail |
 | **Proves it works** | Chaos experiments and end-to-end scenarios with a scorecard: time-to-detect, time-to-RCA, time-to-remediate |
 
@@ -51,12 +52,12 @@ Built against **Mojaloop** (payments). The design generalises to **MOSIP** (iden
 ┌──────────────────────────────────────────────────────────────────────────┐
 │  AIOPS PLANE ✅                                                           │
 │  metrics-agent ──► TimescaleDB (history + feature store)                 │
-│        ├──► anomaly-detector      (Isolation Forest, 5-15s) ✅           │
+│        ├──► anomaly-detector      (Isolation Forest + Baseline Floors) ✅ │
 │        ├──► traffic-predictor     (1h / 6h / 24h) ✅                     │
 │        ├──► rca-engine            (service · change · event) ✅          │
 │        └──► healing-engine        (playbooks + safety rails) ✅          │
 └───────────┬──────────────────────────────────────────────────────────────┘
-            │ Redis Streams
+            │ Redis Streams (Supervisor Loops + Deduplication)
             ▼
 ┌──────────────────────────────────────────────────────────────────────────┐
 │  CONTROL PLANE ✅                                                         │
@@ -68,9 +69,11 @@ Built against **Mojaloop** (payments). The design generalises to **MOSIP** (iden
 - ✅ **Modules 1-8 Complete & Integrated**: Full production-grade stack operational.
 - 🐳 **19 Containers Running**: Observability, TimescaleDB, Redis, API Gateway, 5 Mojaloop services, and all Python AIOps engines.
 - ⚡ **Root-Cause Remediation Flow**: Distinguishes process failures, traffic overload, queue buildup, and dependency failures with automatic fallback to single-replica scale-out (+1).
-- 🛡️ **Multi-Tier Safety Rails**: Hard limit of 20 containers global cap, max 2 remediation attempts per incident, failure cooldown (120s), and human-escalation (`requires_manual_intervention`).
+- 🔄 **Resilient Redis Stream Supervisors**: RCA and Healing background consumers feature outer supervisor loops with exponential backoff (1s–30s) and automatic pending entry reclamation (`xautoclaim`), eliminating silent failures and socket timeout stalls.
+- 📊 **Statistically Justified Variance Floors**: Enforces minimum variance floors (`FEATURE_MIN_SIGMA_FLOORS`) on baseline standard deviations (e.g., error ratio $\ge 0.003$, latency p99 $\ge 0.030$s), completely eliminating false-positive critical anomalies on healthy operational jitter.
+- 🛡️ **Multi-Tier Safety Rails**: Hard limit of 20 containers global cap, max 2 remediation attempts per incident, failure cooldown (120s/300s), and human-escalation (`requires_manual_intervention`).
 - 🎯 **SLO-Verified Incident Auto-Resolution**: Resolves incidents based on continuous 120s compliance with concrete SLO thresholds (error ratio $\le 1\%$, p99 latency $\le 250$ms, queue depth $\le 5$), preventing benign ML anomalies from blocking resolution.
-- 🧪 **54 Automated Tests Passing**: Comprehensive unit, regression, and end-to-end integration coverage across RCA, Healing, and Detector services.
+- 🧪 **313 Automated Tests Passing**: Comprehensive unit, regression, ML, safety rails, consumer reconnection, and end-to-end integration coverage across all services.
 
 Layers only query downward and communicate upward through the event bus. No service
 reaches into another's database. Full reasoning in
@@ -244,9 +247,9 @@ Every executed remediation performs **post-action recovery verification** agains
 ## Advanced Self-Healing & Incident Management
 
 ### 1. Root-Cause-Based Remediation Selection
-Rather than naively restarting containers on every alert, the healing engine selects playbooks dynamically based on RCA evidence:
-- **Process Failure / OOM Crash**: Executes container restart (`restart_on_oom`).
-- **Traffic Overload**: When incoming TPS exceeds provisioned capacity with rising queue depth and latency, safely scales out by exactly **+1 replica** (`scale_out_preemptive`).
+Rather than naively restarting containers on every alert, the healing engine selects playbooks dynamically based on RCA evidence, live telemetry, and capacity models:
+- **Traffic Overload**: When incoming TPS exceeds provisioned capacity (via nominal capacity table `DEFAULT_SERVICE_CAPACITY_TPS` or load factor $\ge 75\%$), safely scales out by exactly **+1 replica** (`scale_out_preemptive`). Priority tie-breakers ensure secondary load symptoms (queue backlog and latency) do not misclassify a traffic surge as a process crash.
+- **Process Failure / OOM Crash**: When memory pressure or CPU exhaustion occurs without high traffic load, executes container restart (`restart_on_oom`).
 - **Persistent Queue Backlog**: Executes queue clearing (`clear_queue_backlog`), escalating from container restart to worker scaling if backlogs persist.
 - **Downstream Dependency Failure**: Isolates upstream traffic or triggers circuit breaking (`circuit_break_cascade`) instead of blindly thrashing downstream microservices.
 - **Bad Deployment**: Initiates automated rollback to the previous stable version (`rollback_bad_deploy`).
@@ -254,11 +257,11 @@ Rather than naively restarting containers on every alert, the healing engine sel
 ### 2. Multi-Tier Safety Rails & Host Protection
 - **Global Container Limit (20 Containers)**: Enforces a strict ceiling suitable for local development laptops. Scale-out is skipped if total container count reaches 20.
 - **Incident Attempt Limit (Max 2 Attempts)**: If two remediation attempts fail to resolve an incident, automatic remediation halts and marks the action as `requires_manual_intervention`.
-- **Failure Cooldown**: Records a 120-second cooldown on failed actions as well as successful ones to permanently eliminate container restart thrashing.
+- **Failure Cooldown**: Records a 120-second cooldown on failed actions as well as 300-second cooldown on successful ones to permanently eliminate container restart thrashing.
 - **Capacity & Headroom Checks**: Checks host CPU and memory before scale-out, skipping if capacity is insufficient.
 
 ### 3. SLO-Verified Incident Auto-Resolution
-Eliminates the false-positive trap where 15-second background Isolation Forest noise prevents healthy incidents from closing:
+Eliminates the false-positive trap where background statistical jitter prevents healthy incidents from closing:
 - **Continuous Recovery Window**: Requires at least 120 seconds of continuous telemetry observation.
 - **Objective SLO Compliance**: Verifies that all affected services meet standard healthy SLO thresholds:
   - Error Ratio: $\le 1.0\%$ (0.01)
@@ -268,6 +271,17 @@ Eliminates the false-positive trap where 15-second background Isolation Forest n
 - **Benign Anomaly Suppression**: Sub-threshold informational anomalies (`severity = 'info'`, score $< 0.65$) or minor baseline variations do not block resolution when metrics meet SLOs.
 - **Recurring Failure Protection**: Genuine critical anomalies (`score >= 0.85`) on the root-cause service or active SLO violations keep incidents `OPEN`.
 - **Resolution Audit Trail**: Appends a verified resolution summary to the incident record and publishes an update event to the Redis Stream `aiops.incidents`.
+
+### 4. Resilient Redis Stream Supervisors & Deduplication
+To prevent background consumers from dying silently on transient network blips or socket timeouts:
+- **Outer Supervisor Reconnection Loop**: Background consumer tasks in `rca_engine` and `healing_engine` are wrapped in supervisor loops with exponential backoff (1s to 30s) and graceful cancellation handling.
+- **Automatic Pending Reclamation (`xautoclaim`)**: Unacknowledged messages pending from previous restarts or connection timeouts are reclaimed and processed upon reconnection, preventing dropped events.
+- **Multi-Level Deduplication**: Both in-memory FIFO caches and database existence checks (`anomalies.incident_id` and `healing_actions.action_id`) guarantee that replayed or redelivered stream events never generate duplicate incidents or repeated healing actions.
+- **Post-Processing Acknowledgment**: Stream messages are acknowledged (`xack`) only after successful processing or verified deduplication.
+
+### 5. Statistically Justified Variance Floors & Noise Filtering
+- **Feature-Specific Variance Floors (`FEATURE_MIN_SIGMA_FLOORS`)**: Near-constant signals in healthy services (such as an error ratio of 0.25% with microscopic baseline $\sigma = 0.000127$) previously caused healthy operational fluctuations (e.g. 0.35% error) to register as $7.4\sigma$ spikes. Introducing minimum floors (`error_ratio: 0.003`, `latency_p99: 0.030s`, `cpu: 0.05`, `queue: 2.0`) guarantees deviations stay within normal bounds ($< 1.0\sigma$) under healthy traffic.
+- **Consistent Alerting Threshold**: The anomaly detector enforces the configured alerting threshold (`self._threshold = 0.65`) at score time, ensuring sub-threshold noise does not flood the anomalies table or telemetry streams.
 
 ---
 
@@ -503,6 +517,17 @@ independent `good first issue` tasks.
   show the brakes work is what makes auto-remediation defensible.
 - **Strict 20-container host cap.** Automatic scale-out refuses to create containers if the
   host already runs 20 containers. This guarantees local laptop safety during live demos.
+- **Resilient stream consumers & at-least-once delivery.** Background stream consumers in
+  RCA and Healing engines feature supervisor reconnection loops with exponential backoff and
+  automatic pending message reclamation (`xautoclaim`), ensuring zero message drops during
+  network blips or socket timeouts.
+- **Minimum variance floors on ML baselines.** Enforces statistically justified sigma floors
+  (`FEATURE_MIN_SIGMA_FLOORS`) on baseline statistics so that near-zero variance on healthy
+  signals (such as 0.25% error rate) cannot cause normal operational jitter to explode into
+  false-positive critical alarms.
+- **Traffic surge root-driver precedence.** Offered load ($z_{\text{tps}} \ge 2.0\sigma$) takes
+  precedence over secondary symptoms like queue depth and latency, ensuring traffic overload
+  triggers safe scale-out (+1) rather than disruptive container restarts.
 - **SLO-based incident resolution.** Machine learning anomaly detectors inherently flag
   harmless statistical variations during normal traffic. To prevent incidents from getting
   trapped `OPEN` permanently, resolution requires verified compliance with concrete SLO

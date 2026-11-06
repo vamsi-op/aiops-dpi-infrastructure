@@ -111,20 +111,17 @@ class Scorer:
         deviation_score = _deviation_score(deviations)
         normalised = max(forest_score, deviation_score)
 
-        # Emit only past the decision boundary.
+        # Emit only past the configured decision boundary.
         #
-        # 0.5 is where the forest flips from inlier to outlier and where a deviation reaches
-        # IMPLICATION_SIGMA - the two scales are deliberately anchored at the same point, so
-        # this one comparison works for either detector. Below it, recording an AnomalyEvent
-        # per service per 15 seconds would write ~29k rows a day of "nothing happened", bury
-        # the real ones, and hand the RCA engine a haystack to correlate through.
-        if normalised <= model.is_outlier_boundary:
+        # Emitting only when normalised >= self._threshold prevents low-confidence fluctuations
+        # from flooding the database and Redis streams with sub-threshold events.
+        if normalised < self._threshold:
             return ScoreResult(
                 sample.service,
                 normalised,
                 raw,
                 None,
-                skipped_reason="below the decision boundary of both detectors",
+                skipped_reason=f"below the configured decision boundary threshold {self._threshold:.4f} (score: {normalised:.4f})",
                 forest_score=forest_score,
                 deviation_score=deviation_score,
             )

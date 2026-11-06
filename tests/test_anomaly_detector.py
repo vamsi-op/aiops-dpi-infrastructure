@@ -177,9 +177,11 @@ def test_sigma_floor_stops_near_constant_signals_exploding() -> None:
     baseline = build_baseline(SERVICE, rows)
     stats = baseline.overall["error_ratio"]
 
-    assert stats.sigma == pytest.approx(0.002 * RELATIVE_SIGMA_FLOOR)
-    # A doubling is notable but must stay on a comparable scale to other signals.
-    assert 0 < stats.deviation(0.004) < 50
+    # A statistically justified variance floor prevents near-zero variance from exploding
+    assert stats.sigma >= (0.002 * RELATIVE_SIGMA_FLOOR)
+    assert stats.sigma == pytest.approx(0.003)
+    # A doubling from 0.002 to 0.004 stays within healthy bounds (< 2 sigma)
+    assert 0 < stats.deviation(0.004) < 2.0
 
 
 def test_deviations_are_signed() -> None:

@@ -66,9 +66,10 @@ class HealingEngine:
         self._incident_consumer_task: asyncio.Task[None] | None = None
         self._running = False
 
-        # Track recently handled anomalies to avoid duplicates
+        # Track recently handled anomalies and incidents to avoid duplicates
         self._handled_anomalies: set[str] = set()
-        self._max_handled_cache = 1000
+        self._handled_incidents: set[str] = set()
+        self._max_handled_cache = 2000
 
     async def start(self) -> None:
         """Start consuming anomaly and incident streams."""
@@ -77,6 +78,23 @@ class HealingEngine:
             return
 
         self._running = True
+
+        # Bootstrap handled anomalies from recent healing actions
+        try:
+            recent_rows = await self.db.fetch_all(
+                f"SELECT anomaly_id FROM {TABLE_ACTIONS} WHERE anomaly_id IS NOT NULL ORDER BY started_at DESC LIMIT :limit",
+                {"limit": 1000},
+            )
+            for r in recent_rows:
+                aid = r.get("anomaly_id")
+                if aid:
+                    self._handled_anomalies.add(str(aid))
+            log.info(
+                "healing_engine.bootstrapped_handled_anomalies",
+                count=len(self._handled_anomalies),
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.debug("healing_engine.bootstrap_handled_failed", error=str(exc))
 
         # Start consumer tasks
         self._anomaly_consumer_task = asyncio.create_task(
@@ -120,83 +138,286 @@ class HealingEngine:
 
         log.info("healing_engine.stopped")
 
-    async def _consume_anomalies(self) -> None:
-        """Consume anomaly events and trigger healing actions."""
-        async for event in self.bus.subscribe(
-            Stream.ANOMALIES, group="healing-engine", consumer="healing-1"
-        ):
-            if not self._running:
+    async def _reclaim_stale_anomalies(self, consumer_name: str) -> None:
+        """Reclaim unacknowledged anomaly messages pending in Redis after a crash or timeout."""
+        reclaimed_count = 0
+        while self._running:
+            try:
+                stale_events = await self.bus.reclaim_stale(
+                    Stream.ANOMALIES,
+                    group="healing-engine",
+                    consumer=consumer_name,
+                    min_idle_ms=10_000,
+                    count=32,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.debug("healing_engine.reclaim_anomalies_error", error=str(exc))
                 break
 
-            try:
-                anomaly = AnomalyEvent.model_validate(event.data)
+            if not stale_events:
+                break
 
-                # Skip if already handled
-                if anomaly.anomaly_id in self._handled_anomalies:
-                    log.debug(
-                        "healing_engine.anomaly_already_handled",
-                        anomaly_id=anomaly.anomaly_id,
+            for event in stale_events:
+                if not self._running:
+                    return
+                try:
+                    anomaly = AnomalyEvent.model_validate(event.data)
+                    # Check deduplication
+                    if anomaly.anomaly_id not in self._handled_anomalies:
+                        action_exists = await self.db.fetch_one(
+                            f"SELECT action_id FROM {TABLE_ACTIONS} WHERE anomaly_id = :aid LIMIT 1",
+                            {"aid": anomaly.anomaly_id},
+                        )
+                        if not action_exists:
+                            self._handled_anomalies.add(anomaly.anomaly_id)
+                            await self._process_anomaly(anomaly, incident=None)
+                        else:
+                            self._handled_anomalies.add(anomaly.anomaly_id)
+
+                    await self.bus.ack(Stream.ANOMALIES, "healing-engine", event.message_id)
+                    reclaimed_count += 1
+                except Exception as exc:  # noqa: BLE001
+                    log.error(
+                        "healing_engine.reclaimed_anomaly_process_error",
+                        error=str(exc),
+                        event_id=event.event_id,
                     )
-                    continue
 
+        if reclaimed_count > 0:
+            log.info(
+                "healing_engine.reclaimed_pending_anomalies_complete", count=reclaimed_count
+            )
+
+    async def _reclaim_stale_incidents(self, consumer_name: str) -> None:
+        """Reclaim unacknowledged incident messages pending in Redis after a crash or timeout."""
+        reclaimed_count = 0
+        while self._running:
+            try:
+                stale_events = await self.bus.reclaim_stale(
+                    Stream.INCIDENTS,
+                    group="healing-engine",
+                    consumer=consumer_name,
+                    min_idle_ms=10_000,
+                    count=32,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.debug("healing_engine.reclaim_incidents_error", error=str(exc))
+                break
+
+            if not stale_events:
+                break
+
+            for event in stale_events:
+                if not self._running:
+                    return
+                try:
+                    inc_data = dict(event.data)
+                    inc_data.pop("reason", None)
+                    incident = Incident.model_validate(inc_data)
+                    if (
+                        incident.status == "open"
+                        and incident.incident_id not in self._handled_incidents
+                    ):
+                        self._handled_incidents.add(incident.incident_id)
+                        if incident.anomaly_ids:
+                            anomaly = await self._fetch_anomaly(incident.anomaly_ids[0])
+                            if anomaly:
+                                await self._process_anomaly(anomaly, incident=incident)
+
+                    await self.bus.ack(Stream.INCIDENTS, "healing-engine", event.message_id)
+                    reclaimed_count += 1
+                except Exception as exc:  # noqa: BLE001
+                    log.error(
+                        "healing_engine.reclaimed_incident_process_error",
+                        error=str(exc),
+                        event_id=event.event_id,
+                    )
+
+        if reclaimed_count > 0:
+            log.info(
+                "healing_engine.reclaimed_pending_incidents_complete", count=reclaimed_count
+            )
+
+    async def _consume_anomalies(self) -> None:
+        """Consume anomaly events with outer supervisor reconnection loop and backoff."""
+        consumer_name = "healing-1"
+        base_delay = 1.0
+        max_delay = 30.0
+        delay = base_delay
+
+        while self._running:
+            try:
+                await self._reclaim_stale_anomalies(consumer_name)
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:  # noqa: BLE001
+                log.debug(
+                    "healing_engine.reclaim_stale_anomalies_startup_failed", error=str(exc)
+                )
+
+            try:
                 log.info(
-                    "healing_engine.anomaly_received",
-                    anomaly_id=anomaly.anomaly_id,
-                    service=anomaly.service,
-                    kind=anomaly.kind,
-                    score=anomaly.score,
+                    "healing_engine.anomaly_consumer_connecting",
+                    stream=str(Stream.ANOMALIES),
+                    consumer=consumer_name,
                 )
+                async for event in self.bus.subscribe(
+                    Stream.ANOMALIES, group="healing-engine", consumer=consumer_name
+                ):
+                    if not self._running:
+                        break
 
-                # Process anomaly
-                await self._process_anomaly(anomaly, incident=None)
+                    delay = base_delay  # Reset backoff on receiving messages
 
-                # Mark as handled
-                self._handled_anomalies.add(anomaly.anomaly_id)
-                if len(self._handled_anomalies) > self._max_handled_cache:
-                    # Trim oldest entries (approximate FIFO)
-                    excess = len(self._handled_anomalies) - self._max_handled_cache
-                    for _ in range(excess):
-                        self._handled_anomalies.pop()
+                    try:
+                        anomaly = AnomalyEvent.model_validate(event.data)
 
-            except Exception as exc:
-                log.error(
-                    "healing_engine.anomaly_consume_error",
+                        # Skip if already handled in-memory
+                        if anomaly.anomaly_id in self._handled_anomalies:
+                            log.debug(
+                                "healing_engine.anomaly_already_handled",
+                                anomaly_id=anomaly.anomaly_id,
+                            )
+                            continue
+
+                        # Check database deduplication: skip if action already recorded for this anomaly
+                        action_exists = await self.db.fetch_one(
+                            f"SELECT action_id FROM {TABLE_ACTIONS} WHERE anomaly_id = :aid LIMIT 1",
+                            {"aid": anomaly.anomaly_id},
+                        )
+                        if action_exists:
+                            self._handled_anomalies.add(anomaly.anomaly_id)
+                            log.debug(
+                                "healing_engine.action_already_recorded",
+                                anomaly_id=anomaly.anomaly_id,
+                            )
+                            continue
+
+                        log.info(
+                            "healing_engine.anomaly_received",
+                            anomaly_id=anomaly.anomaly_id,
+                            service=anomaly.service,
+                            kind=anomaly.kind,
+                            score=anomaly.score,
+                        )
+
+                        # Process anomaly
+                        await self._process_anomaly(anomaly, incident=None)
+
+                        # Mark as handled
+                        self._handled_anomalies.add(anomaly.anomaly_id)
+                        if len(self._handled_anomalies) > self._max_handled_cache:
+                            excess = len(self._handled_anomalies) - self._max_handled_cache
+                            for _ in range(excess):
+                                self._handled_anomalies.pop()
+
+                    except Exception as exc:
+                        log.error(
+                            "healing_engine.anomaly_consume_error",
+                            error=str(exc),
+                            stream_event=str(event),
+                            exc_info=True,
+                        )
+
+            except asyncio.CancelledError:
+                log.info("healing_engine.anomaly_consumer_cancelled")
+                break
+            except Exception as exc:  # noqa: BLE001
+                if not self._running:
+                    break
+                log.warning(
+                    "healing_engine.anomaly_redis_error",
                     error=str(exc),
-                    stream_event=str(event),
-                    exc_info=True,
+                    retry_in=delay,
                 )
+                try:
+                    await asyncio.sleep(delay)
+                except asyncio.CancelledError:
+                    break
+                delay = min(delay * 2, max_delay)
 
     async def _consume_incidents(self) -> None:
-        """Consume incident events and trigger healing with RCA context."""
-        async for event in self.bus.subscribe(
-            Stream.INCIDENTS, group="healing-engine", consumer="healing-1"
-        ):
-            if not self._running:
+        """Consume incident events with outer supervisor reconnection loop and backoff."""
+        consumer_name = "healing-1"
+        base_delay = 1.0
+        max_delay = 30.0
+        delay = base_delay
+
+        while self._running:
+            try:
+                await self._reclaim_stale_incidents(consumer_name)
+            except asyncio.CancelledError:
                 break
+            except Exception as exc:  # noqa: BLE001
+                log.debug(
+                    "healing_engine.reclaim_stale_incidents_startup_failed", error=str(exc)
+                )
 
             try:
-                incident = Incident.model_validate(event.data)
-
-                # Only process newly opened incidents
-                if incident.status != "open":
-                    continue
-
-                # Process incident - get primary anomaly and heal with incident context
-                if incident.anomaly_ids:
-                    # Fetch the first anomaly for this incident
-                    anomaly_id = incident.anomaly_ids[0]
-                    anomaly = await self._fetch_anomaly(anomaly_id)
-
-                    if anomaly:
-                        await self._process_anomaly(anomaly, incident=incident)
-
-            except Exception as exc:
-                log.error(
-                    "healing_engine.incident_consume_error",
-                    error=str(exc),
-                    stream_event=str(event),
-                    exc_info=True,
+                log.info(
+                    "healing_engine.incident_consumer_connecting",
+                    stream=str(Stream.INCIDENTS),
+                    consumer=consumer_name,
                 )
+                async for event in self.bus.subscribe(
+                    Stream.INCIDENTS, group="healing-engine", consumer=consumer_name
+                ):
+                    if not self._running:
+                        break
+
+                    delay = base_delay  # Reset backoff on receiving messages
+
+                    try:
+                        inc_data = dict(event.data)
+                        inc_data.pop("reason", None)
+                        incident = Incident.model_validate(inc_data)
+
+                        # Only process newly opened incidents
+                        if incident.status != "open":
+                            continue
+
+                        # Deduplication check
+                        if incident.incident_id in self._handled_incidents:
+                            continue
+
+                        self._handled_incidents.add(incident.incident_id)
+                        if len(self._handled_incidents) > self._max_handled_cache:
+                            excess = len(self._handled_incidents) - self._max_handled_cache
+                            for _ in range(excess):
+                                self._handled_incidents.pop()
+
+                        # Process incident - get primary anomaly and heal with incident context
+                        if incident.anomaly_ids:
+                            anomaly_id = incident.anomaly_ids[0]
+                            anomaly = await self._fetch_anomaly(anomaly_id)
+
+                            if anomaly:
+                                await self._process_anomaly(anomaly, incident=incident)
+
+                    except Exception as exc:
+                        log.error(
+                            "healing_engine.incident_consume_error",
+                            error=str(exc),
+                            stream_event=str(event),
+                            exc_info=True,
+                        )
+
+            except asyncio.CancelledError:
+                log.info("healing_engine.incident_consumer_cancelled")
+                break
+            except Exception as exc:  # noqa: BLE001
+                if not self._running:
+                    break
+                log.warning(
+                    "healing_engine.incident_redis_error",
+                    error=str(exc),
+                    retry_in=delay,
+                )
+                try:
+                    await asyncio.sleep(delay)
+                except asyncio.CancelledError:
+                    break
+                delay = min(delay * 2, max_delay)
 
     async def _fetch_anomaly(self, anomaly_id: str) -> AnomalyEvent | None:
         """Fetch anomaly from database."""

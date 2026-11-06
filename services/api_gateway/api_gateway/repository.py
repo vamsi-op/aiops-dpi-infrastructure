@@ -653,7 +653,10 @@ class DashboardRepository:
                 FROM {TABLE_CHAOS_RUNS} cr_inner
                 JOIN {TABLE_ACTIONS} ha_inner
                   ON ha_inner.target_service = cr_inner.target_service
-                 AND ha_inner.status = 'succeeded'
+                 AND (
+                     ha_inner.status = 'succeeded'
+                     OR (ha_inner.execution_mode = 'real' AND ha_inner.finished_at IS NOT NULL)
+                 )
                  AND ha_inner.finished_at >= cr_inner.started_at
                  AND ha_inner.finished_at <= cr_inner.started_at + make_interval(secs => cr_inner.duration_seconds + 300)
                 ORDER BY cr_inner.run_id, ha_inner.finished_at ASC

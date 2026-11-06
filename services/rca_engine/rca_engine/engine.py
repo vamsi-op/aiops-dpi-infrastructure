@@ -55,6 +55,8 @@ class RCAEngine:
 
         # Sliding window of recent anomalies for correlation
         self.recent_anomalies: list[AnomalyEvent] = []
+        self._handled_anomalies: set[str] = set()
+        self._max_handled_cache = 10000
         self._consumer_task: asyncio.Task[None] | None = None
         self._auto_resolve_task: asyncio.Task[None] | None = None
         self._running = False
@@ -138,6 +140,7 @@ class RCAEngine:
                 incident_id=row["incident_id"],
             )
             self.recent_anomalies.append(anomaly)
+            self._handled_anomalies.add(anomaly.anomaly_id)
 
         log.info(
             "rca_engine.window_bootstrapped",
@@ -145,33 +148,154 @@ class RCAEngine:
             cutoff=cutoff.isoformat(),
         )
 
-    async def _consume_anomalies(self) -> None:
-        """Consume anomaly events and trigger correlation."""
-        async for event in self.bus.subscribe(
-            Stream.ANOMALIES,
-            group="rca-engine",
-            consumer=f"rca-{settings.env}",
-        ):
-            if not self._running:
+    async def _reclaim_stale_anomalies(self, consumer_name: str) -> None:
+        """Reclaim unacknowledged messages pending in Redis after a crash or timeout."""
+        reclaimed_count = 0
+        while self._running:
+            try:
+                stale_events = await self.bus.reclaim_stale(
+                    Stream.ANOMALIES,
+                    group="rca-engine",
+                    consumer=consumer_name,
+                    min_idle_ms=10_000,
+                    count=32,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.debug("rca_engine.reclaim_stale_error", error=str(exc))
                 break
 
+            if not stale_events:
+                break
+
+            for event in stale_events:
+                if not self._running:
+                    return
+                try:
+                    anomaly = AnomalyEvent.model_validate(event.data)
+                    # Check deduplication
+                    if anomaly.anomaly_id not in self._handled_anomalies:
+                        if not anomaly.incident_id:
+                            row = await self.db.fetch_one(
+                                "SELECT incident_id FROM anomalies WHERE anomaly_id = :aid",
+                                {"aid": anomaly.anomaly_id},
+                            )
+                            if row and row.get("incident_id"):
+                                anomaly.incident_id = row["incident_id"]
+
+                        self._handled_anomalies.add(anomaly.anomaly_id)
+                        if not anomaly.incident_id:
+                            self.recent_anomalies.append(anomaly)
+                            self._trim_window()
+                            await self._process_anomaly(anomaly)
+
+                    # Acknowledge after successful processing/dedup
+                    await self.bus.ack(Stream.ANOMALIES, "rca-engine", event.message_id)
+                    reclaimed_count += 1
+                except Exception as exc:  # noqa: BLE001
+                    log.error(
+                        "rca_engine.reclaimed_process_error",
+                        error=str(exc),
+                        event_id=event.event_id,
+                    )
+
+        if reclaimed_count > 0:
+            log.info("rca_engine.reclaimed_pending_complete", count=reclaimed_count)
+
+    async def _consume_anomalies(self) -> None:
+        """Consume anomaly events with outer supervisor reconnection loop and backoff."""
+        consumer_name = f"rca-{settings.env}"
+        base_delay = 1.0
+        max_delay = 30.0
+        delay = base_delay
+
+        while self._running:
+            # Reclaim any pending unacknowledged messages before streaming
             try:
-                anomaly = AnomalyEvent.model_validate(event.data)
+                await self._reclaim_stale_anomalies(consumer_name)
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:  # noqa: BLE001
+                log.debug("rca_engine.reclaim_stale_startup_failed", error=str(exc))
 
-                # Add to sliding window
-                self.recent_anomalies.append(anomaly)
-                self._trim_window()
-
-                # Trigger correlation
-                await self._process_anomaly(anomaly)
-
-            except Exception as exc:
-                log.error(
-                    "rca_engine.consume_error",
-                    error=str(exc),
-                    event_id=event.event_id,
-                    exc_info=True,
+            try:
+                log.info(
+                    "rca_engine.consumer_connecting",
+                    stream=str(Stream.ANOMALIES),
+                    consumer=consumer_name,
                 )
+                async for event in self.bus.subscribe(
+                    Stream.ANOMALIES,
+                    group="rca-engine",
+                    consumer=consumer_name,
+                ):
+                    if not self._running:
+                        break
+
+                    delay = base_delay  # Reset backoff on receiving messages
+
+                    try:
+                        anomaly = AnomalyEvent.model_validate(event.data)
+
+                        # Deduplication check: in-memory and database
+                        if anomaly.anomaly_id in self._handled_anomalies:
+                            log.debug(
+                                "rca_engine.anomaly_already_handled",
+                                anomaly_id=anomaly.anomaly_id,
+                            )
+                            continue
+
+                        if not anomaly.incident_id:
+                            row = await self.db.fetch_one(
+                                "SELECT incident_id FROM anomalies WHERE anomaly_id = :aid",
+                                {"aid": anomaly.anomaly_id},
+                            )
+                            if row and row.get("incident_id"):
+                                anomaly.incident_id = row["incident_id"]
+
+                        self._handled_anomalies.add(anomaly.anomaly_id)
+                        if len(self._handled_anomalies) > self._max_handled_cache:
+                            excess = len(self._handled_anomalies) - self._max_handled_cache
+                            for _ in range(excess):
+                                self._handled_anomalies.pop()
+
+                        if anomaly.incident_id:
+                            log.debug(
+                                "rca_engine.anomaly_already_assigned",
+                                anomaly_id=anomaly.anomaly_id,
+                            )
+                            continue
+
+                        # Add to sliding window
+                        self.recent_anomalies.append(anomaly)
+                        self._trim_window()
+
+                        # Trigger correlation
+                        await self._process_anomaly(anomaly)
+
+                    except Exception as exc:
+                        log.error(
+                            "rca_engine.consume_error",
+                            error=str(exc),
+                            event_id=event.event_id,
+                            exc_info=True,
+                        )
+
+            except asyncio.CancelledError:
+                log.info("rca_engine.consumer_cancelled")
+                break
+            except Exception as exc:  # noqa: BLE001
+                if not self._running:
+                    break
+                log.warning(
+                    "rca_engine.redis_connection_error",
+                    error=str(exc),
+                    retry_in=delay,
+                )
+                try:
+                    await asyncio.sleep(delay)
+                except asyncio.CancelledError:
+                    break
+                delay = min(delay * 2, max_delay)
 
     def _trim_window(self) -> None:
         """Remove anomalies older than window_seconds from memory."""

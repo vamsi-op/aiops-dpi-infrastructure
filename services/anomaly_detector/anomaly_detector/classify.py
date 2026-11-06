@@ -61,10 +61,10 @@ _HIGH_IS_BAD: Final[dict[str, AnomalyKind]] = {
 _KIND_PRIORITY: Final[tuple[AnomalyKind, ...]] = (
     AnomalyKind.MEMORY_PRESSURE,
     AnomalyKind.ERROR_BURST,
+    AnomalyKind.TRAFFIC_SURGE,
     AnomalyKind.SETTLEMENT_DELAY,
     AnomalyKind.QUEUE_BACKLOG,
     AnomalyKind.LATENCY_SPIKE,
-    AnomalyKind.TRAFFIC_SURGE,
     AnomalyKind.TRAFFIC_DROP,
     AnomalyKind.CPU_SATURATION,
 )
@@ -196,7 +196,24 @@ def classify(
     top_feature, top_deviation, top_kind = implicated[0]
     distinct_kinds = {k for _, _, k in implicated}
 
-    if abs(top_deviation) >= DOMINANT_SIGMA:
+    tps_dev = deviations.get("tps", 0.0)
+    has_traffic_surge = (
+        AnomalyKind.TRAFFIC_SURGE in distinct_kinds and tps_dev >= IMPLICATION_SIGMA
+    )
+    has_dominant_memory = (
+        AnomalyKind.MEMORY_PRESSURE in distinct_kinds
+        and deviations.get("memory_utilisation_ratio", 0.0) >= DOMINANT_SIGMA
+    )
+    has_dominant_errors = (
+        AnomalyKind.ERROR_BURST in distinct_kinds
+        and deviations.get("error_ratio", 0.0) >= DOMINANT_SIGMA
+    )
+
+    if has_traffic_surge and not (has_dominant_memory or has_dominant_errors):
+        # When traffic surges, latency, queue depth and CPU rise as natural symptoms of load.
+        # The primary root driver is the traffic surge itself, requiring scale-out rather than restart.
+        kind = AnomalyKind.TRAFFIC_SURGE
+    elif abs(top_deviation) >= DOMINANT_SIGMA:
         # One signal is extreme. Name it, even if others are mildly elevated - they are
         # almost certainly consequences of this one.
         kind = top_kind

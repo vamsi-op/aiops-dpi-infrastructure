@@ -11,8 +11,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Install docker client library
-RUN pip install --no-cache-dir docker==7.1.0
+# Install docker client library and psutil
+RUN pip install --no-cache-dir docker==7.1.0 psutil==6.0.0
 
 # Install shared library
 COPY libs/aiops_common /app/libs/aiops_common

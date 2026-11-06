@@ -603,3 +603,63 @@ async def test_auto_resolve_succeeds_with_healthy_metrics_and_verified_healing()
     assert incident["status"] == "resolved"
     assert "Resolution:" in incident["ai_summary"]
     assert "Remediation verified recovery" in incident["ai_summary"]
+
+
+@pytest.mark.asyncio
+async def test_rca_consumer_reclaims_pending_and_deduplicates() -> None:
+    """RCA Engine reclaims unacked pending messages on startup and prevents duplicates."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from aiops_common.bus import Stream
+    from rca_engine.engine import RCAEngine
+
+    now = datetime.now(UTC)
+    mock_db = MagicMock()
+    mock_db.fetch_all = AsyncMock(return_value=[])
+    mock_db.fetch_one = AsyncMock(return_value=None)
+
+    # Event with an anomaly
+    anomaly_data = {
+        "anomaly_id": "anom_reclaimed_1",
+        "detected_at": now.isoformat(),
+        "service": "central-ledger",
+        "severity": "warning",
+        "score": 0.75,
+        "kind": "traffic_surge",
+        "contributing_features": ["tps"],
+    }
+    mock_event = MagicMock()
+    mock_event.event_id = "evt_1"
+    mock_event.message_id = "1670000000000-0"
+    mock_event.data = anomaly_data
+
+    mock_bus = MagicMock()
+    # Return 1 pending event on first reclaim, then empty
+    mock_bus.reclaim_stale = AsyncMock(side_effect=[[mock_event], []])
+    mock_bus.ack = AsyncMock()
+
+    mock_correlator = MagicMock()
+    mock_correlator.correlate_all = AsyncMock(return_value=[])
+    mock_mgr = MagicMock()
+
+    engine = RCAEngine(
+        db=mock_db,
+        bus=mock_bus,
+        correlator=mock_correlator,
+        incident_manager=mock_mgr,
+    )
+    engine._running = True
+
+    await engine._reclaim_stale_anomalies("rca-test")
+
+    # Message must be acknowledged
+    mock_bus.ack.assert_called_once_with(Stream.ANOMALIES, "rca-engine", "1670000000000-0")
+    assert "anom_reclaimed_1" in engine._handled_anomalies
+
+    # If redelivered, must not re-process
+    mock_bus.ack.reset_mock()
+    mock_bus.reclaim_stale = AsyncMock(side_effect=[[mock_event], []])
+    await engine._reclaim_stale_anomalies("rca-test")
+    # Acknowledged without duplicate processing
+    mock_bus.ack.assert_called_once()
+    assert len(engine.recent_anomalies) == 1

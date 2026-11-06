@@ -682,3 +682,125 @@ async def test_actual_and_simulated_replicas_not_mixed(mock_docker_client, heali
     assert result.metadata["execution_mode"] == ExecutionMode.SIMULATED
     assert result.metadata["status"] == ActionStatus.SKIPPED_INSUFFICIENT_CAPACITY
     executor.scaler.scale_out.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_playbook_selection_traffic_overload_from_telemetry_snapshot():
+    """Traffic overload detected from snapshot TPS exceeding capacity triggers scale-out."""
+    anomaly = AnomalyEvent(
+        anomaly_id="anom-load-1",
+        detected_at=datetime.now(UTC),
+        service="central-ledger",
+        severity=Severity.WARNING,
+        score=0.76,
+        contributing_features=["latency_p99_seconds"],
+        kind=AnomalyKind.LATENCY_SPIKE,  # Secondary symptom of traffic load
+    )
+    # central-ledger nominal capacity is 60 TPS; snapshot has 75 TPS (load_factor = 1.25)
+    snapshot = {
+        "tps": 75.0,
+        "capacity_tps": 60.0,
+        "latency_p99_seconds": 0.450,
+        "cpu_utilisation_ratio": 0.75,
+        "memory_utilisation_ratio": 0.55,
+        "queue_depth": 10.0,
+    }
+
+    playbook, params = PlaybookRegistry.select_playbook(anomaly, snapshot=snapshot)
+
+    assert playbook == PlaybookName.SCALE_OUT_PREEMPTIVE
+    assert params["root_cause"] == "traffic_overload"
+    assert params["target_replicas"] == "+1"
+
+
+@pytest.mark.asyncio
+async def test_playbook_selection_cpu_memory_exhaustion_selects_restart():
+    """Resource exhaustion without traffic surge correctly selects restart."""
+    anomaly = AnomalyEvent(
+        anomaly_id="anom-oom-1",
+        detected_at=datetime.now(UTC),
+        service="central-ledger",
+        severity=Severity.CRITICAL,
+        score=0.91,
+        contributing_features=["memory_utilisation_ratio"],
+        kind=AnomalyKind.MEMORY_PRESSURE,
+    )
+    # Low TPS but high memory
+    snapshot = {
+        "tps": 12.0,
+        "capacity_tps": 60.0,
+        "latency_p99_seconds": 0.120,
+        "cpu_utilisation_ratio": 0.40,
+        "memory_utilisation_ratio": 0.95,
+        "queue_depth": 0.0,
+    }
+
+    playbook, params = PlaybookRegistry.select_playbook(anomaly, snapshot=snapshot)
+
+    assert playbook == PlaybookName.RESTART_ON_OOM
+    assert params["root_cause"] == "resource_exhaustion"
+
+
+@pytest.mark.asyncio
+async def test_healing_consumer_reclaims_and_deduplicates():
+    """Healing Engine consumer reclaims pending messages and prevents duplicate actions."""
+    from aiops_common.bus import Stream
+    from healing_engine.engine import HealingEngine
+
+    mock_db = MagicMock()
+    mock_db.fetch_all = AsyncMock(return_value=[])
+    mock_db.fetch_one = AsyncMock(return_value=None)
+    mock_db.execute = AsyncMock()
+
+    anomaly_data = {
+        "anomaly_id": "anom_heal_pending_1",
+        "detected_at": datetime.now(UTC).isoformat(),
+        "service": "central-ledger",
+        "severity": "warning",
+        "score": 0.70,
+        "kind": "memory_pressure",
+        "contributing_features": ["memory_utilisation_ratio"],
+    }
+    mock_event = MagicMock()
+    mock_event.event_id = "evt_heal_1"
+    mock_event.message_id = "1670000000001-0"
+    mock_event.data = anomaly_data
+
+    mock_bus = MagicMock()
+    mock_bus.reclaim_stale = AsyncMock(side_effect=[[mock_event], []])
+    mock_bus.ack = AsyncMock()
+    mock_bus.publish = AsyncMock()
+
+    mock_exec = MagicMock()
+    mock_safety = MagicMock()
+    mock_safety.check_all = AsyncMock(
+        return_value=(False, ActionStatus.SKIPPED_COOLDOWN, "In cooldown")
+    )
+    mock_snap = MagicMock()
+    mock_snap.capture = AsyncMock(return_value={})
+    mock_pb_exec = MagicMock()
+
+    engine = HealingEngine(
+        db=mock_db,
+        bus=mock_bus,
+        executor=mock_exec,
+        safety=mock_safety,
+        snapshot=mock_snap,
+        playbook_executor=mock_pb_exec,
+    )
+    engine._running = True
+
+    await engine._reclaim_stale_anomalies("healing-1")
+
+    # Acknowledged in Redis
+    mock_bus.ack.assert_called_once_with(Stream.ANOMALIES, "healing-engine", "1670000000001-0")
+    assert "anom_heal_pending_1" in engine._handled_anomalies
+
+    # Redelivery test: simulate message redelivery when action already exists in DB
+    mock_bus.ack.reset_mock()
+    mock_bus.reclaim_stale = AsyncMock(side_effect=[[mock_event], []])
+    mock_db.fetch_one = AsyncMock(return_value={"action_id": "act_existing_1"})
+
+    await engine._reclaim_stale_anomalies("healing-1")
+    # Acked without creating duplicate action
+    mock_bus.ack.assert_called_once()

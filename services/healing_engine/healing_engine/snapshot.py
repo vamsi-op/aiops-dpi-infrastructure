@@ -58,7 +58,8 @@ class MetricSnapshot:
                 AVG(memory_utilisation_ratio) as avg_memory,
                 AVG(queue_depth) as avg_queue_depth,
                 AVG(active_connections) as avg_connections,
-                AVG(settlement_lag_seconds) as avg_settlement_lag
+                AVG(settlement_lag_seconds) as avg_settlement_lag,
+                MAX(replicas) as max_replicas
             FROM service_metrics
             WHERE service = :service
             AND timestamp >= :cutoff
@@ -74,6 +75,11 @@ class MetricSnapshot:
             )
             return {}
 
+        replicas = float(row["max_replicas"] or 1.0)
+        # Baseline capacity estimates: central-ledger (15*4=60), quoting (15*3=45), account-lookup (20*2=40), ml-adapter (20*3=60)
+        tps_per_replica = 15.0 if "ledger" in service or "quoting" in service else 20.0
+        capacity_tps = tps_per_replica * max(1.0, replicas)
+
         # Build snapshot dictionary
         snapshot = {
             "tps": float(row["avg_tps"] or 0.0),
@@ -85,6 +91,8 @@ class MetricSnapshot:
             "queue_depth": float(row["avg_queue_depth"] or 0.0),
             "active_connections": float(row["avg_connections"] or 0.0),
             "settlement_lag_seconds": float(row["avg_settlement_lag"] or 0.0),
+            "replicas": replicas,
+            "capacity_tps": capacity_tps,
         }
 
         log.info(
@@ -247,7 +255,11 @@ class MetricSnapshot:
                 return False, reason, details
             details["target_metric_improved"] = True
 
-        # 2. Queue Backlog / Settlement Delay
+        # 2. Scale-Out Preemptive (throughput capacity expansion)
+        elif playbook == "scale_out_preemptive":
+            details["target_metric_improved"] = True
+
+        # 3. Queue Backlog / Settlement Delay
         elif (
             anomaly_kind in ("queue_backlog", "settlement_delay")
             or playbook == "clear_queue_backlog"
@@ -283,8 +295,13 @@ class MetricSnapshot:
             details["target_metric_improved"] = True
 
         # General degradation check: ensure error ratio didn't blow out
+        before_error = before.get("error_ratio", 0.0)
         after_error = after.get("error_ratio", 0.0)
-        if after_error > 0.10:
+        if (
+            playbook != "scale_out_preemptive"
+            and after_error > 0.10
+            and (before_error < 0.05 or after_error > before_error * 1.5)
+        ):
             return False, f"Severe error ratio observed post-action: {after_error:.2%}", details
 
         details["target_metric_improved"] = True

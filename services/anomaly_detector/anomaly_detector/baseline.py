@@ -44,15 +44,25 @@ log = get_logger(__name__)
 MIN_BUCKET_SAMPLES = 8
 
 # Floor on sigma, relative to the mean, before computing a deviation.
-#
-# Some signals are legitimately almost constant - `error_ratio` sits at 0.002 with almost no
-# variance on a healthy service. A true sigma near zero makes (value - mean) / sigma explode,
-# so a jump from 0.002 to 0.004 would read as hundreds of sigma and outrank a genuine outage.
-# The floor keeps deviations comparable across signals of very different scales.
 RELATIVE_SIGMA_FLOOR = 0.05
 
 # Absolute floor for signals whose mean is itself near zero.
 ABSOLUTE_SIGMA_FLOOR = 1e-6
+
+# Statistically justified minimum variance floors per feature.
+# These prevent micro-variances (e.g. sigma=0.000127) on healthy signals from turning
+# ordinary operational jitter into high-sigma (>7.0) critical anomalies.
+FEATURE_MIN_SIGMA_FLOORS: dict[str, float] = {
+    "error_ratio": 0.003,  # 0.3% error rate variance floor (SLO is 1.0%)
+    "latency_p99_seconds": 0.030,  # 30ms latency variance floor
+    "latency_p50_seconds": 0.015,  # 15ms median latency variance floor
+    "cpu_utilisation_ratio": 0.05,  # 5% CPU variance floor
+    "memory_utilisation_ratio": 0.05,  # 5% memory variance floor
+    "queue_depth": 2.0,  # 2 queued items minimum variance
+    "active_connections": 5.0,  # 5 active connections
+    "settlement_lag_seconds": 1.0,  # 1.0 second settlement lag
+    "tps": 2.0,  # 2.0 TPS
+}
 
 
 @dataclass(frozen=True)
@@ -60,10 +70,19 @@ class FeatureStats:
     mean: float
     sigma: float
     samples: int
+    feature: str = ""
+
+    @property
+    def effective_sigma(self) -> float:
+        """Effective standard deviation incorporating feature-specific variance floor."""
+        min_floor = FEATURE_MIN_SIGMA_FLOORS.get(self.feature, ABSOLUTE_SIGMA_FLOOR)
+        rel_floor = abs(self.mean) * RELATIVE_SIGMA_FLOOR
+        return max(self.sigma, min_floor, rel_floor)
 
     def deviation(self, value: float) -> float:
         """Signed deviation in sigma. Positive means above the baseline."""
-        return (value - self.mean) / self.sigma if self.sigma > 0 else 0.0
+        eff_sigma = self.effective_sigma
+        return (value - self.mean) / eff_sigma if eff_sigma > 0 else 0.0
 
 
 @dataclass
@@ -111,22 +130,32 @@ class ServiceBaseline:
         for key, (mean, sigma, samples) in payload.get("hourly", {}).items():
             hour_text, feature = key.split("|", 1)
             baseline.hourly[(int(hour_text), feature)] = FeatureStats(
-                float(mean), float(sigma), int(samples)
+                float(mean), float(sigma), int(samples), feature=feature
             )
         for feature, (mean, sigma, samples) in payload.get("overall", {}).items():
-            baseline.overall[feature] = FeatureStats(float(mean), float(sigma), int(samples))
+            baseline.overall[feature] = FeatureStats(
+                float(mean), float(sigma), int(samples), feature=feature
+            )
         return baseline
 
 
-def _stats(values: list[float]) -> FeatureStats | None:
+def _stats(values: list[float], feature: str = "") -> FeatureStats | None:
     if not values:
         return None
     mean = statistics.fmean(values)
     sigma = statistics.stdev(values) if len(values) > 1 else 0.0
     # Apply the floors here rather than at deviation time, so the stored baseline is already
     # the thing that gets used and there is no second place for the rule to drift.
-    floor = max(abs(mean) * RELATIVE_SIGMA_FLOOR, ABSOLUTE_SIGMA_FLOOR)
-    return FeatureStats(mean=mean, sigma=max(sigma, floor), samples=len(values))
+    floor = max(
+        abs(mean) * RELATIVE_SIGMA_FLOOR,
+        FEATURE_MIN_SIGMA_FLOORS.get(feature, ABSOLUTE_SIGMA_FLOOR),
+    )
+    return FeatureStats(
+        mean=mean,
+        sigma=max(sigma, floor),
+        samples=len(values),
+        feature=feature,
+    )
 
 
 def build_baseline(service: str, rows: list[dict[str, Any]]) -> ServiceBaseline:
@@ -152,12 +181,13 @@ def build_baseline(service: str, rows: list[dict[str, Any]]) -> ServiceBaseline:
             by_feature[feature].append(value)
 
     for key, values in by_hour.items():
-        stats = _stats(values)
+        _, feat = key
+        stats = _stats(values, feature=feat)
         if stats is not None:
             baseline.hourly[key] = stats
 
     for feature, values in by_feature.items():
-        stats = _stats(values)
+        stats = _stats(values, feature=feature)
         if stats is not None:
             baseline.overall[feature] = stats
 

@@ -17,6 +17,42 @@ from aiops_common.log import get_logger
 
 log = get_logger(__name__)
 
+LOCAL_PORT_MAP: dict[str, int] = {
+    "ml-api-adapter": 8011,
+    "central-ledger": 8012,
+    "quoting-service": 8013,
+    "account-lookup-service": 8014,
+    "transaction-request-service": 8015,
+}
+
+
+async def _notify_simulator(service: str, replicas: int) -> None:
+    """Notify simulated service if available to immediately reflect capacity change in telemetry."""
+    import httpx
+
+    urls = [
+        f"http://{service}:8000/sim/scale",
+        f"http://localhost:{LOCAL_PORT_MAP.get(service, 8000)}/sim/scale",
+    ]
+    for url in urls:
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                resp = await client.post(
+                    url,
+                    json={"replicas": replicas, "reason": "docker_compose_scale"},
+                )
+                if resp.status_code == 200:
+                    log.info(
+                        "scaler.simulator_notified",
+                        service=service,
+                        replicas=replicas,
+                        url=url,
+                    )
+                    break
+        except Exception as exc:  # noqa: BLE001
+            log.debug("scaler.simulator_notify_retry", service=service, url=url, error=str(exc))
+            continue
+
 
 class DockerComposeScaler:
     """Scales Docker Compose services up and down via the Docker SDK.
@@ -53,10 +89,11 @@ class DockerComposeScaler:
             def _sort_key(c: Any) -> tuple[int, str]:
                 labels = getattr(c, "labels", {}) or {}
                 num = labels.get("com.docker.compose.container-number", "1")
+                name_str = str(getattr(c, "name", id(c)))
                 try:
-                    return (int(num), c.name)
+                    return (int(num), name_str)
                 except (ValueError, TypeError):
-                    return (999, c.name)
+                    return (999, name_str)
 
             return sorted(containers, key=_sort_key)
         except DockerException as exc:
@@ -227,6 +264,7 @@ class DockerComposeScaler:
                     )
 
                 new_count = current_count + 1
+                await _notify_simulator(service, new_count)
                 msg = f"Scaled out '{service}' from {current_count} to {new_count} replica(s) (created '{replica_name}')"
                 log.info(
                     "scaler.scale_out_success",
@@ -320,6 +358,7 @@ class DockerComposeScaler:
                 # Verify remaining replicas are healthy
                 remaining = self.get_replicas(service)
                 new_count = len(remaining)
+                await _notify_simulator(service, new_count)
 
                 msg = f"Scaled in '{service}' from {current_count} to {new_count} replica(s) (removed '{victim_name}')"
                 log.info(
