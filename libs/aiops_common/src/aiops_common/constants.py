@@ -124,6 +124,7 @@ KEY_PREFIX: Final[str] = "aiops"
 CIRCUIT_BREAKER_KEY: Final[str] = f"{KEY_PREFIX}:cb"
 HEALING_COOLDOWN_KEY: Final[str] = f"{KEY_PREFIX}:healing:cooldown"
 HEALING_BUDGET_KEY: Final[str] = f"{KEY_PREFIX}:healing:budget"
+HEALING_ATTEMPTS_KEY: Final[str] = f"{KEY_PREFIX}:healing:attempts"
 MODEL_REGISTRY_KEY: Final[str] = f"{KEY_PREFIX}:models"
 
 
@@ -168,12 +169,24 @@ class PlaybookName(StrEnum):
     CLEAR_QUEUE_BACKLOG = "clear_queue_backlog"
 
 
+class ExecutionMode(StrEnum):
+    REAL = "real"
+    SIMULATED = "simulated"
+
+
 class ActionStatus(StrEnum):
     PROPOSED = "proposed"
     SKIPPED_DRY_RUN = "skipped_dry_run"
     SKIPPED_COOLDOWN = "skipped_cooldown"
     SKIPPED_BUDGET = "skipped_budget"
     SKIPPED_LOW_CONFIDENCE = "skipped_low_confidence"
+    SKIPPED_INSUFFICIENT_CAPACITY = "skipped_insufficient_capacity"
+    SKIPPED_MIN_REPLICAS = "skipped_min_replicas"
+    SKIPPED_MAX_REPLICAS = "skipped_max_replicas"
+    SKIPPED_MAX_ATTEMPTS = "skipped_max_attempts"
+    SKIPPED_GLOBAL_LIMIT = "skipped_global_limit"
+    SKIPPED_DOWNSTREAM_UNHEALTHY = "skipped_downstream_unhealthy"
+    REQUIRES_MANUAL_INTERVENTION = "requires_manual_intervention"
     RUNNING = "running"
     SUCCEEDED = "succeeded"
     FAILED = "failed"

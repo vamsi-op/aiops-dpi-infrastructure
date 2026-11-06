@@ -221,6 +221,17 @@ class HealingSettings(BaseSettings):
     # Minimum confidence from the RCA engine before an action is allowed to run.
     min_confidence: float = Field(default=0.7, alias="HEALING_MIN_CONFIDENCE")
 
+    # Scaling limits & resource thresholds
+    min_replicas: int = Field(default=1, alias="HEALING_MIN_REPLICAS")
+    max_replicas: int = Field(default=3, alias="HEALING_MAX_REPLICAS")
+    max_attempts_per_incident: int = Field(default=2, alias="HEALING_MAX_ATTEMPTS_PER_INCIDENT")
+    global_max_containers: int = Field(default=20, alias="HEALING_GLOBAL_MAX_CONTAINERS")
+    failure_cooldown_seconds: int = Field(default=120, alias="HEALING_FAILURE_COOLDOWN_SECONDS")
+    replica_memory_limit_mb: float = Field(default=256.0, alias="REPLICA_MEMORY_LIMIT_MB")
+    replica_cpu_limit: float = Field(default=0.40, alias="REPLICA_CPU_LIMIT")
+    min_available_ram_mb: float = Field(default=256.0, alias="SCALE_MIN_AVAILABLE_RAM_MB")
+    max_host_cpu_percent: float = Field(default=85.0, alias="SCALE_MAX_HOST_CPU_PERCENT")
+
 
 class SimulatorSettings(BaseSettings):
     """Mojaloop workload simulator knobs (module 2)."""
