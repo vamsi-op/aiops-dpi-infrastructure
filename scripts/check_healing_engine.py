@@ -146,21 +146,21 @@ async def check_dry_run_mode() -> None:
         # Clear faults
         for service, port in SIM_PORTS.items():
             try:
-                delete(f"http://localhost:{port}/faults")
+                delete(f"http://localhost:{port}/sim/faults")
             except Exception:
                 pass
 
         # Record baseline action count
-        initial_count = await db.fetchval(
+        initial_count = await db.fetch_value(
             f"SELECT COUNT(*) FROM {TABLE_ACTIONS} WHERE status = 'skipped_dry_run'"
         )
 
         # Inject memory pressure fault
         print("  Injecting memory_hog into central-ledger")
         post_json(
-            f"http://localhost:{SIM_PORTS['central-ledger']}/faults",
+            f"http://localhost:{SIM_PORTS['central-ledger']}/sim/faults",
             {
-                "fault_type": "memory_hog",
+                "kind": "memory_hog",
                 "magnitude": 0.8,
             },
         )
@@ -170,7 +170,7 @@ async def check_dry_run_mode() -> None:
         await asyncio.sleep(60)
 
         # Check for dry-run action
-        new_count = await db.fetchval(
+        new_count = await db.fetch_value(
             f"SELECT COUNT(*) FROM {TABLE_ACTIONS} WHERE status = 'skipped_dry_run'"
         )
 
@@ -180,7 +180,7 @@ async def check_dry_run_mode() -> None:
             )
 
             # Get latest action
-            action = await db.fetchrow(f"""
+            action = await db.fetch_one(f"""
                 SELECT action_id, playbook, target_service, result_message
                 FROM {TABLE_ACTIONS}
                 WHERE status = 'skipped_dry_run'
@@ -198,7 +198,7 @@ async def check_dry_run_mode() -> None:
             warn("No skipped_dry_run actions found - anomaly may not have been detected")
 
         # Clean up
-        delete(f"http://localhost:{SIM_PORTS['central-ledger']}/faults")
+        delete(f"http://localhost:{SIM_PORTS['central-ledger']}/sim/faults")
 
     finally:
         await db.close()
@@ -222,9 +222,9 @@ async def check_safety_rails() -> None:
         ]
 
         for status in statuses_to_check:
-            count = await db.fetchval(
-                f"SELECT COUNT(*) FROM {TABLE_ACTIONS} WHERE status = $1",
-                status,
+            count = await db.fetch_value(
+                f"SELECT COUNT(*) FROM {TABLE_ACTIONS} WHERE status = :p1",
+                {"p1": status},
             )
 
             if count > 0:
@@ -246,7 +246,7 @@ async def check_idempotency() -> None:
 
     try:
         # Check for duplicate actions on same service within short time window
-        duplicates = await db.fetch(f"""
+        duplicates = await db.fetch_all(f"""
             SELECT target_service, COUNT(*) as action_count
             FROM {TABLE_ACTIONS}
             WHERE created_at >= NOW() - INTERVAL '5 minutes'
@@ -278,7 +278,7 @@ async def check_action_persistence() -> None:
 
     try:
         # Get action statistics
-        stats = await db.fetchrow(f"""
+        stats = await db.fetch_one(f"""
             SELECT
                 COUNT(*) as total,
                 COUNT(*) FILTER (WHERE status = 'succeeded') as succeeded,

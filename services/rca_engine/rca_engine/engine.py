@@ -147,31 +147,38 @@ class RCAEngine:
 
     async def _consume_anomalies(self) -> None:
         """Consume anomaly events and trigger correlation."""
-        async for event in self.bus.subscribe(
-            Stream.ANOMALIES,
-            group="rca-engine",
-            consumer=f"rca-{settings.env}",
-        ):
-            if not self._running:
-                break
-
+        while self._running:
             try:
-                anomaly = AnomalyEvent.model_validate(event.data)
+                async for event in self.bus.subscribe(
+                    Stream.ANOMALIES,
+                    group="rca-engine",
+                    consumer=f"rca-{settings.env}",
+                ):
+                    if not self._running:
+                        break
 
-                # Add to sliding window
-                self.recent_anomalies.append(anomaly)
-                self._trim_window()
+                    try:
+                        anomaly = AnomalyEvent.model_validate(event.data)
 
-                # Trigger correlation
-                await self._process_anomaly(anomaly)
+                        # Add to sliding window
+                        self.recent_anomalies.append(anomaly)
+                        self._trim_window()
 
+                        # Trigger correlation
+                        await self._process_anomaly(anomaly)
+
+                    except Exception as exc:
+                        log.error(
+                            "rca_engine.consume_error",
+                            error=str(exc),
+                            event_id=event.event_id,
+                            exc_info=True,
+                        )
             except Exception as exc:
-                log.error(
-                    "rca_engine.consume_error",
-                    error=str(exc),
-                    event_id=event.event_id,
-                    exc_info=True,
-                )
+                if not self._running:
+                    break
+                log.warning("rca_engine.consumer_restarting", error=str(exc))
+                await asyncio.sleep(2)
 
     def _trim_window(self) -> None:
         """Remove anomalies older than window_seconds from memory."""

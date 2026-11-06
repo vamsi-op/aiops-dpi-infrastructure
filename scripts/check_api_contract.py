@@ -22,7 +22,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-BASE_URL = "http://127.0.0.1:8000"
+BASE_URL = "http://127.0.0.1:8080"
 TYPES_FILE = Path(__file__).resolve().parents[1] / "dashboard/src/api/types.ts"
 
 # TypeScript interface -> (endpoint, how to reach a representative object)

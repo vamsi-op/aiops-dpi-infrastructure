@@ -64,11 +64,14 @@ class HealingEngine:
 
         self._anomaly_consumer_task: asyncio.Task[None] | None = None
         self._incident_consumer_task: asyncio.Task[None] | None = None
+        self._prediction_consumer_task: asyncio.Task[None] | None = None
         self._running = False
 
         # Track recently handled anomalies to avoid duplicates
         self._handled_anomalies: set[str] = set()
         self._max_handled_cache = 1000
+        # Track recently handled predictions to avoid duplicate scale-outs
+        self._handled_predictions: set[str] = set()
 
     async def start(self) -> None:
         """Start consuming anomaly and incident streams."""
@@ -87,6 +90,11 @@ class HealingEngine:
         self._incident_consumer_task = asyncio.create_task(
             self._consume_incidents(),
             name="healing_incident_consumer",
+        )
+
+        self._prediction_consumer_task = asyncio.create_task(
+            self._consume_predictions(),
+            name="healing_prediction_consumer",
         )
 
         log.info(
@@ -118,85 +126,205 @@ class HealingEngine:
             except asyncio.CancelledError:
                 pass
 
+        if self._prediction_consumer_task:
+            self._prediction_consumer_task.cancel()
+            try:
+                await self._prediction_consumer_task
+            except asyncio.CancelledError:
+                pass
+
         log.info("healing_engine.stopped")
 
     async def _consume_anomalies(self) -> None:
         """Consume anomaly events and trigger healing actions."""
-        async for event in self.bus.subscribe(
-            Stream.ANOMALIES, group="healing-engine", consumer="healing-1"
-        ):
-            if not self._running:
-                break
-
+        while self._running:
             try:
-                anomaly = AnomalyEvent.model_validate(event.data)
+                async for event in self.bus.subscribe(
+                    Stream.ANOMALIES, group="healing-engine", consumer="healing-1"
+                ):
+                    if not self._running:
+                        break
 
-                # Skip if already handled
-                if anomaly.anomaly_id in self._handled_anomalies:
-                    log.debug(
-                        "healing_engine.anomaly_already_handled",
-                        anomaly_id=anomaly.anomaly_id,
-                    )
-                    continue
+                    try:
+                        anomaly = AnomalyEvent.model_validate(event.data)
 
-                log.info(
-                    "healing_engine.anomaly_received",
-                    anomaly_id=anomaly.anomaly_id,
-                    service=anomaly.service,
-                    kind=anomaly.kind,
-                    score=anomaly.score,
-                )
+                        # Skip if already handled
+                        if anomaly.anomaly_id in self._handled_anomalies:
+                            log.debug(
+                                "healing_engine.anomaly_already_handled",
+                                anomaly_id=anomaly.anomaly_id,
+                            )
+                            continue
 
-                # Process anomaly
-                await self._process_anomaly(anomaly, incident=None)
+                        log.info(
+                            "healing_engine.anomaly_received",
+                            anomaly_id=anomaly.anomaly_id,
+                            service=anomaly.service,
+                            kind=anomaly.kind,
+                            score=anomaly.score,
+                        )
 
-                # Mark as handled
-                self._handled_anomalies.add(anomaly.anomaly_id)
-                if len(self._handled_anomalies) > self._max_handled_cache:
-                    # Trim oldest entries (approximate FIFO)
-                    excess = len(self._handled_anomalies) - self._max_handled_cache
-                    for _ in range(excess):
-                        self._handled_anomalies.pop()
+                        # Process anomaly
+                        await self._process_anomaly(anomaly, incident=None)
 
+                        # Mark as handled
+                        self._handled_anomalies.add(anomaly.anomaly_id)
+                        if len(self._handled_anomalies) > self._max_handled_cache:
+                            # Trim oldest entries (approximate FIFO)
+                            excess = len(self._handled_anomalies) - self._max_handled_cache
+                            for _ in range(excess):
+                                self._handled_anomalies.pop()
+
+                    except Exception as exc:
+                        log.error(
+                            "healing_engine.anomaly_consume_error",
+                            error=str(exc),
+                            stream_event=str(event),
+                            exc_info=True,
+                        )
             except Exception as exc:
-                log.error(
-                    "healing_engine.anomaly_consume_error",
-                    error=str(exc),
-                    stream_event=str(event),
-                    exc_info=True,
-                )
+                if not self._running:
+                    break
+                log.warning("healing_engine.anomaly_consumer_restarting", error=str(exc))
+                await asyncio.sleep(2)
 
     async def _consume_incidents(self) -> None:
         """Consume incident events and trigger healing with RCA context."""
-        async for event in self.bus.subscribe(
-            Stream.INCIDENTS, group="healing-engine", consumer="healing-1"
-        ):
-            if not self._running:
-                break
-
+        while self._running:
             try:
-                incident = Incident.model_validate(event.data)
+                async for event in self.bus.subscribe(
+                    Stream.INCIDENTS, group="healing-engine", consumer="healing-1"
+                ):
+                    if not self._running:
+                        break
 
-                # Only process newly opened incidents
-                if incident.status != "open":
-                    continue
+                    try:
+                        incident = Incident.model_validate(event.data)
 
-                # Process incident - get primary anomaly and heal with incident context
-                if incident.anomaly_ids:
-                    # Fetch the first anomaly for this incident
-                    anomaly_id = incident.anomaly_ids[0]
-                    anomaly = await self._fetch_anomaly(anomaly_id)
+                        # Only process newly opened incidents
+                        if incident.status != "open":
+                            continue
 
-                    if anomaly:
-                        await self._process_anomaly(anomaly, incident=incident)
+                        # Process incident - get primary anomaly and heal with incident context
+                        if incident.anomaly_ids:
+                            # Fetch the first anomaly for this incident
+                            anomaly_id = incident.anomaly_ids[0]
+                            anomaly = await self._fetch_anomaly(anomaly_id)
+
+                            if anomaly:
+                                await self._process_anomaly(anomaly, incident=incident)
+
+                    except Exception as exc:
+                        log.error(
+                            "healing_engine.incident_consume_error",
+                            error=str(exc),
+                            stream_event=str(event),
+                            exc_info=True,
+                        )
+            except Exception as exc:
+                if not self._running:
+                    break
+                log.warning("healing_engine.incident_consumer_restarting", error=str(exc))
+                await asyncio.sleep(2)
+
+    async def _consume_predictions(self) -> None:
+        """Consume traffic forecast events and trigger pre-emptive scaling.
+
+        When the traffic predictor forecasts a TPS load significantly above the
+        current baseline (peak_predicted_tps > current_tps * scale_ratio, default 1.5x)
+        the engine synthesises a synthetic TRAFFIC_SURGE anomaly and routes it through
+        the normal playbook + safety-rail pipeline so the action is fully auditable.
+        """
+        from datetime import UTC, datetime as _dt
+
+        from aiops_common.constants import AnomalyKind, Severity
+        from aiops_common.schemas import AnomalyEvent as _AnomalyEvent
+        from aiops_common.schemas import PredictionEvent as _PredictionEvent
+
+        # Ratio above which we decide to pre-emptively scale out.
+        scale_ratio: float = getattr(self.settings, "preemptive_scale_ratio", 1.5)
+
+        while self._running:
+            try:
+                async for event in self.bus.subscribe(
+                    Stream.PREDICTIONS, group="healing-engine-pred", consumer="healing-pred-1"
+                ):
+                    if not self._running:
+                        break
+
+                    try:
+                        prediction = _PredictionEvent.model_validate(event.data)
+
+                        # Only act on the 1-hour horizon to avoid over-reacting
+                        if prediction.horizon_hours != 1:
+                            continue
+
+                        # Skip if already handled this prediction
+                        if prediction.prediction_id in self._handled_predictions:
+                            continue
+
+                        # Only act when the forecast recommends scaling out
+                        if prediction.scaling_action != "scale_out":
+                            continue
+
+                        # Additional guard: peak must exceed current load by the configured ratio
+                        if prediction.current_tps > 0:
+                            ratio = prediction.peak_predicted_tps / prediction.current_tps
+                            if ratio < scale_ratio:
+                                log.debug(
+                                    "healing_engine.prediction_below_threshold",
+                                    service=prediction.service,
+                                    ratio=round(ratio, 3),
+                                    threshold=scale_ratio,
+                                )
+                                continue
+
+                        log.info(
+                            "healing_engine.preemptive_scale_triggered",
+                            service=prediction.service,
+                            horizon_hours=prediction.horizon_hours,
+                            current_tps=prediction.current_tps,
+                            peak_predicted_tps=prediction.peak_predicted_tps,
+                            recommended_replicas=prediction.recommended_replicas,
+                        )
+
+                        # Synthesise a lightweight AnomalyEvent so we can reuse _process_anomaly
+                        # and get the full safety-rail + audit-trail treatment.
+                        synthetic = _AnomalyEvent(
+                            service=prediction.service,
+                            platform=prediction.platform,
+                            severity=Severity.WARNING,
+                            score=0.75,
+                            kind=str(AnomalyKind.TRAFFIC_SURGE),
+                            contributing_features=["predicted_tps", "recommended_replicas"],
+                            detected_at=_dt.now(UTC),
+                        )
+
+                        await self._process_anomaly(synthetic, incident=None)
+
+                        self._handled_predictions.add(prediction.prediction_id)
+                        if len(self._handled_predictions) > self._max_handled_cache:
+                            excess = len(self._handled_predictions) - self._max_handled_cache
+                            for _ in range(excess):
+                                self._handled_predictions.pop()
+
+                    except Exception as exc:
+                        log.error(
+                            "healing_engine.prediction_consume_error",
+                            error=str(exc),
+                            stream_event=str(event),
+                            exc_info=True,
+                        )
 
             except Exception as exc:
-                log.error(
-                    "healing_engine.incident_consume_error",
+                if not self._running:
+                    break
+                log.warning(
+                    "healing_engine.prediction_consumer_restarting",
                     error=str(exc),
-                    stream_event=str(event),
-                    exc_info=True,
                 )
+                import asyncio as _asyncio
+                await _asyncio.sleep(5)
 
     async def _fetch_anomaly(self, anomaly_id: str) -> AnomalyEvent | None:
         """Fetch anomaly from database."""

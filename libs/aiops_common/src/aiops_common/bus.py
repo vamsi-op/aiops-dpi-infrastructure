@@ -300,9 +300,15 @@ class EventBus:
         """
         await self.ensure_group(stream, group)
         while True:
-            for event in await self.read(
-                stream, group, consumer, count=count, block_ms=block_ms
-            ):
+            try:
+                events = await self.read(
+                    stream, group, consumer, count=count, block_ms=block_ms
+                )
+            except EventBusError as exc:
+                log.debug("bus.subscribe_read_idle", stream=str(stream), error=str(exc))
+                await asyncio.sleep(0.5)
+                continue
+            for event in events:
                 yield event
                 if auto_ack:
                     await self.ack(stream, group, event.message_id)

@@ -179,11 +179,13 @@ class Correlator:
         """
 
         lookback = earliest_anomaly - timedelta(seconds=window_seconds)
+        # Look 60 s forward so a deployment recorded just after fault injection still correlates.
+        lookahead = earliest_anomaly + timedelta(seconds=60)
         rows = await self.db.fetch_all(
             query,
             {
                 "start": lookback,
-                "end": earliest_anomaly,
+                "end": lookahead,
                 "platform": self.settings.dpi_platform,
             },
         )

@@ -102,7 +102,7 @@ class RedisSettings(BaseSettings):
     port: int = Field(default=6379, alias="REDIS_PORT")
     db: int = Field(default=0, alias="REDIS_DB")
     password: str | None = Field(default=None, alias="REDIS_PASSWORD")
-    socket_timeout_seconds: float = Field(default=5.0, alias="REDIS_SOCKET_TIMEOUT_SECONDS")
+    socket_timeout_seconds: float = Field(default=30.0, alias="REDIS_SOCKET_TIMEOUT_SECONDS")
     # Cap on stream length so a stalled consumer can never exhaust memory.
     stream_maxlen: int = Field(default=50_000, alias="REDIS_STREAM_MAXLEN")
 

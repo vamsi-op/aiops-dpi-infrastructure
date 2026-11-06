@@ -260,6 +260,8 @@ class Incident(AiopsModel):
     action_ids: list[str] = Field(default_factory=list)
     # Human-readable narrative generated for the dashboard.
     ai_summary: str = ""
+    # Optional resolution reason published when status transitions to 'resolved'.
+    reason: str | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property
