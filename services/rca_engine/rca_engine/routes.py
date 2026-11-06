@@ -132,12 +132,12 @@ async def get_incident(request: Request, incident_id: str) -> dict[str, Any]:
 
     query = """
         SELECT incident_id, opened_at, closed_at, status, severity, platform,
-               title, affected_services, anomaly_ids, hypotheses_json, ai_summary
+               title, affected_services, anomaly_ids, hypotheses, ai_summary
         FROM incidents
-        WHERE incident_id = $1
+        WHERE incident_id = :incident_id
     """
 
-    row = await manager.db.fetchrow(query, incident_id)
+    row = await manager.db.fetch_one(query, {"incident_id": incident_id})
 
     if not row:
         raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
@@ -152,7 +152,7 @@ async def get_incident(request: Request, incident_id: str) -> dict[str, Any]:
         "title": row["title"],
         "affected_services": row["affected_services"],
         "anomaly_ids": row["anomaly_ids"],
-        "hypotheses": row["hypotheses_json"],
+        "hypotheses": row["hypotheses"],
         "ai_summary": row["ai_summary"],
     }
 

@@ -170,22 +170,26 @@ class Correlator:
         query = """
             SELECT deployment_id, occurred_at, service, to_version, change_type
             FROM deployments
-            WHERE occurred_at >= $1 AND occurred_at <= $2
-            AND platform = $3
+            WHERE occurred_at >= :start AND occurred_at <= :end
+            AND platform = :platform
             ORDER BY occurred_at DESC
         """
 
         lookback = earliest_anomaly - timedelta(seconds=window_seconds)
-        rows = await self.db.query(
+        rows = await self.db.fetch_all(
             query,
-            lookback,
-            earliest_anomaly,
-            self.settings.dpi.platform,
+            {
+                "start": lookback,
+                "end": earliest_anomaly,
+                "platform": self.settings.dpi_platform,
+            },
         )
 
         for row in rows:
-            deployment_service = row["service"]
-            deployment_time = row["occurred_at"]
+            deployment_service = row.get("service")
+            deployment_time = row.get("occurred_at")
+            if not deployment_service or not deployment_time:
+                continue
 
             # Check if deployed service is affected
             if deployment_service not in affected_services:
@@ -271,22 +275,26 @@ class Correlator:
         query = """
             SELECT run_id, experiment, target_service, started_at
             FROM chaos_runs
-            WHERE started_at <= $1
-            AND (ended_at IS NULL OR ended_at >= $2)
-            AND platform = $3
+            WHERE started_at <= :start
+            AND (ended_at IS NULL OR ended_at >= :window_start)
+            AND platform = :platform
             AND status IN ('running', 'completed')
         """
 
         window_start = earliest_anomaly - timedelta(seconds=window_seconds)
-        rows = await self.db.query(
+        rows = await self.db.fetch_all(
             query,
-            earliest_anomaly,
-            window_start,
-            self.settings.dpi.platform,
+            {
+                "start": earliest_anomaly,
+                "window_start": window_start,
+                "platform": self.settings.dpi_platform,
+            },
         )
 
         for row in rows:
-            chaos_service = row["target_service"]
+            chaos_service = row.get("target_service")
+            if not chaos_service:
+                continue
             affected_services = {a.service for a in anomalies}
 
             if chaos_service in affected_services:
@@ -350,3 +358,8 @@ class Correlator:
         )
 
         return hypotheses
+
+    correlate = correlate_all
+
+
+RCACorrelator = Correlator
