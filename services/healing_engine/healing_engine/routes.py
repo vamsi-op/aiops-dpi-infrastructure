@@ -62,6 +62,12 @@ async def config(request: Request) -> dict[str, Any]:
         "cooldown_seconds": settings.healing.cooldown_seconds,
         "min_confidence": settings.healing.min_confidence,
         "docker_socket": settings.healing.docker_socket,
+        "min_replicas": settings.healing.min_replicas,
+        "max_replicas": settings.healing.max_replicas,
+        "replica_memory_limit_mb": settings.healing.replica_memory_limit_mb,
+        "replica_cpu_limit": settings.healing.replica_cpu_limit,
+        "min_available_ram_mb": settings.healing.min_available_ram_mb,
+        "max_host_cpu_percent": settings.healing.max_host_cpu_percent,
         "playbooks": [
             "restart_on_oom",
             "circuit_break_cascade",
@@ -75,6 +81,8 @@ async def config(request: Request) -> dict[str, Any]:
             "min_confidence": f">= {settings.healing.min_confidence}",
             "cooldown": f"{settings.healing.cooldown_seconds}s per service",
             "budget": f"{settings.healing.max_actions_per_hour} per hour",
+            "capacity": f"RAM > {settings.healing.replica_memory_limit_mb + settings.healing.min_available_ram_mb}MB, CPU < {settings.healing.max_host_cpu_percent}%",
+            "replica_bounds": f"{settings.healing.min_replicas} <= replicas <= {settings.healing.max_replicas}",
         },
     }
 
@@ -91,14 +99,16 @@ async def list_actions(
     query = """
         SELECT action_id, created_at, started_at, finished_at,
                playbook, target_service, platform, incident_id, anomaly_id,
-               trigger_reason, confidence, status, dry_run, result_message
+               trigger_reason, confidence, status, dry_run, execution_mode,
+               actual_replicas_before, actual_replicas_after, simulated_replicas_after,
+               result_message
         FROM healing_actions
-        WHERE ($1::text IS NULL OR status = $1)
+        WHERE (:status::text IS NULL OR status = :status)
         ORDER BY created_at DESC
-        LIMIT $2
+        LIMIT :limit
     """
 
-    rows = await engine.db.fetch(query, status, limit)
+    rows = await engine.db.fetch_all(query, {"status": status, "limit": limit})
 
     actions = []
     for row in rows:
@@ -116,6 +126,10 @@ async def list_actions(
             "confidence": row["confidence"],
             "status": row["status"],
             "dry_run": row["dry_run"],
+            "execution_mode": row.get("execution_mode") or ("real" if not row.get("dry_run", True) and row.get("status") == "succeeded" else "simulated"),
+            "actual_replicas_before": row.get("actual_replicas_before"),
+            "actual_replicas_after": row.get("actual_replicas_after"),
+            "simulated_replicas_after": row.get("simulated_replicas_after"),
             "result_message": row["result_message"],
         })
 
@@ -135,13 +149,15 @@ async def get_action(request: Request, action_id: str) -> dict[str, Any]:
         SELECT action_id, created_at, started_at, finished_at,
                playbook, target_service, target_instance, platform,
                incident_id, anomaly_id, trigger_reason, confidence,
-               status, dry_run, parameters, result_message,
+               status, dry_run, execution_mode,
+               actual_replicas_before, actual_replicas_after, simulated_replicas_after,
+               parameters, result_message,
                before_snapshot, after_snapshot
         FROM healing_actions
-        WHERE action_id = $1
+        WHERE action_id = :action_id
     """
 
-    row = await engine.db.fetchrow(query, action_id)
+    row = await engine.db.fetch_one(query, {"action_id": action_id})
 
     if not row:
         raise HTTPException(status_code=404, detail=f"Action {action_id} not found")
@@ -161,6 +177,10 @@ async def get_action(request: Request, action_id: str) -> dict[str, Any]:
         "confidence": row["confidence"],
         "status": row["status"],
         "dry_run": row["dry_run"],
+        "execution_mode": row.get("execution_mode") or ("real" if not row.get("dry_run", True) and row.get("status") == "succeeded" else "simulated"),
+        "actual_replicas_before": row.get("actual_replicas_before"),
+        "actual_replicas_after": row.get("actual_replicas_after"),
+        "simulated_replicas_after": row.get("simulated_replicas_after"),
         "parameters": row["parameters"],
         "result_message": row["result_message"],
         "before_snapshot": row["before_snapshot"],
