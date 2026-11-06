@@ -82,6 +82,7 @@ export function IncidentsPage({
                 <thead>
                   <tr>
                     <th scope="col">Status</th>
+                    <th scope="col">Source</th>
                     <th scope="col">Severity</th>
                     <th scope="col">Incident</th>
                     <th scope="col">Root cause</th>
@@ -93,11 +94,22 @@ export function IncidentsPage({
                 <tbody>
                   {data.map((incident) => {
                     const cause = incident.hypotheses[0];
+                    const isLive =
+                      incident.incident_id.startsWith('inc_live_') ||
+                      incident.title?.startsWith('[Live]') ||
+                      incident.hypotheses?.some((h) =>
+                        h.evidence?.some((e) => e.toLowerCase().includes('live')),
+                      );
                     return (
                       <tr key={incident.incident_id} onClick={() => onSelect(incident.incident_id)} style={{ cursor: 'pointer' }}>
                         <td>
                           <Badge tone={incidentTone(incident.status)} dot pulse={incident.status === 'open'}>
                             {incident.status}
+                          </Badge>
+                        </td>
+                        <td>
+                          <Badge tone={isLive ? 'ok' : 'idle'}>
+                            {isLive ? 'Live' : 'Demo'}
                           </Badge>
                         </td>
                         <td>
@@ -167,6 +179,9 @@ function IncidentDetailView({
                         {incident.status}
                       </Badge>
                       <Badge tone={severityTone(incident.severity)}>{incident.severity}</Badge>
+                      <Badge tone={incident.incident_id.startsWith('inc_live_') || incident.title?.startsWith('[Live]') ? 'ok' : 'idle'}>
+                        {incident.incident_id.startsWith('inc_live_') || incident.title?.startsWith('[Live]') ? 'Live Telemetry' : 'Demo Scenario'}
+                      </Badge>
                       <span className="mono">{incident.incident_id}</span>
                     </div>
                     <span className="card__hint">
@@ -178,6 +193,12 @@ function IncidentDetailView({
                   <h2 style={{ margin: 0, fontSize: 18, fontWeight: 620, letterSpacing: '-0.01em' }}>
                     {incident.title || 'Untitled incident'}
                   </h2>
+
+                  <div className="card__hint" style={{ fontSize: 12 }}>
+                    {incident.status === 'resolved'
+                      ? '✓ Resolution verified: Service healthy and telemetry stable within SLO thresholds.'
+                      : '⚠ Incident active: Problem ongoing or recovery pending verification.'}
+                  </div>
 
                   <div className="row">
                     {incident.affected_services.map((service) => (
@@ -297,8 +318,29 @@ function IncidentDetailView({
                       {data.actions.map((action) => (
                         <div key={action.action_id} className="hypothesis">
                           <div className="row row--between">
-                            <span className="mono">{action.playbook}</span>
-                            <Badge tone={actionTone(action.status)}>{actionLabel(action.status)}</Badge>
+                            <div className="row">
+                              <span className="mono">{action.playbook}</span>
+                              {Boolean(action.parameters?.attempt_number) && (
+                                <Badge tone="info">Attempt {String(action.parameters?.attempt_number)}/2</Badge>
+                              )}
+                              {Boolean(action.parameters?.root_cause) && (
+                                <Badge tone="idle">Cause: {String(action.parameters?.root_cause)}</Badge>
+                              )}
+                              {action.actual_replicas_before !== undefined && action.actual_replicas_before !== null && action.actual_replicas_after !== undefined && action.actual_replicas_after !== null && (
+                                <Badge tone="accent">
+                                  Replicas: {action.actual_replicas_before} → {action.actual_replicas_after}
+                                </Badge>
+                              )}
+                            </div>
+                            <div className="row">
+                              {Boolean(action.parameters?.requires_manual_intervention) && (
+                                <Badge tone="crit">Manual Intervention Required</Badge>
+                              )}
+                              <Badge tone={action.execution_mode === 'real' ? 'ok' : 'idle'}>
+                                {action.execution_mode === 'real' ? 'Real Execution' : 'Simulated'}
+                              </Badge>
+                              <Badge tone={actionTone(action.status)}>{actionLabel(action.status)}</Badge>
+                            </div>
                           </div>
                           <p style={{ margin: '6px 0 0', fontSize: 12.5, color: 'var(--text-muted)' }}>
                             {action.trigger_reason}

@@ -75,8 +75,9 @@ export function incidentTone(status: string): Tone {
  */
 export function actionTone(status: string): Tone {
   if (status === 'succeeded') return 'ok';
-  if (status === 'failed') return 'crit';
+  if (status === 'failed' || status === 'requires_manual_intervention') return 'crit';
   if (status === 'running') return 'accent';
+  if (status === 'skipped_insufficient_capacity' || status === 'skipped_max_attempts' || status === 'skipped_global_limit') return 'warn';
   if (status.startsWith('skipped')) return 'info';
   return 'idle';
 }
@@ -88,6 +89,12 @@ export function actionLabel(status: string): string {
     skipped_cooldown: 'Cooldown',
     skipped_budget: 'Budget',
     skipped_low_confidence: 'Low confidence',
+    skipped_insufficient_capacity: 'Insufficient capacity',
+    skipped_min_replicas: 'At min replicas',
+    skipped_max_replicas: 'At max replicas',
+    skipped_max_attempts: 'Max attempts reached',
+    skipped_global_limit: 'Global limit reached',
+    requires_manual_intervention: 'Manual intervention required',
     running: 'Running',
     succeeded: 'Succeeded',
     failed: 'Failed',
