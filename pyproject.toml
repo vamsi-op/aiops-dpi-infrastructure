@@ -66,8 +66,10 @@ known-first-party = [
     "aiops_common",
     "anomaly_detector",
     "api_gateway",
+    "healing_engine",
     "metrics_agent",
     "mojaloop_sim",
+    "rca_engine",
     "traffic_predictor",
 ]
 
@@ -116,10 +118,13 @@ testpaths = ["tests", "libs", "services"]
 # on the path here. Doing it once centrally beats a sys.path hack repeated in every test
 # module, which is what this replaced.
 pythonpath = [
+    "libs/aiops_common/src",
     "services/anomaly_detector",
     "services/api_gateway",
+    "services/healing_engine",
     "services/metrics_agent",
     "services/mojaloop_sim",
+    "services/rca_engine",
     "services/traffic_predictor",
 ]
 python_files = ["test_*.py"]

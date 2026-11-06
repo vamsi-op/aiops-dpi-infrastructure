@@ -894,7 +894,13 @@ async def seed_scenarios(db: Database, scenarios: list[Scenario], now: datetime)
                 "status": scenario.action_status,
                 "dry_run": not executed,
                 "parameters": json.dumps(
-                    {"target": scenario.anomaly_service, "playbook": scenario.playbook}
+                    {
+                        "target": scenario.anomaly_service,
+                        "playbook": scenario.playbook,
+                        "actual_replicas_before": 2 if scenario.playbook == PlaybookName.SCALE_OUT_PREEMPTIVE else None,
+                        "actual_replicas_after": 3 if scenario.playbook == PlaybookName.SCALE_OUT_PREEMPTIVE else None,
+                        "execution_mode": "real" if executed else "simulated",
+                    }
                 ),
                 "result_message": (
                     "Remediation completed; metrics recovered within SLO"

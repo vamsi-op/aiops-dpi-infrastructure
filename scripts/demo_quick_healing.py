@@ -12,7 +12,7 @@ from datetime import datetime
 
 # Service ports
 CENTRAL_LEDGER_PORT = 8012
-API_BASE = "http://localhost:8080"
+API_BASE = "http://localhost:8000"
 
 def http_get(url: str, timeout: int = 10) -> dict:
     """Make HTTP GET request and return JSON response."""
