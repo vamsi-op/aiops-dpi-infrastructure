@@ -28,8 +28,9 @@ Built against **Mojaloop** (payments). The design generalises to **MOSIP** (iden
 | **Predicts traffic** | Forecasts per-service load at 1 / 6 / 24 hour horizons and recommends a replica count *before* the peak arrives |
 | **Detects anomalies** | Isolation Forest over a multivariate feature vector, with per-feature attribution — not static thresholds |
 | **Explains root cause** | Correlates anomalies temporally, across the service dependency graph, against deployments, and against external events. Five alarms become **one** incident with **one** named cause |
-| **Heals itself** | Playbooks for OOM restart, circuit breaking, deploy rollback and pre-emptive scaling, behind four independent safety rails |
-| **Proves it works** | Chaos experiments with a scorecard: time-to-detect, time-to-RCA, time-to-remediate |
+| **Heals itself** | Root-cause-driven playbooks (OOM restart, traffic-aware scale-out, circuit breaking, deploy rollback), behind five safety rails with post-remediation recovery verification |
+| **SLO auto-resolution** | Verifies recovery against concrete SLOs over a continuous 120s window, filtering out harmless ML noise/jitter so healthy incidents resolve cleanly with an audit trail |
+| **Proves it works** | Chaos experiments and end-to-end scenarios with a scorecard: time-to-detect, time-to-RCA, time-to-remediate |
 
 ---
 
@@ -64,10 +65,12 @@ Built against **Mojaloop** (payments). The design generalises to **MOSIP** (iden
 ```
 
 **Current Status (November 2026):**
-- ✅ Modules 1-5, 6, 7, 8 complete and integrated
-- ⏸️ Modules 9-10 planned
-- 17 containers running, full end-to-end pipeline operational
-- **Self-healing workflow verified**: Fault → Anomaly (5-15s) → Incident → Remediation
+- ✅ **Modules 1-8 Complete & Integrated**: Full production-grade stack operational.
+- 🐳 **19 Containers Running**: Observability, TimescaleDB, Redis, API Gateway, 5 Mojaloop services, and all Python AIOps engines.
+- ⚡ **Root-Cause Remediation Flow**: Distinguishes process failures, traffic overload, queue buildup, and dependency failures with automatic fallback to single-replica scale-out (+1).
+- 🛡️ **Multi-Tier Safety Rails**: Hard limit of 20 containers global cap, max 2 remediation attempts per incident, failure cooldown (120s), and human-escalation (`requires_manual_intervention`).
+- 🎯 **SLO-Verified Incident Auto-Resolution**: Resolves incidents based on continuous 120s compliance with concrete SLO thresholds (error ratio $\le 1\%$, p99 latency $\le 250$ms, queue depth $\le 5$), preventing benign ML anomalies from blocking resolution.
+- 🧪 **54 Automated Tests Passing**: Comprehensive unit, regression, and end-to-end integration coverage across RCA, Healing, and Detector services.
 
 Layers only query downward and communicate upward through the event bus. No service
 reaches into another's database. Full reasoning in
@@ -226,11 +229,47 @@ docker logs aiops-healing-engine | Select-String "Restarted|execute_start"
 
 Healing actions execute when:
 - Master switch `HEALING_ENABLED=true` (set in `.env`)
-- Cooldown period expired (15 seconds between actions on same target)
+- Target not in cooldown (default 300s, 120s failure cooldown)
 - Hourly budget not exceeded (max 10 actions per hour)
-- Confidence threshold met (>= 0.7)
+- Confidence threshold met (`>= 0.7`)
+- Max attempts per incident not exceeded (max 2 attempts before escalating to `requires_manual_intervention`)
+- Host resource limits respected: $\ge 256\text{ MB}$ free RAM, $\le 85\%$ CPU, and strict **global cap of 20 containers**
 
-Blocked actions are logged with `skipped_*` status codes proving the safety rails work.
+Blocked actions are logged with `skipped_*` status codes (`skipped_cooldown`, `skipped_max_attempts`, `skipped_global_limit`, `skipped_insufficient_capacity`) proving the safety rails work.
+
+Every executed remediation performs **post-action recovery verification** against actual telemetry and container health before declaring success.
+
+---
+
+## Advanced Self-Healing & Incident Management
+
+### 1. Root-Cause-Based Remediation Selection
+Rather than naively restarting containers on every alert, the healing engine selects playbooks dynamically based on RCA evidence:
+- **Process Failure / OOM Crash**: Executes container restart (`restart_on_oom`).
+- **Traffic Overload**: When incoming TPS exceeds provisioned capacity with rising queue depth and latency, safely scales out by exactly **+1 replica** (`scale_out_preemptive`).
+- **Persistent Queue Backlog**: Executes queue clearing (`clear_queue_backlog`), escalating from container restart to worker scaling if backlogs persist.
+- **Downstream Dependency Failure**: Isolates upstream traffic or triggers circuit breaking (`circuit_break_cascade`) instead of blindly thrashing downstream microservices.
+- **Bad Deployment**: Initiates automated rollback to the previous stable version (`rollback_bad_deploy`).
+
+### 2. Multi-Tier Safety Rails & Host Protection
+- **Global Container Limit (20 Containers)**: Enforces a strict ceiling suitable for local development laptops. Scale-out is skipped if total container count reaches 20.
+- **Incident Attempt Limit (Max 2 Attempts)**: If two remediation attempts fail to resolve an incident, automatic remediation halts and marks the action as `requires_manual_intervention`.
+- **Failure Cooldown**: Records a 120-second cooldown on failed actions as well as successful ones to permanently eliminate container restart thrashing.
+- **Capacity & Headroom Checks**: Checks host CPU and memory before scale-out, skipping if capacity is insufficient.
+
+### 3. SLO-Verified Incident Auto-Resolution
+Eliminates the false-positive trap where 15-second background Isolation Forest noise prevents healthy incidents from closing:
+- **Continuous Recovery Window**: Requires at least 120 seconds of continuous telemetry observation.
+- **Objective SLO Compliance**: Verifies that all affected services meet standard healthy SLO thresholds:
+  - Error Ratio: $\le 1.0\%$ (0.01)
+  - P99 Latency: $\le 250\text{ ms}$ (0.25s)
+  - Queue Depth: $\le 5.0$ items
+  - CPU / Memory Utilisation: $\le 85\%$ (0.85)
+- **Benign Anomaly Suppression**: Sub-threshold informational anomalies (`severity = 'info'`, score $< 0.65$) or minor baseline variations do not block resolution when metrics meet SLOs.
+- **Recurring Failure Protection**: Genuine critical anomalies (`score >= 0.85`) on the root-cause service or active SLO violations keep incidents `OPEN`.
+- **Resolution Audit Trail**: Appends a verified resolution summary to the incident record and publishes an update event to the Redis Stream `aiops.incidents`.
+
+---
 
 ### Step 9 — Open the dashboard
 
@@ -324,9 +363,16 @@ Python models, which `tsc` and `pytest` both miss and which renders as an empty 
 ### Run the tests
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests -q        # unit only, no Docker needed
+# Run the complete test suite (unit + ML + healing + RCA + integration)
+.\.venv\Scripts\python.exe -m pytest tests -q
 
-$env:AIOPS_RUN_INTEGRATION = '1'                     # + real DB and Redis
+# Run targeted test suites
+.\.venv\Scripts\python.exe -m pytest tests\test_rca_engine.py -v          # 11 tests: correlation & SLO auto-resolution
+.\.venv\Scripts\python.exe -m pytest tests\test_healing_engine.py -v      # 27 tests: safety rails, playbooks & scaling
+.\.venv\Scripts\python.exe -m pytest tests\test_end_to_end_healing.py -v  # 16 tests: 16 end-to-end healing scenarios
+
+# Run integration tests against real TimescaleDB and Redis
+$env:AIOPS_RUN_INTEGRATION = '1'
 .\.venv\Scripts\python.exe -m pytest tests -q
 ```
 
@@ -451,10 +497,19 @@ independent `good first issue` tasks.
 
 ## Design decisions worth knowing
 
-- **Automation is off by default.** `HEALING_ENABLED=false`. Every playbook passes four
-  rails — master switch, per-target cooldown, hourly budget, minimum confidence — and a
-  blocked action is recorded with a `skipped_*` status. Being able to show the brakes work
-  is what makes auto-remediation defensible.
+- **Automation is off by default.** `HEALING_ENABLED=false`. Every playbook passes five
+  safety rails — master switch, per-target cooldown, hourly budget, minimum confidence, and
+  max attempts — and a blocked action is recorded with a `skipped_*` status. Being able to
+  show the brakes work is what makes auto-remediation defensible.
+- **Strict 20-container host cap.** Automatic scale-out refuses to create containers if the
+  host already runs 20 containers. This guarantees local laptop safety during live demos.
+- **SLO-based incident resolution.** Machine learning anomaly detectors inherently flag
+  harmless statistical variations during normal traffic. To prevent incidents from getting
+  trapped `OPEN` permanently, resolution requires verified compliance with concrete SLO
+  thresholds over a continuous 120-second recovery window rather than zero anomaly records.
+- **Incident severity monotonicity.** When an open incident correlates new anomalies, its
+  severity is preserved or escalated, never downgraded from critical/warning by incoming
+  informational jitter.
 - **One `MetricSample` shape for everything.** Only the collection agent knows where a
   number came from. That boundary is what makes the platform portable across Mojaloop,
   MOSIP and Beckn.
