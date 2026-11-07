@@ -236,7 +236,7 @@ class DockerExecutor(ExecutorInterface):
                 )
 
             # Check global container limit on Docker host
-            global_max = getattr(settings, "global_max_containers", 20)
+            global_max = getattr(settings, "global_max_containers", 30)
             if hasattr(self, "client") and self.client:
                 try:
                     all_containers = self.client.containers.list()
