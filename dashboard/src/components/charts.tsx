@@ -325,7 +325,6 @@ export function SeverityTimeline({
           <Legend wrapperStyle={{ fontSize: 11, paddingTop: 6 }} iconType="square" iconSize={10} />
           <Bar dataKey="critical" name="Critical" stackId="s" fill="#f87171" isAnimationActive={false} />
           <Bar dataKey="warning" name="Warning" stackId="s" fill="#fbbf24" isAnimationActive={false} />
-          <Bar dataKey="info" name="Info" stackId="s" fill="#60a5fa" isAnimationActive={false} />
         </BarChart>
       </ResponsiveContainer>
     </div>
