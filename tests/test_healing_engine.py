@@ -59,8 +59,8 @@ def healing_settings():
     """Default healing settings for tests with healing enabled."""
     return HealingSettings(
         HEALING_ENABLED=True,
-        max_actions_per_hour=10,
-        cooldown_seconds=300,
+        HEALING_MAX_ACTIONS_PER_HOUR=10,
+        HEALING_COOLDOWN_SECONDS=300,
         min_confidence=0.7,
         min_replicas=1,
         max_replicas=3,

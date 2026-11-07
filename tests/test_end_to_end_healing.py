@@ -634,7 +634,7 @@ async def test_scenario_14_global_container_limit_enforced(monkeypatch):
 
     settings = HealingSettings(
         HEALING_ENABLED=True,
-        global_max_containers=20,
+        HEALING_GLOBAL_MAX_CONTAINERS=20,
     )
     executor = DockerExecutor(client=client, settings=settings)
 

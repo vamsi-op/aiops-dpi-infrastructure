@@ -279,7 +279,7 @@ export function ChaosPage({ onSelectIncident }: { onSelectIncident: (id: string)
               disabled={scaling || launching}
               onClick={() => void handleScale('scale_out')}
             >
-              {scaling ? 'Scaling...' : `⚡ Scale Out (+1) ${selectedService}`}
+              {scaling ? 'Scaling...' : `Scale Out (+1) ${selectedService}`}
             </button>
             <button
               type="button"

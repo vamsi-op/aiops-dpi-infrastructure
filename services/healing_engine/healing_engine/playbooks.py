@@ -161,6 +161,7 @@ class PlaybookRegistry:
             or (capacity > 0 and tps >= 0.70 * capacity)
             or (load_factor >= 0.70 and (queue_depth > 0 or cpu > 0.60))
             or (queue_depth > 10.0 and cpu > 0.60 and mem < 0.85)
+            or (kind == AnomalyKind.CPU_SATURATION and load_factor >= 0.70 and mem < 0.85)
         ) and mem < 0.90
 
         if is_traffic_overload:
