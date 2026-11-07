@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Any
+import json
+from datetime import UTC, datetime
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, Field
 
+from aiops_common.constants import MOJALOOP_SERVICES
 from aiops_common.log import get_logger
+from aiops_common.schemas import ActionStatus, new_id
 
 from .engine import HealingEngine
 from .executor import ExecutorInterface
@@ -197,4 +202,103 @@ async def get_action(request: Request, action_id: str) -> dict[str, Any]:
         "result_message": row["result_message"],
         "before_snapshot": row["before_snapshot"],
         "after_snapshot": row["after_snapshot"],
+    }
+
+
+class ScaleServiceRequest(BaseModel):
+    service: str = Field(..., description="Target service to scale")
+    action: Literal["scale_out", "scale_in"] = "scale_out"
+    target_replicas: int | None = None
+    reason: str = "chaos_manual_scale"
+
+
+@router.post("/scale", tags=["healing"], summary="Scale a microservice dynamically")
+async def scale_service(
+    request: Request,
+    body: ScaleServiceRequest,
+) -> dict[str, Any]:
+    """Dynamically scale any of the 5 Mojaloop microservices via DockerComposeScaler."""
+    engine = _engine(request)
+    executor = _executor(request)
+    service = body.service
+
+    if service not in MOJALOOP_SERVICES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid service '{service}'. Must be one of: {list(MOJALOOP_SERVICES)}",
+        )
+
+    current_replicas = await executor.get_replica_count(service)
+    effective_current = max(1, current_replicas) if current_replicas == 0 else current_replicas
+
+    if body.target_replicas is not None:
+        target_replicas = body.target_replicas
+    elif body.action == "scale_out":
+        target_replicas = effective_current + 1
+    else:
+        target_replicas = max(1, effective_current - 1)
+
+    result = await executor.scale_service(service, target_replicas)
+    success, message = result.success, result.message
+    meta = result.metadata if hasattr(result, "metadata") else {}
+
+    action_id = new_id("act")
+    status = meta.get("status") or (ActionStatus.SUCCEEDED if success else ActionStatus.FAILED)
+    if isinstance(status, ActionStatus):
+        status_val = status.value
+    else:
+        status_val = str(status)
+
+    now = datetime.now(UTC)
+    playbook = (
+        "scale_out_preemptive" if target_replicas > effective_current else "scale_in_idle"
+    )
+    new_replicas = meta.get(
+        "actual_replicas_after", target_replicas if success else current_replicas
+    )
+
+    try:
+        await engine.db.execute(
+            """
+            INSERT INTO healing_actions (
+                action_id, started_at, finished_at, playbook, target_service,
+                platform, trigger_reason, confidence, status, dry_run,
+                execution_mode, actual_replicas_before, actual_replicas_after,
+                simulated_replicas_after, parameters, result_message
+            ) VALUES (
+                :action_id, :now, :now, :playbook, :service,
+                :platform, :trigger_reason, 1.0, :status, false,
+                :mode, :before, :after, :sim_after, CAST(:params AS jsonb), :message
+            )
+            """,
+            {
+                "action_id": action_id,
+                "now": now,
+                "playbook": playbook,
+                "service": service,
+                "platform": engine.settings.dpi_platform,
+                "trigger_reason": f"Manual chaos scaling: {body.action} on {service}",
+                "status": status_val,
+                "mode": meta.get("execution_mode", "real"),
+                "before": meta.get("actual_replicas_before", current_replicas),
+                "after": new_replicas,
+                "sim_after": meta.get("simulated_replicas_after", target_replicas),
+                "params": json.dumps(
+                    {"action": body.action, "requested_by": "chaos-ui", **meta}
+                ),
+                "message": message,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("healing_engine.scale_action_record_failed", error=str(exc))
+
+    return {
+        "action_id": action_id,
+        "service": service,
+        "action": body.action,
+        "success": success,
+        "message": message,
+        "previous_replicas": current_replicas,
+        "current_replicas": new_replicas,
+        "details": meta,
     }

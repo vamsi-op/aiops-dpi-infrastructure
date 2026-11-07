@@ -8,7 +8,7 @@ model, return it.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -547,6 +547,117 @@ async def start_chaos_run(
             log.debug("chaos.stream_publish_failed", error=str(exc))
 
     return ChaosRun(**run)
+
+
+class ChaosScaleRequest(BaseModel):
+    service: str = Field(default="central-ledger", description="Target microservice to scale")
+    action: Literal["scale_out", "scale_in"] = "scale_out"
+    target_replicas: int | None = None
+    reason: str = "chaos_manual_scale"
+
+
+@router.post("/chaos/scale", summary="Dynamically scale a microservice for chaos engineering")
+async def chaos_scale(
+    request: Request,
+    body: ChaosScaleRequest,
+) -> dict[str, Any]:
+    if body.service not in MOJALOOP_SERVICES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid service '{body.service}'. Must be one of: {list(MOJALOOP_SERVICES)}",
+        )
+
+    healing_urls = ["http://healing-engine:8000", "http://localhost:8024"]
+    last_exc = None
+    data: dict[str, Any] | None = None
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        for base in healing_urls:
+            try:
+                resp = await client.post(
+                    f"{base}/scale",
+                    json={
+                        "service": body.service,
+                        "action": body.action,
+                        "target_replicas": body.target_replicas,
+                        "reason": body.reason,
+                    },
+                )
+                if resp.status_code in (200, 201):
+                    raw_data = resp.json()
+                    if hasattr(raw_data, "__await__"):
+                        data = await raw_data
+                    else:
+                        data = raw_data
+                    break
+                elif resp.status_code == 400:
+                    raise HTTPException(
+                        status_code=400, detail=resp.json().get("detail", "Scaling failed")
+                    )
+            except HTTPException:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                continue
+
+    # Fallback to local Docker scaler if healing-engine HTTP call didn't succeed
+    if data is None:
+        try:
+            import docker
+
+            from healing_engine.scaling import DockerComposeScaler
+
+            d_client = docker.from_env()
+            scaler = DockerComposeScaler(d_client)
+            current = await scaler.get_replica_count(body.service)
+            effective_current = max(1, current) if current == 0 else current
+
+            if body.target_replicas is not None:
+                target = body.target_replicas
+            elif body.action == "scale_out":
+                target = effective_current + 1
+            else:
+                target = max(1, effective_current - 1)
+
+            if target > effective_current:
+                success, msg, details = await scaler.scale_out(body.service, target)
+            else:
+                success, msg, details = await scaler.scale_in(body.service, target)
+
+            new_count = details.get("actual_replicas_after", target if success else current)
+            data = {
+                "service": body.service,
+                "action": body.action,
+                "success": success,
+                "message": msg,
+                "previous_replicas": current,
+                "current_replicas": new_count,
+                "details": details,
+            }
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Scaling failed and healing engine unreachable: {last_exc or exc}",
+            ) from exc
+
+    # Record chaos run for scorecard tracking
+    repo = _repo(request)
+    run_id = new_id("chaos")
+    await repo.record_chaos_run(
+        run_id=run_id,
+        experiment=f"scale_{body.action}",
+        target_service=body.service,
+        duration_seconds=30,
+        parameters=data,
+        notes=f"Dynamic chaos scaling: {body.action} on {body.service}",
+    )
+    try:
+        await repo.sync_chaos_runs()
+    except Exception as exc:  # noqa: BLE001
+        log.debug("chaos_scale.sync_failed", error=str(exc))
+
+    data["run_id"] = run_id
+    return data
 
 
 # ---------------------------------------------------------------------------

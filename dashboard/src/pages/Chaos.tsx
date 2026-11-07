@@ -18,6 +18,14 @@ import { Async, Badge, Card, Kpi, Notice } from '../components/primitives';
 import { formatDateTime, formatDuration, formatNumber, formatRelative } from '../lib/format';
 import type { Tone } from '../lib/status';
 
+export const MICROSERVICES: { id: string; name: string; description: string }[] = [
+  { id: 'central-ledger', name: 'Central Ledger', description: 'Core settlement & position ledger' },
+  { id: 'quoting-service', name: 'Quoting Service (Payment Service)', description: 'Fee quotes and scheme rule evaluation' },
+  { id: 'account-lookup-service', name: 'Account Lookup Service', description: 'Party resolution and directory lookups' },
+  { id: 'ml-api-adapter', name: 'ML API Adapter (Payment Gateway)', description: 'Inbound Open API adapter and auth' },
+  { id: 'transaction-request-service', name: 'Transaction Request Service (Settlement)', description: 'Payment and transfer requests' },
+];
+
 const EXPERIMENTS: { id: string; name: string; description: string; expects: string }[] = [
   {
     id: 'kill_service',
@@ -80,8 +88,18 @@ function statusTone(status: string): Tone {
 
 export function ChaosPage({ onSelectIncident }: { onSelectIncident: (id: string) => void }) {
   const live = useLive();
+  const [selectedService, setSelectedService] = useState<string>('central-ledger');
   const [launchMessage, setLaunchMessage] = useState<string | null>(null);
   const [launching, setLaunching] = useState(false);
+  const [scaling, setScaling] = useState(false);
+  const [scaleResult, setScaleResult] = useState<{
+    service: string;
+    action: string;
+    success: boolean;
+    message: string;
+    previous_replicas?: number;
+    current_replicas?: number;
+  } | null>(null);
 
   const runs = useApi(() => api.chaos(50), { intervalMs: 15_000, refreshKey: live.counters.chaos });
 
@@ -97,6 +115,44 @@ export function ChaosPage({ onSelectIncident }: { onSelectIncident: (id: string)
       : null;
   const detectionRate = runs.data?.length ? completed.length / runs.data.length : null;
 
+  const handleScale = async (action: 'scale_out' | 'scale_in') => {
+    setScaling(true);
+    setLaunchMessage(null);
+    setScaleResult(null);
+    try {
+      const response = await fetch('/api/chaos/scale', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ service: selectedService, action }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail ?? `Scaling failed with status ${response.status}`);
+      }
+      setScaleResult({
+        service: selectedService,
+        action,
+        success: data.success,
+        message: data.message,
+        previous_replicas: data.previous_replicas,
+        current_replicas: data.current_replicas,
+      });
+      setLaunchMessage(`[${data.success ? 'SUCCESS' : 'NOTICE'}] ${data.message}`);
+      runs.reload();
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Scaling operation failed.';
+      setScaleResult({
+        service: selectedService,
+        action,
+        success: false,
+        message: msg,
+      });
+      setLaunchMessage(msg);
+    } finally {
+      setScaling(false);
+    }
+  };
+
   const launch = async (experiment: string) => {
     setLaunching(true);
     setLaunchMessage(null);
@@ -104,12 +160,15 @@ export function ChaosPage({ onSelectIncident }: { onSelectIncident: (id: string)
       await fetch('/api/chaos', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ experiment }),
+        body: JSON.stringify({
+          experiment,
+          target_service: selectedService,
+        }),
       }).then(async (response) => {
         const body = (await response.json().catch(() => ({}))) as { detail?: string };
         if (!response.ok) throw new Error(body.detail ?? `Request failed with ${response.status}`);
       });
-      setLaunchMessage(`Experiment ${experiment} started.`);
+      setLaunchMessage(`Experiment '${experiment}' started on target '${selectedService}'.`);
       runs.reload();
     } catch (error) {
       setLaunchMessage(error instanceof Error ? error.message : 'Could not start the experiment.');
@@ -121,8 +180,8 @@ export function ChaosPage({ onSelectIncident }: { onSelectIncident: (id: string)
   return (
     <div className="stack">
       <Notice tone="info">
-        Chaos experiments deliberately break a service so the platform's detection and remediation can be
-        measured rather than assumed. Every run records how long the platform took to notice and to act.
+        Chaos experiments deliberately break or load a service so detection, root cause analysis, and self-healing
+        scaling can be measured dynamically across all 5 microservices.
       </Notice>
 
       <div className="grid grid--kpi">
@@ -146,12 +205,132 @@ export function ChaosPage({ onSelectIncident }: { onSelectIncident: (id: string)
         />
       </div>
 
-      <Card title="Run an experiment" hint="each experiment targets a specific failure mode and expected response">
-        {launchMessage && (
-          <div style={{ marginBottom: 12 }}>
-            <Notice tone={launchMessage.startsWith('Experiment') ? 'info' : 'warn'}>{launchMessage}</Notice>
+      <Card
+        title="Chaos Experiments & Dynamic Microservice Scaling"
+        hint="select any microservice from the dropdown to dynamically trigger container scaling or targeted chaos injection"
+      >
+        {/* Select Service to Scale Dropdown & Quick Actions */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '16px',
+            flexWrap: 'wrap',
+            marginBottom: '16px',
+            padding: '14px 16px',
+            background: 'var(--bg-raised-2, #1e293b)',
+            border: '1px solid var(--border-strong)',
+            borderRadius: '8px',
+          }}
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <label
+              htmlFor="select-service-to-scale"
+              style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--text)' }}
+            >
+              Select Service to Scale:
+            </label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+              <select
+                id="select-service-to-scale"
+                value={selectedService}
+                onChange={(e) => {
+                  setSelectedService(e.target.value);
+                  setScaleResult(null);
+                }}
+                className="select"
+                style={{
+                  minWidth: '280px',
+                  padding: '7px 12px',
+                  borderRadius: '6px',
+                  border: '1px solid var(--border-strong)',
+                  background: 'var(--bg)',
+                  color: 'var(--text)',
+                  fontSize: '0.9rem',
+                }}
+              >
+                {MICROSERVICES.map((svc) => (
+                  <option key={svc.id} value={svc.id}>
+                    {svc.name} ({svc.id})
+                  </option>
+                ))}
+              </select>
+              <Badge tone="accent">
+                Selected: {selectedService}
+              </Badge>
+            </div>
+            <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+              {MICROSERVICES.find((s) => s.id === selectedService)?.description}
+            </span>
+          </div>
+
+          <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              className="button"
+              style={{
+                background: 'var(--accent)',
+                color: '#fff',
+                border: 'none',
+                fontWeight: 600,
+                padding: '8px 16px',
+              }}
+              disabled={scaling || launching}
+              onClick={() => void handleScale('scale_out')}
+            >
+              {scaling ? 'Scaling...' : `⚡ Scale Out (+1) ${selectedService}`}
+            </button>
+            <button
+              type="button"
+              className="button"
+              disabled={scaling || launching}
+              onClick={() => void handleScale('scale_in')}
+            >
+              Scale In (-1)
+            </button>
+          </div>
+        </div>
+
+        {/* Dynamic Scale Status & Feedback Banner */}
+        {scaleResult && (
+          <div
+            style={{
+              marginBottom: '16px',
+              padding: '12px 16px',
+              borderRadius: '6px',
+              border: `1px solid ${scaleResult.success ? 'var(--ok)' : 'var(--warn)'}`,
+              background: 'var(--bg-raised-2)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '12px',
+              flexWrap: 'wrap',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+              <Badge tone={scaleResult.success ? 'ok' : 'warn'} dot>
+                {scaleResult.success ? 'SCALE SUCCESS' : 'SCALE NOTICE'}
+              </Badge>
+              <span style={{ fontWeight: 600 }}>Target: {scaleResult.service}</span>
+              <span style={{ color: 'var(--text-muted)' }}>— {scaleResult.message}</span>
+            </div>
+            {scaleResult.current_replicas !== undefined && (
+              <Badge tone="accent">
+                Replicas: {scaleResult.previous_replicas ?? '—'} &rarr; {scaleResult.current_replicas}
+              </Badge>
+            )}
           </div>
         )}
+
+        {launchMessage && (
+          <div style={{ marginBottom: 12 }}>
+            <Notice tone={launchMessage.includes('SUCCESS') || launchMessage.startsWith('Experiment') ? 'info' : 'warn'}>
+              {launchMessage}
+            </Notice>
+          </div>
+        )}
+
         <div className="table-wrap">
           <table>
             <caption className="sr-only">Available chaos experiments and what each should trigger</caption>
@@ -160,6 +339,7 @@ export function ChaosPage({ onSelectIncident }: { onSelectIncident: (id: string)
                 <th scope="col">Experiment</th>
                 <th scope="col">Injects</th>
                 <th scope="col">Expected platform response</th>
+                <th scope="col">Active Target</th>
                 <th scope="col" />
               </tr>
             </thead>
@@ -170,8 +350,18 @@ export function ChaosPage({ onSelectIncident }: { onSelectIncident: (id: string)
                   <td>{experiment.description}</td>
                   <td style={{ color: 'var(--text-muted)' }}>{experiment.expects}</td>
                   <td>
-                    <button type="button" className="button" disabled={launching} onClick={() => void launch(experiment.id)}>
-                      Run
+                    <Badge tone="accent">
+                      {selectedService}
+                    </Badge>
+                  </td>
+                  <td>
+                    <button
+                      type="button"
+                      className="button"
+                      disabled={launching || scaling}
+                      onClick={() => void launch(experiment.id)}
+                    >
+                      Run on {selectedService}
                     </button>
                   </td>
                 </tr>

@@ -235,3 +235,70 @@ async def test_inject_simulator_fault_mock() -> None:
         )
         assert success is True
         mock_post.assert_awaited()
+
+
+def test_chaos_start_request_with_custom_target() -> None:
+    from api_gateway.routes import StartChaosRequest
+
+    req = StartChaosRequest(experiment="traffic_spike", target_service="quoting-service")
+    assert req.experiment == "traffic_spike"
+    assert req.target_service == "quoting-service"
+
+
+def test_chaos_scale_request_model() -> None:
+    from api_gateway.routes import ChaosScaleRequest
+
+    req_out = ChaosScaleRequest(service="quoting-service", action="scale_out")
+    assert req_out.service == "quoting-service"
+    assert req_out.action == "scale_out"
+
+    req_in = ChaosScaleRequest(service="transaction-request-service", action="scale_in")
+    assert req_in.service == "transaction-request-service"
+    assert req_in.action == "scale_in"
+
+
+@pytest.mark.asyncio
+async def test_chaos_scale_dynamic_services() -> None:
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from fastapi import Request
+
+    from aiops_common.constants import MOJALOOP_SERVICES
+    from api_gateway.routes import ChaosScaleRequest, chaos_scale
+
+    mock_resp = AsyncMock()
+    mock_resp.status_code = 200
+    mock_resp.json = MagicMock(
+        return_value={
+            "success": True,
+            "message": "Scaled successfully",
+            "service": "quoting-service",
+            "action": "scale_out",
+            "previous_replicas": 1,
+            "current_replicas": 2,
+        }
+    )
+
+    mock_request = AsyncMock(spec=Request)
+    mock_repo = AsyncMock()
+    mock_repo.record_chaos_run = AsyncMock()
+    mock_repo.sync_chaos_runs = AsyncMock()
+    mock_request.app.state.repository = mock_repo
+
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
+        mock_post.return_value = mock_resp
+        for svc in MOJALOOP_SERVICES:
+            mock_resp.json.return_value = {
+                "success": True,
+                "message": f"Scaled {svc} successfully",
+                "service": svc,
+                "action": "scale_out",
+                "previous_replicas": 1,
+                "current_replicas": 2,
+            }
+            body = ChaosScaleRequest(service=svc, action="scale_out")
+            res = await chaos_scale(mock_request, body)
+            assert res["service"] == svc
+            assert res["action"] == "scale_out"
+            assert res["success"] is True
+            assert res["run_id"].startswith("chaos_")
