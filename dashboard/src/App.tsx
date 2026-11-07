@@ -115,11 +115,9 @@ export function App() {
             const badge =
               page.id === 'incidents' && counts?.open_incidents
                 ? { value: counts.open_incidents, alert: true }
-                : page.id === 'automation' && counts?.actions_24h
-                  ? { value: counts.actions_24h, alert: false }
-                  : page.id === 'chaos' && counts?.chaos_active
-                    ? { value: counts.chaos_active, alert: true }
-                    : null;
+                : page.id === 'chaos' && counts?.chaos_active
+                  ? { value: counts.chaos_active, alert: true }
+                  : null;
 
             return (
               <button
