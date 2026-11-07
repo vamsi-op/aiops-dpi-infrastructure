@@ -115,13 +115,11 @@ export function App() {
             const badge =
               page.id === 'incidents' && counts?.open_incidents
                 ? { value: counts.open_incidents, alert: true }
-                : page.id === 'anomalies' && counts?.anomalies_24h
-                  ? { value: counts.anomalies_24h, alert: (counts.critical_anomalies_24h ?? 0) > 0 }
-                  : page.id === 'automation' && counts?.actions_24h
-                    ? { value: counts.actions_24h, alert: false }
-                    : page.id === 'chaos' && counts?.chaos_active
-                      ? { value: counts.chaos_active, alert: true }
-                      : null;
+                : page.id === 'automation' && counts?.actions_24h
+                  ? { value: counts.actions_24h, alert: false }
+                  : page.id === 'chaos' && counts?.chaos_active
+                    ? { value: counts.chaos_active, alert: true }
+                    : null;
 
             return (
               <button
