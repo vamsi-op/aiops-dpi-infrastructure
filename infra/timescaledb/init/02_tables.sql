@@ -178,11 +178,18 @@ CREATE TABLE IF NOT EXISTS healing_actions (
     trigger_reason  text             NOT NULL DEFAULT '',
     confidence      double precision NOT NULL DEFAULT 0,
 
+    -- Must list every aiops_common.constants.ActionStatus value; tests/test_schema_enums.py
+    -- fails if the two drift. An existing database needs
+    -- infra/timescaledb/migrations/001_healing_action_statuses.sql.
     status          text             NOT NULL DEFAULT 'proposed'
+        CONSTRAINT healing_actions_status_check
         CHECK (status IN ('proposed', 'skipped_dry_run', 'skipped_cooldown',
                           'skipped_budget', 'skipped_low_confidence',
                           'skipped_insufficient_capacity', 'skipped_min_replicas',
-                          'skipped_max_replicas', 'running', 'succeeded', 'failed')),
+                          'skipped_max_replicas', 'skipped_max_attempts',
+                          'skipped_global_limit', 'skipped_downstream_unhealthy',
+                          'requires_manual_intervention',
+                          'running', 'succeeded', 'failed')),
     dry_run         boolean          NOT NULL DEFAULT true,
     execution_mode  text             NOT NULL DEFAULT 'simulated',
     actual_replicas_before   integer,
