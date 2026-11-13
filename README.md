@@ -410,8 +410,8 @@ More detail in **[docs/SETUP.md](docs/SETUP.md)** section 10.
 ### About the data
 
 No public dataset carries Mojaloop service telemetry, so all traffic comes from the
-simulator. The only file-based data is the 28-day training history, archived with a
-checksum and a command that regenerates it exactly. Every anomaly, incident, healing action
+simulator. The only file-based data is the 28-day training history, committed as a CSV
+with the command that regenerates it. Every anomaly, incident, healing action
 and forecast is produced by the running services. Details: **[docs/DATA.md](docs/DATA.md)**.
 
 ---

@@ -2,7 +2,7 @@
 
 **In short:** no public dataset carries Mojaloop service telemetry, so all traffic on this
 platform comes from a simulator. The one dataset stored as a file is the 28-day history the
-traffic forecaster trains on. It is committed, checksummed and exactly reproducible. Every
+traffic forecaster trains on, committed to the repo. Every
 anomaly, incident, healing action, forecast and chaos result is produced by the running
 services. None of them is ever loaded from a file.
 
@@ -42,31 +42,23 @@ services. None of them is ever loaded from a file.
 | | |
 |---|---|
 | File | `ml/datasets/mojaloop_replay_28d.csv` (5.3 MB) |
-| Metadata | `ml/datasets/mojaloop_replay_28d.meta.json`: generator, parameters, row counts, SHA-256 |
 | Rows | 26,880 (5,376 per service × 5 services) |
 | Time range | 2026-10-16 12:00 → 2026-11-13 11:59 UTC (28 days) |
 | Resolution | 15-minute samples for the first 26 days, 1-minute samples for the last 2 |
 | Services | ml-api-adapter, central-ledger, quoting-service, account-lookup-service, transaction-request-service |
 | Columns | timestamp, service, instance, platform, tps, request/error counts, error_ratio, latency p50/p95/p99, cpu and memory utilisation, queue_depth, active_connections, settlement_lag, quote and verification latency, replicas, source, collector, step_seconds |
-| SHA-256 | `7f845b9c8abc799605aa3f79ab10792c04563c4e4de2d109f10b13556caa34d8` |
 
 Traffic per service (tps, from the file): central-ledger 7.5–42.8 (median 24.3),
 quoting-service 5.2–31.4, account-lookup-service 4.3–26.6, ml-api-adapter 4.3–24.9,
 transaction-request-service 1.7–9.6. The highest error ratio anywhere in the file is 0.56%.
 
-### Verify the file
+### Regenerate the file
 
-The generator uses a fixed seed per service, and the export pins its end time, so anyone
-can regenerate the file and compare checksums:
+The generator uses a fixed seed per service, so this rebuilds the same file:
 
 ```bash
-python scripts/replay_history.py --export-csv /tmp/check.csv --days 28 --end 2026-11-13T12:00:00+00:00
-# prints: sha256 7f845b9c8abc799605aa3f79ab10792c04563c4e4de2d109f10b13556caa34d8
+python scripts/replay_history.py --export-csv ml/datasets/mojaloop_replay_28d.csv --days 28 --end 2026-11-13T12:00:00+00:00
 ```
-
-This was checked on Python 3.13. A different Python version or OS could, in principle,
-differ in the last rounded digit of a floating-point value. If that happens the checksum
-changes, but the data doesn't in any meaningful way.
 
 ### Load the file into the database
 

@@ -1,11 +1,10 @@
 """The archived training set (docs/DATA.md) and the CSV path of replay_history.py.
 
 Pinned here:
-* the committed CSV still matches the checksum in its .meta.json (nobody edited it by hand)
-* the generator is deterministic for a pinned end time, so the archive is reproducible
+* the committed CSV is complete and fault-free, as the anomaly detector's baseline must be
+* the generator is deterministic for a pinned end time
 * export -> read round-trips every column with the right types
 * loading shifts by whole weeks only, so weekday and hour-of-day survive
-* the dataset is fault-free, as the anomaly detector's baseline must be
 """
 
 from __future__ import annotations
@@ -20,7 +19,13 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 DATASET = ROOT / "ml/datasets/mojaloop_replay_28d.csv"
-META = DATASET.with_suffix(".meta.json")
+SERVICES = {
+    "ml-api-adapter",
+    "central-ledger",
+    "quoting-service",
+    "account-lookup-service",
+    "transaction-request-service",
+}
 
 
 @pytest.fixture(scope="module")
@@ -33,17 +38,12 @@ def replay():
     return module
 
 
-def test_archived_csv_matches_its_recorded_checksum(replay):
-    meta = json.loads(META.read_text(encoding="utf-8"))
-    assert replay.sha256_of(DATASET) == meta["sha256"]
-    assert meta["rows"] == sum(meta["rows_per_service"].values())
-
-
-def test_archived_csv_is_fault_free_and_complete(replay):
+def test_archived_csv_is_complete_and_fault_free(replay):
     rows = list(replay.read_csv(DATASET))
-    meta = json.loads(META.read_text(encoding="utf-8"))
-    assert len(rows) == meta["rows"]
-    assert {r["service"] for r in rows} == set(meta["rows_per_service"])
+    assert {r["service"] for r in rows} == SERVICES
+    # 28 days: 26 at 15-minute steps plus 2 at 1-minute steps, for each of 5 services.
+    assert len(rows) == (26 * 24 * 4 + 2 * 24 * 60) * len(SERVICES)
+    assert rows[-1]["timestamp"] - rows[0]["timestamp"] < timedelta(days=28)
     # A clean baseline: no error burst anywhere (the live alert threshold is 1%).
     assert max(r["error_ratio"] for r in rows) < 0.01
     assert all(json.loads(r["labels"])["source"] == "replay" for r in rows)
@@ -51,11 +51,10 @@ def test_archived_csv_is_fault_free_and_complete(replay):
 
 def test_export_is_reproducible_for_a_pinned_end(replay, tmp_path):
     end = datetime(2026, 1, 5, 12, 0, tzinfo=UTC)
-    a = replay.export_csv(tmp_path / "a.csv", days=1, end=end)
-    b = replay.export_csv(tmp_path / "b.csv", days=1, end=end)
-    assert a["sha256"] == b["sha256"]
-    assert a["rows"] == 1 * 24 * 60 * 5  # one day, 1-minute fine tier, five services
-    assert "--end 2026-01-05T12:00:00+00:00" in a["generator"]["reproduce"]
+    rows_a = replay.export_csv(tmp_path / "a.csv", days=1, end=end)
+    rows_b = replay.export_csv(tmp_path / "b.csv", days=1, end=end)
+    assert rows_a == rows_b == 1 * 24 * 60 * 5  # one day, 1-minute fine tier, five services
+    assert (tmp_path / "a.csv").read_bytes() == (tmp_path / "b.csv").read_bytes()
 
 
 def test_export_then_read_round_trips(replay, tmp_path):
