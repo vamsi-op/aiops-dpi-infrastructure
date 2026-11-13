@@ -183,7 +183,7 @@ Detect unusual behaviour before it becomes an outage.
 ``AnomalyEvent`` already carries ``feature_snapshot``, ``feature_deviations`` and
 ``contributing_features``, and the dashboard renders all three.
 
-Depends on: Module 3 (or use ``scripts/seed_demo_data.py --days 7``)
+Depends on: Module 3 (or use ``scripts/replay_history.py --days 28``)
 
 $docLink
 "@
@@ -306,7 +306,7 @@ Break things deliberately and measure how well the platform responds.
 
 This is what makes the project demonstrable, so budget time for it. ``ChaosRun``, the
 ``chaos_runs`` table and the dashboard chaos page already exist - look at the ``cpu_hog``
-run produced by ``seed_demo_data.py`` for the target shape.
+run produced by ``scripts/run_chaos_experiment.py`` for the target shape.
 
 Depends on: Modules 2, 4, 6, 7
 

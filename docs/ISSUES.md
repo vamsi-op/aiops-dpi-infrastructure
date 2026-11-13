@@ -48,7 +48,7 @@ If the group is larger than two, modules 7 and 9 split off cleanly, and the
 ```
 
 Modules 4 and 5 can start before 3 is finished by using
-`scripts/seed_demo_data.py --days 7` for training data.
+`scripts/replay_history.py --days 28` for training data.
 
 ---
 
@@ -400,7 +400,7 @@ docs/MODULES.md
 This is the module that makes the project *demonstrable*, so budget time for it. The
 `ChaosRun` schema, the `chaos_runs` table with its timing columns, and the dashboard's
 chaos page with the scorecard all already exist and are exercised by the seed data — look
-at what `seed_demo_data.py` produces for the `cpu_hog` run to see the target shape.
+at a live `cpu_hog` chaos run (`scripts/run_chaos_experiment.py`) to see the target shape.
 
 Auto-revert matters: an experiment that fails to clean up after itself leaves the platform
 broken and wastes everyone's time.

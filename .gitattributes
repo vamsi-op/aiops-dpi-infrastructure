@@ -32,6 +32,10 @@ Dockerfile text
 *.joblib binary
 *.pkl binary
 
+# Datasets: always LF, so the SHA-256 recorded in each .meta.json holds on every OS.
+# Not diffed - a 27k-row CSV diff is noise; the checksum is the meaningful comparison.
+*.csv text eol=lf -diff
+
 # Generated or vendored: collapse in PR diffs and exclude from language stats
 package-lock.json  linguist-generated=true -diff
 dashboard/dist/**  linguist-generated=true -diff

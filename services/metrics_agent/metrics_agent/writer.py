@@ -24,7 +24,7 @@ from aiops_common.schemas import MetricSample
 
 log = get_logger(__name__)
 
-# Column order is shared with scripts/seed_demo_data.py on purpose. Both write the same
+# Column order is shared with scripts/replay_history.py on purpose. Both write the same
 # table, and the dashboard cannot tell them apart - so if these two drift, the symptom is a
 # dashboard that renders differently depending on which producer filled the window.
 METRIC_COLUMNS: Final[tuple[str, ...]] = (
@@ -176,7 +176,7 @@ class MetricsWriter:
                 detail=(
                     "seeded rows exist in the same window as agent rows; the dashboard "
                     "sums tps across instances, so reported traffic will be inflated "
-                    "until these age out. Run seed_demo_data.py --clear"
+                    "until these age out, or reset the database"
                 ),
             )
         return services

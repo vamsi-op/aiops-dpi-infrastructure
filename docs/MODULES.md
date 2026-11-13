@@ -277,8 +277,6 @@ service is the bridge: PromQL in, `service_metrics` rows and `aiops.metrics` eve
 
 ```powershell
 .\scripts\stack.ps1 up -Layer all
-# The seeder and the agent must not both feed the same window - see below.
-.\.venv\Scripts\python.exe scripts\seed_demo_data.py --clear
 # History for modules 4 and 5. Takes a few minutes; the agent owns the last hour.
 .\.venv\Scripts\python.exe scripts\replay_history.py --days 28
 .\.venv\Scripts\python.exe scripts\check_metrics_agent.py
@@ -341,9 +339,9 @@ written for it — `seasonal_multiplier` is a pure function of time, and its doc
 
 Two alternatives were rejected:
 
-- **`seed_demo_data.py`** has its own independent `random`-based generator — it does not import
-  `TrafficModel`. A model trained on it learns a distribution the live system never produces,
-  and the resulting misbehaviour looks like a detector bug rather than a data mismatch.
+- **An independent `random`-based generator** (the removed `seed_demo_data.py` was one) does
+  not import `TrafficModel`. A model trained on it learns a distribution the live system never
+  produces, and the resulting misbehaviour looks like a detector bug rather than a data mismatch.
 - **Public AIOps datasets** (GAIA, SMD, LO2) cannot fit `ANOMALY_FEATURES`. None carry
   `settlement_lag_seconds`, the payments-specific signal this platform is built around, and
   `StandardScaler` fitted to another system's magnitudes makes every one of our normal samples
@@ -370,11 +368,11 @@ Replay is deliberately **fault-free**. `ANOMALY_CONTAMINATION` is 0.02, so an Is
 wants a mostly-normal baseline; the anomalies should come from real fault injection at demo
 time, not be pre-baked into the training set.
 
-### Do not run the seeder and the agent together
+### Only one producer per time window
 
-`scripts/seed_demo_data.py` is the stand-in this module replaces. Both write
-`service_metrics`, and the dashboard sums `tps` across a service's instances within a
-120-second grace window — so seeded rows (`seed-<service>-0`) alongside agent rows inflate
+Any second producer writing `service_metrics` in the live window - historically the removed
+`seed_demo_data.py` - inflates the dashboard: it sums `tps` across a service's instances within a
+120-second grace window, so foreign rows (`seed-<service>-0`) alongside agent rows inflate
 reported traffic with **no error anywhere to explain it**. The agent checks for this once at
 start-up and reports it on `/status` as `conflicting_producers`; the verification script
 fails on it outright.
@@ -787,7 +785,6 @@ complete pipeline.
 | `services/api_gateway/Dockerfile` | Containerized gateway deployed via docker-compose.aiops.yml on port 8080 |
 | `dashboard/` | React 18 + TypeScript + Vite. 7 pages: Overview, Service detail, Anomalies, Forecast, Incidents, Automation, Chaos |
 | `dashboard/vite.config.ts` | Dev server proxy to gateway (port 8080), eliminating CORS in development |
-| `scripts/seed_demo_data.py` | A week of Mojaloop telemetry with daily/weekly rhythm, plus 5 scripted failure scenarios (memory leak, bad deploy, traffic surge, cascade, chaos run) |
 | `scripts/ws_smoke.py` | Proves the live path: publishes to Redis, asserts it arrives at the WebSocket |
 | `scripts/check_api_contract.py` | Parses `types.ts` and checks all 20 interfaces against live API responses |
 | `tests/test_gateway.py` | 25 tests over health rules, repository shaping and route behaviour |

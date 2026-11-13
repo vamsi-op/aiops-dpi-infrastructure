@@ -143,7 +143,7 @@ async def overview(request: Request) -> Overview:
     if not snapshots:
         notes.append(
             "No metrics in the database yet. Start the Mojaloop simulator and metrics "
-            "agent (modules 2-3), or run scripts/seed_demo_data.py for sample data."
+            "agent (modules 2-3); the first samples arrive within a minute."
         )
     if not counts.get("anomalies_24h"):
         notes.append(

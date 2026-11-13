@@ -214,7 +214,7 @@ function ServicesIndex({ onSelect }: { onSelect: (service: string) => void }) {
       {services.error && services.data === null && <p className="empty">{services.error}</p>}
       {services.data?.length === 0 && (
         <p className="empty">
-          No service metrics yet. Seed sample data with <code>python scripts/seed_demo_data.py --follow</code>.
+          No service metrics yet. Start the stack; the metrics agent reports within a minute.
         </p>
       )}
       <div className="grid grid--services">

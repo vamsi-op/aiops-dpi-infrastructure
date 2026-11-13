@@ -41,7 +41,6 @@ ignore = [
 "services/mojaloop_sim/**" = ["S311"]
 # The seeder uses `random` to shape synthetic traffic, not for anything security related,
 # and imports after a sys.path insert so it can run as a plain script from the repo root.
-"scripts/seed_demo_data.py" = ["S311", "E402", "S608"]
 # Same three reasons: it drives the simulator's own traffic model, imports after a sys.path
 # insert, and interpolates only the TABLE_METRICS constant into SQL.
 "scripts/replay_history.py" = ["S311", "E402", "S608"]
@@ -65,7 +64,6 @@ ignore = [
 "scripts/check_rca_engine.py" = ["S608", "BLE", "S110", "B007"]
 "scripts/demo_quick_healing.py" = ["S310", "BLE"]
 "scripts/demo_scale_proof.py" = ["E402", "S603", "S607"]
-"scripts/execute_all_playbooks.py" = ["S608", "BLE"]
 
 [tool.ruff.lint.isort]
 known-first-party = [

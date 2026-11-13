@@ -14,9 +14,9 @@ written for this - `seasonal_multiplier` is a pure function of time, and its doc
 
 Why not the alternatives
 ------------------------
-* `seed_demo_data.py` has its own independent `random`-based generator. A model trained on it
-  learns a distribution the live system never produces, and the resulting misbehaviour looks
-  like a detector bug rather than a data mismatch.
+* An independent random generator would teach the models a distribution the live system
+  never produces, and the resulting misbehaviour looks like a detector bug rather than a
+  data mismatch.
 * Public AIOps datasets cannot fit `ANOMALY_FEATURES`: none of them carry
   `settlement_lag_seconds`, and `StandardScaler` fitted to another system's magnitudes makes
   every one of our normal samples read as an extreme outlier.
@@ -34,9 +34,24 @@ Deliberately fault-free. An Isolation Forest trains on mostly-normal data
 (`ANOMALY_CONTAMINATION` is 0.02), so the baseline should be clean and the anomalies should
 come from real fault injection at demo time.
 
+The dataset as a file
+---------------------
+The training set is archived as `ml/datasets/mojaloop_replay_28d.csv`, with a metadata file
+recording how it was made and its SHA-256. The generator is seeded and the export pins its end
+time, so the archive is *reproducible*, not just stored: re-running the export with the
+recorded `--end` regenerates the same rows. See docs/DATA.md.
+
 Usage
 -----
+    # 28 days ending one hour ago, straight into TimescaleDB
     .\\.venv\\Scripts\\python.exe scripts\\replay_history.py --days 28
+
+    # load the archived CSV instead (shifted by whole weeks so it ends before now)
+    .\\.venv\\Scripts\\python.exe scripts\\replay_history.py --from-csv ml/datasets/mojaloop_replay_28d.csv
+
+    # regenerate / verify the archive: same --end gives the same SHA-256
+    .\\.venv\\Scripts\\python.exe scripts\\replay_history.py --export-csv ml/datasets/mojaloop_replay_28d.csv --end <end from the .meta.json>
+
     .\\.venv\\Scripts\\python.exe scripts\\replay_history.py --clear
 """
 
@@ -44,12 +59,15 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import csv
+import hashlib
 import json
 import math
 import random
 import sys
 import zlib
 from collections import deque
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -219,24 +237,21 @@ def _row(
     }
 
 
-async def replay(db: Database, *, days: int, smooth: bool = True) -> ReplayResult:
-    settings = get_settings()
-    end = (utc_now() - timedelta(minutes=LIVE_WINDOW_MINUTES)).replace(second=0, microsecond=0)
-    spans = _tiers(end, days)
-    begin = spans[0][0]
+def default_end() -> datetime:
+    """Stop short of now so the live agent owns the recent window (see LIVE_WINDOW_MINUTES)."""
+    return (utc_now() - timedelta(minutes=LIVE_WINDOW_MINUTES)).replace(second=0, microsecond=0)
 
-    log.info(
-        "replay.start",
-        days=days,
-        start=begin.isoformat(),
-        end=end.isoformat(),
-        services=len(PROFILES),
-        smoothing=smooth,
-    )
 
-    total_rows = 0
-    total_points = 0
-
+def generate_rows(
+    *,
+    days: int,
+    end: datetime,
+    base_tps: float,
+    seasonality: bool,
+    platform: str,
+    smooth: bool = True,
+) -> Iterator[dict[str, Any]]:
+    """Yield replay rows oldest first. Pure: the same arguments give the same rows every run."""
     # One model per service, so the mean-reverting walk and the memory level each follow
     # their own trajectory exactly as the five live containers do.
     #
@@ -245,30 +260,20 @@ async def replay(db: Database, *, days: int, smooth: bool = True) -> ReplayResul
     # would give a different series on every run. That is harmless for a long-running
     # simulator but not here, where a re-run should reproduce the same history - otherwise
     # `ON CONFLICT DO NOTHING` silently keeps the first run's values while the operator
-    # believes they have regenerated the data.
+    # believes they have regenerated the data, and the archived CSV could not be verified.
     models = {
         name: TrafficModel(
             profile,
-            base_tps=settings.simulator.base_tps,
-            seasonality=settings.simulator.seasonality,
+            base_tps=base_tps,
+            seasonality=seasonality,
             rng=random.Random(zlib.crc32(str(name).encode())),
         )
         for name, profile in PROFILES.items()
     }
     no_faults = FaultEffects.none()
-    batch: list[dict[str, Any]] = []
 
-    for span_start, span_end, step in spans:
+    for span_start, span_end, step in _tiers(end, days):
         smoother = Smoother(step) if smooth else None
-        if smoother is not None:
-            log.info(
-                "replay.tier",
-                start=span_start.isoformat(),
-                end=span_end.isoformat(),
-                step_seconds=step,
-                smoothing_window=smoother.size,
-            )
-
         moment = span_start
         while moment < span_end:
             for name, model in models.items():
@@ -278,31 +283,221 @@ async def replay(db: Database, *, days: int, smooth: bool = True) -> ReplayResul
                 if smoother is not None:
                     tps = smoother(f"{name}:tps", state.tps)
                     ratio = smoother(f"{name}:err", state.error_ratio)
-                batch.append(
-                    _row(
-                        str(name),
-                        moment,
-                        state,
-                        platform=settings.dpi_platform,
-                        step_seconds=step,
-                        tps=tps,
-                        error_ratio=ratio,
-                    )
+                yield _row(
+                    str(name),
+                    moment,
+                    state,
+                    platform=platform,
+                    step_seconds=step,
+                    tps=tps,
+                    error_ratio=ratio,
                 )
-            total_points += 1
-
-            if len(batch) >= BATCH_ROWS:
-                total_rows += await db.execute_many(INSERT_SQL, batch)
-                batch = []
-                log.info("replay.progress", rows=total_rows, up_to=moment.isoformat())
-
             moment += timedelta(seconds=step)
 
-    if batch:
-        total_rows += await db.execute_many(INSERT_SQL, batch)
 
-    log.info("replay.rows_written", rows=total_rows, points=total_points)
-    return ReplayResult(total_rows, total_points, begin, end, len(models))
+async def _insert(db: Database, rows: Iterator[dict[str, Any]]) -> tuple[int, int]:
+    """Insert in batches. Returns (rows written, distinct timestamps)."""
+    total = 0
+    moments: set[datetime] = set()
+    batch: list[dict[str, Any]] = []
+    for row in rows:
+        moments.add(row["timestamp"])
+        batch.append(row)
+        if len(batch) >= BATCH_ROWS:
+            total += await db.execute_many(INSERT_SQL, batch)
+            batch = []
+            log.info("replay.progress", rows=total, up_to=row["timestamp"].isoformat())
+    if batch:
+        total += await db.execute_many(INSERT_SQL, batch)
+    return total, len(moments)
+
+
+async def replay(
+    db: Database, *, days: int, smooth: bool = True, end: datetime | None = None
+) -> ReplayResult:
+    settings = get_settings()
+    end = end or default_end()
+    begin = _tiers(end, days)[0][0]
+    log.info(
+        "replay.start",
+        days=days,
+        start=begin.isoformat(),
+        end=end.isoformat(),
+        services=len(PROFILES),
+        smoothing=smooth,
+    )
+    rows, points = await _insert(
+        db,
+        generate_rows(
+            days=days,
+            end=end,
+            base_tps=settings.simulator.base_tps,
+            seasonality=settings.simulator.seasonality,
+            platform=settings.dpi_platform,
+            smooth=smooth,
+        ),
+    )
+    log.info("replay.rows_written", rows=rows, points=points)
+    return ReplayResult(rows, points, begin, end, len(PROFILES))
+
+
+# ---------------------------------------------------------------------------
+# CSV archive
+# ---------------------------------------------------------------------------
+# Flat columns instead of the `labels` JSON blob, so the file opens cleanly in any tool.
+CSV_COLUMNS = (
+    *[c for c in METRIC_COLUMNS if c != "labels"],
+    "source",
+    "collector",
+    "step_seconds",
+)
+_INT_COLUMNS = {"request_count", "error_count", "replicas", "step_seconds"}
+_TEXT_COLUMNS = {"timestamp", "service", "instance", "platform", "source", "collector"}
+
+
+def sha256_of(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def export_csv(path: Path, *, days: int, end: datetime, smooth: bool = True) -> dict[str, Any]:
+    """Write the dataset plus `<name>.meta.json` saying exactly how to reproduce it."""
+    settings = get_settings()
+    params: dict[str, Any] = {
+        "days": days,
+        "end": end.isoformat(),
+        "smooth": smooth,
+        "base_tps": settings.simulator.base_tps,
+        "seasonality": settings.simulator.seasonality,
+        "platform": settings.dpi_platform,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows = 0
+    per_service: dict[str, int] = {}
+    first: str | None = None
+    last: str | None = None
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=CSV_COLUMNS, lineterminator="\n")
+        writer.writeheader()
+        for row in generate_rows(
+            days=days,
+            end=end,
+            base_tps=params["base_tps"],
+            seasonality=params["seasonality"],
+            platform=params["platform"],
+            smooth=smooth,
+        ):
+            labels = json.loads(row.pop("labels"))
+            row["timestamp"] = row["timestamp"].isoformat()
+            row["source"] = labels["source"]
+            row["collector"] = labels["collector"]
+            row["step_seconds"] = int(labels["step"])
+            writer.writerow(row)
+            rows += 1
+            per_service[row["service"]] = per_service.get(row["service"], 0) + 1
+            first = first or row["timestamp"]
+            last = row["timestamp"]
+
+    reproduce = (
+        f"python scripts/replay_history.py --export-csv {path.as_posix()} "
+        f"--days {days} --end {end.isoformat()}" + ("" if smooth else " --no-smooth")
+    )
+    meta = {
+        "dataset": path.name,
+        "description": (
+            "Synthetic Mojaloop service telemetry used to train the traffic forecaster and as "
+            "the anomaly detector's normal baseline. Generated by replaying the simulator's "
+            "own TrafficModel over past timestamps. Fault-free by design: anomalies come from "
+            "live chaos experiments, never from this file."
+        ),
+        "generator": {
+            "script": "scripts/replay_history.py",
+            "model": "services/mojaloop_sim/mojaloop_sim/traffic.py:TrafficModel",
+            "profiles": "services/mojaloop_sim/mojaloop_sim/profiles.py:PROFILES",
+            "rng": "random.Random(zlib.crc32(service_name)), one per service",
+            "parameters": params,
+            "reproduce": reproduce,
+        },
+        "resolution": {
+            "coarse_step_seconds": COARSE_STEP_SECONDS,
+            "fine_step_seconds": FINE_STEP_SECONDS,
+            "fine_tier_days": min(FINE_TIER_DAYS, days),
+        },
+        "rows": rows,
+        "rows_per_service": per_service,
+        "first_timestamp": first,
+        "last_timestamp": last,
+        "columns": list(CSV_COLUMNS),
+        "sha256": sha256_of(path),
+        "generated_with_python": sys.version.split()[0],
+    }
+    # newline="\n": byte-identical metadata on every OS, like the CSV itself.
+    path.with_suffix(".meta.json").write_text(
+        json.dumps(meta, indent=2) + "\n", encoding="utf-8", newline="\n"
+    )
+    return meta
+
+
+def read_csv(path: Path) -> Iterator[dict[str, Any]]:
+    """Yield rows from an archived CSV, unshifted, in the shape INSERT_SQL expects."""
+    with path.open(newline="", encoding="utf-8") as fh:
+        for raw in csv.DictReader(fh):
+            row: dict[str, Any] = {}
+            for key, value in raw.items():
+                if key in _TEXT_COLUMNS:
+                    row[key] = value
+                elif key in _INT_COLUMNS:
+                    row[key] = int(value)
+                else:
+                    row[key] = float(value)
+            row["timestamp"] = datetime.fromisoformat(row["timestamp"])
+            row["labels"] = json.dumps(
+                {
+                    "source": row.pop("source"),
+                    "collector": row.pop("collector"),
+                    "step": str(row.pop("step_seconds")),
+                    "dataset": path.name,
+                }
+            )
+            yield row
+
+
+def week_shift(last: datetime, target_end: datetime) -> timedelta:
+    """Largest whole-week shift that moves `last` to on-or-before `target_end`.
+
+    Whole weeks only: the traffic shape is a function of hour-of-day and day-of-week, and the
+    live simulator keeps producing it against the real calendar. Any other shift would put
+    Monday's peak on a Thursday and teach the forecaster the wrong week.
+    """
+    return timedelta(weeks=(target_end - last) // timedelta(weeks=1))
+
+
+async def load_csv(db: Database, path: Path) -> ReplayResult:
+    rows = list(read_csv(path))
+    if not rows:
+        raise SystemExit(f"{path} has no rows")
+    shift = week_shift(rows[-1]["timestamp"], default_end())
+    for row in rows:
+        row["timestamp"] += shift
+    log.info(
+        "replay.csv_load",
+        dataset=path.name,
+        rows=len(rows),
+        shift_days=shift.days,
+        start=rows[0]["timestamp"].isoformat(),
+        end=rows[-1]["timestamp"].isoformat(),
+    )
+    written, points = await _insert(db, iter(rows))
+    return ReplayResult(
+        written,
+        points,
+        rows[0]["timestamp"],
+        rows[-1]["timestamp"],
+        len({r["service"] for r in rows}),
+    )
 
 
 async def refresh_aggregates(db: Database, start: datetime, end: datetime) -> None:
@@ -407,11 +602,48 @@ async def main() -> int:
         help="skip the rate5m-equivalent smoothing (leaves the series noisier than live)",
     )
     parser.add_argument(
+        "--export-csv",
+        type=Path,
+        metavar="PATH",
+        help="write the dataset (and PATH.meta.json) to a file instead of the database",
+    )
+    parser.add_argument(
+        "--end",
+        type=datetime.fromisoformat,
+        metavar="ISO8601",
+        help="pin the last timestamp; with --export-csv this makes the file reproducible",
+    )
+    parser.add_argument(
+        "--from-csv",
+        type=Path,
+        metavar="PATH",
+        help="load an archived CSV into TimescaleDB, shifted by whole weeks to end before now",
+    )
+    parser.add_argument(
         "--skip-refresh",
         action="store_true",
         help="do not materialise the continuous aggregates (module 5 will see almost nothing)",
     )
     args = parser.parse_args()
+
+    if args.end is not None and args.end.tzinfo is None:
+        print("--end needs a UTC offset, e.g. 2026-11-13T12:00:00+00:00")
+        return 1
+
+    if args.export_csv:
+        meta = export_csv(
+            args.export_csv,
+            days=args.days,
+            end=args.end or default_end(),
+            smooth=not args.no_smooth,
+        )
+        print(
+            f"Wrote {meta['rows']} rows to {args.export_csv}\n"
+            f"  {meta['first_timestamp']} -> {meta['last_timestamp']}\n"
+            f"  sha256 {meta['sha256']}\n"
+            f"  metadata {args.export_csv.with_suffix('.meta.json')}"
+        )
+        return 0
 
     if args.days > 30:
         print(
@@ -428,7 +660,10 @@ async def main() -> int:
             await report(db)
             return 0
 
-        result = await replay(db, days=args.days, smooth=not args.no_smooth)
+        if args.from_csv:
+            result = await load_csv(db, args.from_csv)
+        else:
+            result = await replay(db, days=args.days, smooth=not args.no_smooth, end=args.end)
         print(
             f"\nWrote {result.rows} rows across {result.points} points "
             f"for {result.services} services."

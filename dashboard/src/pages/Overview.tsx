@@ -99,8 +99,8 @@ export function OverviewPage({ onSelectService, onSelectIncident, onNavigate }: 
               >
                 {data.services.length === 0 ? (
                   <Empty>
-                    No service metrics yet. Start the simulator and metrics agent, or seed sample
-                    data with <code>python scripts/seed_demo_data.py --follow</code>.
+                    No service metrics yet. Start the simulator and metrics agent; the first
+                    samples arrive within a minute.
                   </Empty>
                 ) : (
                   <div className="grid grid--services">
