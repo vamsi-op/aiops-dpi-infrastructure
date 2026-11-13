@@ -44,10 +44,14 @@ The script:
 4. runs `kubectl apply -k deploy/k8s` and waits for every rollout
 5. copies any trained models in `ml/artifacts/` into the anomaly detector's volume
 
-Everything is reachable on the same ports as Compose: gateway `:8080`, Grafana `:3000`,
-Prometheus `:9090`, TimescaleDB `:5432`, simulators `:8011-8015`, AIOps services
-`:8020-8024`. That means `cd dashboard; npm run dev` and every `scripts\check_*.py` work
-against the cluster unchanged.
+The dashboard runs in the cluster too, at **http://localhost:8081**: nginx serves the
+built UI and proxies `/api` and `/ws` to the gateway. Everything else is on the same
+ports as Compose: gateway `:8080`, Grafana `:3000`, Prometheus `:9090`, TimescaleDB
+`:5432`, simulators `:8011-8015`, AIOps services `:8020-8024`. Every
+`scripts\check_*.py` works against the cluster unchanged.
+
+**Deploying to a cloud VM:** see [DEPLOY_VM.md](DEPLOY_VM.md). On Linux, `scripts/k8s.sh`
+is the bash twin of `k8s.ps1`.
 
 Healing starts in **dry-run**, as it does under Compose:
 

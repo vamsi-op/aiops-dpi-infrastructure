@@ -19,7 +19,9 @@ nodes:
   - role: control-plane
     image: kindest/node:v1.31.4
     extraPortMappings:
-      # Control plane: API gateway (dashboard backend), Grafana, Prometheus
+      # Dashboard (nginx: UI + /api and /ws proxied to the gateway)
+      - { containerPort: 30081, hostPort: 8081, protocol: TCP }
+      # Control plane: API gateway, Grafana, Prometheus
       - { containerPort: 30080, hostPort: 8080, protocol: TCP }
       - { containerPort: 30300, hostPort: 3000, protocol: TCP }
       - { containerPort: 30090, hostPort: 9090, protocol: TCP }

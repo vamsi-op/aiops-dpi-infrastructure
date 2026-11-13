@@ -113,6 +113,19 @@ spec:
 # ---------------------------------------------------------------------------
 # Grafana
 # ---------------------------------------------------------------------------
+# Local-cluster defaults, same as Compose: anonymous viewers, admin/admin.
+# Never use these on a reachable cluster - `--public` overrides them.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-env
+  namespace: aiops
+data:
+  GF_SECURITY_ADMIN_USER: admin
+  GF_SECURITY_ADMIN_PASSWORD: admin
+  GF_AUTH_ANONYMOUS_ENABLED: "true"
+  GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+---
 apiVersion: v1
 kind: Service
 metadata:
@@ -155,12 +168,17 @@ spec:
       containers:
         - name: grafana
           image: grafana/grafana:11.3.1
+          # Login settings come from envFrom so a public VM can override them: the
+          # optional `grafana-public` Secret (created by `scripts/k8s.sh up --public`) is
+          # listed last, and for duplicate keys the last envFrom source wins. Keeping them
+          # out of `env` matters - `env` would beat both sources.
+          envFrom:
+            - configMapRef:
+                name: grafana-env
+            - secretRef:
+                name: grafana-public
+                optional: true
           env:
-            - { name: GF_SECURITY_ADMIN_USER, value: admin }
-            - { name: GF_SECURITY_ADMIN_PASSWORD, value: admin }
-            # Local cluster convenience, same as Compose. Never on a reachable cluster.
-            - { name: GF_AUTH_ANONYMOUS_ENABLED, value: "true" }
-            - { name: GF_AUTH_ANONYMOUS_ORG_ROLE, value: Viewer }
             - { name: GF_USERS_DEFAULT_THEME, value: dark }
             - { name: GF_ANALYTICS_REPORTING_ENABLED, value: "false" }
             - { name: GF_ANALYTICS_CHECK_FOR_UPDATES, value: "false" }

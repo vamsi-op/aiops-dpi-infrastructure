@@ -127,6 +127,9 @@ continuous aggregates and Redis, then runs the full test suite.
 > local kind cluster, with the same ports, where the healing playbooks act through the
 > Kubernetes API (pod restarts, Deployment scaling, real `rollout undo`). See
 > **[docs/KUBERNETES.md](docs/KUBERNETES.md)**.
+>
+> **Deploying it?** One cloud VM running the kind cluster, with a password-protected
+> public dashboard: **[docs/DEPLOY_VM.md](docs/DEPLOY_VM.md)**.
 
 ### Step 3 — Start the full AIOps stack
 

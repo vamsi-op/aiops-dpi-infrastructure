@@ -48,7 +48,8 @@ $Images = @(
     'aiops/traffic-predictor:0.1.0',
     'aiops/rca-engine:0.1.0',
     'aiops/healing-engine:0.1.0',
-    'aiops/api-gateway:0.1.0'
+    'aiops/api-gateway:0.1.0',
+    'aiops/dashboard:0.1.0'
 )
 
 function Assert-Tool([string]$Name, [string]$Hint) {
@@ -100,6 +101,7 @@ function Import-Images {
     Write-Host '==> Building platform images (docker compose build)' -ForegroundColor Cyan
     Invoke-Native 'docker' @('compose', '-f', 'docker-compose.yml', '-f', 'docker-compose.observability.yml',
                              '-f', 'docker-compose.aiops.yml', 'build')
+    Invoke-Native 'docker' @('build', '-t', 'aiops/dashboard:0.1.0', 'dashboard')
     Write-Host '==> Loading images into the kind node' -ForegroundColor Cyan
     foreach ($image in $Images) {
         Invoke-Native 'kind' @('load', 'docker-image', $image, '--name', $ClusterName)
@@ -157,10 +159,10 @@ switch ($Action) {
 
         Write-Host ''
         Write-Host 'Platform is up on Kubernetes (kind).' -ForegroundColor Green
+        Write-Host '  Dashboard     http://localhost:8081'
         Write-Host '  API gateway   http://localhost:8080/docs'
         Write-Host '  Grafana       http://localhost:3000'
         Write-Host '  Prometheus    http://localhost:9090/targets'
-        Write-Host '  Dashboard     cd dashboard; npm run dev   (talks to :8080 as before)'
         Write-Host '  Healing is in DRY-RUN. Enable it with: .\scripts\k8s.ps1 healing'
     }
     'images' {

@@ -538,3 +538,69 @@ spec:
           resources:
             requests: { cpu: 50m, memory: 128Mi }
             limits: { cpu: "250m", memory: 256Mi }
+---
+# Operations dashboard (module 8): nginx serving the React build and proxying /api and
+# /ws to the gateway, so the whole UI is one origin. No credentials, no API token.
+apiVersion: v1
+kind: Service
+metadata:
+  name: dashboard
+  namespace: aiops
+  labels:
+    app.kubernetes.io/name: dashboard
+    app.kubernetes.io/part-of: aiops-ui
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: dashboard
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      nodePort: 30081
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dashboard
+  namespace: aiops
+  labels:
+    app.kubernetes.io/name: dashboard
+    app.kubernetes.io/part-of: aiops-ui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: dashboard
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: dashboard
+        app.kubernetes.io/part-of: aiops-ui
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: app
+          image: aiops/dashboard:0.1.0
+          imagePullPolicy: IfNotPresent
+          # DASHBOARD_AUTH (basic-auth realm) on a public VM; absent locally -> auth off.
+          envFrom:
+            - secretRef:
+                name: dashboard-public
+                optional: true
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet: { path: /, port: 8080 }
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { cpu: 200m, memory: 64Mi }
+          volumeMounts:
+            - { name: auth, mountPath: /etc/nginx/auth, readOnly: true }
+      volumes:
+        # htpasswd, only on a public VM (scripts/k8s.sh up --public); optional so kind runs without it.
+        - name: auth
+          secret:
+            secretName: dashboard-auth
+            optional: true
