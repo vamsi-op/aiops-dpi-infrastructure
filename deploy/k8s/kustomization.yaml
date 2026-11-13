@@ -1,0 +1,14 @@
+# The whole platform on Kubernetes (module 10).
+#
+# Do not apply this on its own the first time: the ConfigMaps it mounts are built from
+# infra/ (and deploy/k8s/config/) by scripts/k8s.ps1, which then runs
+#   kubectl apply -k deploy/k8s
+# Re-applying after a manifest edit is safe at any time.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - data.yaml
+  - observability.yaml
+  - mojaloop.yaml
+  - aiops.yaml

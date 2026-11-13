@@ -24,6 +24,7 @@ from aiops_common.log import configure_logging, get_logger
 from aiops_common.service import build_app
 from aiops_common.tracing import configure_tracing, instrument_httpx, shutdown_tracing
 
+from .faults import MAX_DURATION_SECONDS, FaultKind
 from .routes import router
 from .simulator import Simulator
 
@@ -42,7 +43,32 @@ simulator = Simulator(
 )
 
 
+# A defect that ships *inside a version*. On Kubernetes the chaos `bad_deploy` experiment
+# rolls out a new Deployment revision with SIM_DEFECT set, so the fault lives in the pod
+# template rather than in one process's memory - and only a real `rollout undo` removes it.
+SIM_VERSION = os.getenv("SIM_VERSION", "v1.0.4")
+SIM_DEFECT = os.getenv("SIM_DEFECT", "").strip()
+
+
+def _apply_shipped_defect() -> None:
+    if not SIM_DEFECT:
+        return
+    try:
+        kind = FaultKind(SIM_DEFECT)
+    except ValueError:
+        log.warning("sim.unknown_defect", defect=SIM_DEFECT, version=SIM_VERSION)
+        return
+    simulator.faults.inject(
+        kind,
+        duration_seconds=MAX_DURATION_SECONDS,
+        injected_by=f"deploy:{SIM_VERSION}",
+        notes=f"Defect shipped in {SIM_VERSION}",
+    )
+    log.info("sim.shipped_defect_active", defect=SIM_DEFECT, version=SIM_VERSION)
+
+
 def _on_startup() -> None:
+    _apply_shipped_defect()
     simulator.start()
     # Produce one sample immediately so a scrape arriving in the first second sees real
     # values instead of zeros, which would otherwise look like a dead service.

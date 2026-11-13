@@ -15,6 +15,7 @@ All actions are recorded, including skipped ones, so safety rail effectiveness i
 from __future__ import annotations
 
 import asyncio
+import inspect
 from datetime import UTC, datetime
 from typing import Any
 
@@ -552,23 +553,16 @@ class HealingEngine:
             await asyncio.sleep(settle_seconds)
 
             # Check container health where applicable
+            # Executor-specific: Docker container status, or Kubernetes pod availability.
             container_healthy = True
-            if hasattr(self.executor, "client") and self.executor.client:
-                try:
-                    containers = self.executor.client.containers.list(
-                        filters={"label": f"com.docker.compose.service={anomaly.service}"}
-                    )
-                    if not containers:
-                        all_c = self.executor.client.containers.list()
-                        containers = [c for c in all_c if anomaly.service in c.name]
-                    if containers:
-                        for c in containers:
-                            c.reload()
-                            if c.status not in ("running", "restarting"):
-                                container_healthy = False
-                                break
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("healing_engine.container_health_check_failed", error=str(exc))
+            try:
+                verdict = self.executor.service_healthy(anomaly.service)
+                if inspect.isawaitable(verdict):
+                    verdict = await verdict
+                if isinstance(verdict, bool):
+                    container_healthy = verdict
+            except Exception as exc:  # noqa: BLE001
+                log.warning("healing_engine.container_health_check_failed", error=str(exc))
 
             # Capture post-action metric snapshot
             action.after_snapshot = await self.snapshot.capture(

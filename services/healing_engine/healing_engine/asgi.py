@@ -36,7 +36,7 @@ from aiops_common.service import build_app
 from aiops_common.tracing import configure_tracing, shutdown_tracing
 
 from .engine import HealingEngine
-from .executor import DockerExecutor
+from .executor import build_executor
 from .playbooks import PlaybookExecutor
 from .routes import router
 from .safety import SafetyRails
@@ -81,7 +81,7 @@ app: FastAPI = build_app(
 )
 
 # Initialize healing components
-executor = DockerExecutor(socket_path=settings.healing.docker_socket)
+executor = build_executor(settings)
 safety = SafetyRails(bus, settings.healing)
 snapshot = MetricSnapshot(database)
 playbook_executor = PlaybookExecutor(executor)

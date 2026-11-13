@@ -849,14 +849,20 @@ pass even with WebSocket fan-out completely broken. Both blind spots are now cov
 
 ---
 
-## Module 10 — Kubernetes migration ⬜ (stretch)
+## Module 10 — Kubernetes (kind) ✅
 
-- `kind` cluster definition
-- Kubernetes manifests / Helm chart for the whole platform
-- `metrics-agent` reads `kube-state-metrics` and cAdvisor
-- Healing playbooks act through the Kubernetes API: pod deletion, HPA patching,
-  `rollout undo`
-- Real Mojaloop Helm deployment replaces the simulator
+- ✅ `kind` cluster definition: `deploy/k8s/kind-cluster.yaml`
+- ✅ Kustomize manifests for the whole platform: `deploy/k8s/` (data, observability,
+  Mojaloop workload, AIOps services, RBAC)
+- ✅ Prometheus uses Kubernetes service discovery, and Alloy tails pod logs through the API
+- ✅ Healing playbooks act through the Kubernetes API (`k8s_executor.py`): pod deletion,
+  rolling restart, Deployment scaling with HPA floor patching, real `rollout undo`
+- ✅ `bad_deploy` chaos rolls out a genuinely defective ReplicaSet revision
+- ⬜ `metrics-agent` reads `kube-state-metrics` and cAdvisor
+- ⬜ Real Mojaloop Helm deployment replaces the simulator
+
+**Verify**: `pytest tests/test_k8s_executor.py`, then `.\scripts\k8s.ps1 up` and the
+bad-deploy demo in [KUBERNETES.md](KUBERNETES.md).
 
 ---
 

@@ -1,0 +1,126 @@
+# Prometheus configuration for the kind cluster (module 10).
+#
+# The Compose config (infra/prometheus/prometheus.yml) lists static targets. Here targets
+# come from Kubernetes service discovery: any Service in the `aiops` namespace annotated
+# `prometheus.io/scrape: "true"` is scraped, and its `app.kubernetes.io/part-of` label
+# decides the job. Job names, `service` and `tier` labels are identical to Compose, so the
+# recording rules, alerts and Grafana dashboards are shared unchanged.
+#
+# Why `role: service` and not `role: pod`: each simulated Mojaloop service models its whole
+# replica set internally (capacity = tps_per_replica * replicas). Scraping the Service
+# address keeps the Compose semantics - one view of the service per scrape - instead of
+# summing N copies of the same simulated traffic when the healing engine scales out.
+
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+  external_labels:
+    platform: mojaloop
+    env: kind
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # Simulated Mojaloop services (part-of=mojaloop).
+  - job_name: mojaloop
+    honor_labels: true
+    metrics_path: /metrics
+    kubernetes_sd_configs:
+      - role: service
+        namespaces:
+          names: [aiops]
+    relabel_configs:
+      # role: service yields one target per port; only the HTTP port serves /metrics.
+      - source_labels: [__meta_kubernetes_service_port_name]
+        regex: http
+        action: keep
+      - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scrape]
+        regex: "true"
+        action: keep
+      - source_labels: [__meta_kubernetes_service_label_app_kubernetes_io_part_of]
+        regex: mojaloop
+        action: keep
+      - source_labels: [__meta_kubernetes_service_label_app_kubernetes_io_name]
+        target_label: service
+      - source_labels: [__meta_kubernetes_service_label_aiops_dpi_tier]
+        target_label: tier
+      # Short `name:8000` instance, matching the Compose target names.
+      - source_labels: [__meta_kubernetes_service_name]
+        replacement: "$1:8000"
+        target_label: instance
+
+  # The AIOps services monitor themselves (part-of=aiops).
+  - job_name: aiops
+    honor_labels: true
+    metrics_path: /metrics
+    kubernetes_sd_configs:
+      - role: service
+        namespaces:
+          names: [aiops]
+    relabel_configs:
+      # role: service yields one target per port; only the HTTP port serves /metrics.
+      - source_labels: [__meta_kubernetes_service_port_name]
+        regex: http
+        action: keep
+      - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scrape]
+        regex: "true"
+        action: keep
+      - source_labels: [__meta_kubernetes_service_label_app_kubernetes_io_part_of]
+        regex: aiops
+        action: keep
+      - source_labels: [__meta_kubernetes_service_name]
+        replacement: "$1:8000"
+        target_label: instance
+
+  # Observability plane (part-of=observability). `component` = the service name, as in
+  # Compose, so AiopsLogPipelineStalled / AiopsTraceIngestStalled keep working.
+  - job_name: observability
+    metrics_path: /metrics
+    kubernetes_sd_configs:
+      - role: service
+        namespaces:
+          names: [aiops]
+    relabel_configs:
+      # role: service yields one target per port; only the HTTP port serves /metrics.
+      - source_labels: [__meta_kubernetes_service_port_name]
+        regex: http
+        action: keep
+      - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scrape]
+        regex: "true"
+        action: keep
+      - source_labels: [__meta_kubernetes_service_label_app_kubernetes_io_part_of]
+        regex: observability
+        action: keep
+      - source_labels: [__meta_kubernetes_service_name]
+        regex: alloy
+        action: drop
+      - source_labels: [__meta_kubernetes_service_name]
+        target_label: component
+
+  - job_name: alloy
+    metrics_path: /metrics
+    kubernetes_sd_configs:
+      - role: service
+        namespaces:
+          names: [aiops]
+    relabel_configs:
+      # role: service yields one target per port; only the HTTP port serves /metrics.
+      - source_labels: [__meta_kubernetes_service_port_name]
+        regex: http
+        action: keep
+      - source_labels: [__meta_kubernetes_service_name]
+        regex: alloy
+        action: keep
+      - target_label: component
+        replacement: alloy

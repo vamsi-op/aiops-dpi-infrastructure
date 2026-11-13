@@ -1,0 +1,540 @@
+# AIOps plane (modules 3-8) on Kubernetes - the twin of docker-compose.aiops.yml.
+#
+# Same images, same environment (ConfigMap aiops-env), same in-cluster DNS names.
+# Two things are new compared with Compose:
+#
+# * The healing engine no longer mounts the Docker socket. It acts through the Kubernetes
+#   API with its own ServiceAccount, bound to a namespaced Role that can patch Deployments,
+#   delete pods and read ReplicaSets in `aiops` - and nothing else. Remediation has an
+#   explicit, auditable blast radius instead of root on the Docker daemon.
+# * The API gateway gets a narrower Role (read + patch Deployments) so the bad_deploy chaos
+#   experiment can roll out a genuinely defective revision.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: metrics-agent
+  namespace: aiops
+  labels:
+    app.kubernetes.io/name: metrics-agent
+    app.kubernetes.io/part-of: aiops
+  annotations:
+    prometheus.io/scrape: "true"
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: metrics-agent
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+      nodePort: 30020
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metrics-agent
+  namespace: aiops
+  labels:
+    app.kubernetes.io/name: metrics-agent
+    app.kubernetes.io/part-of: aiops
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: metrics-agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: metrics-agent
+        app.kubernetes.io/part-of: aiops
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10002
+        fsGroup: 10002
+      containers:
+        - name: app
+          image: aiops/metrics-agent:0.1.0
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: aiops-env
+            - secretRef:
+                name: aiops-db
+          env:
+            - { name: AIOPS_SERVICE_NAME, value: "metrics-agent" }
+            - { name: SCRAPE_INTERVAL_SECONDS, value: "15" }
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            httpGet: { path: /health, port: 8000 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 8000 }
+            initialDelaySeconds: 40
+            periodSeconds: 20
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: "500m", memory: 256Mi }
+---
+# Trained Isolation Forests. Survive pod restarts so a restart does not force a retrain.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: anomaly-models
+  namespace: aiops
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: anomaly-detector
+  namespace: aiops
+  labels:
+    app.kubernetes.io/name: anomaly-detector
+    app.kubernetes.io/part-of: aiops
+  annotations:
+    prometheus.io/scrape: "true"
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: anomaly-detector
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+      nodePort: 30021
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: anomaly-detector
+  namespace: aiops
+  labels:
+    app.kubernetes.io/name: anomaly-detector
+    app.kubernetes.io/part-of: aiops
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: anomaly-detector
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: anomaly-detector
+        app.kubernetes.io/part-of: aiops
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10003
+        fsGroup: 10003
+      containers:
+        - name: app
+          image: aiops/anomaly-detector:0.1.0
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: aiops-env
+            - secretRef:
+                name: aiops-db
+          env:
+            - { name: AIOPS_SERVICE_NAME, value: "anomaly-detector" }
+            - { name: MODEL_ARTIFACT_DIR, value: "/app/ml/artifacts" }
+            - { name: ANOMALY_CONTAMINATION, value: "0.02" }
+            - { name: ANOMALY_MIN_TRAINING_ROWS, value: "100" }
+            - { name: ANOMALY_SCORE_THRESHOLD, value: "0.65" }
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            httpGet: { path: /health, port: 8000 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 8000 }
+            initialDelaySeconds: 40
+            periodSeconds: 20
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: "1", memory: 768Mi }
+          volumeMounts:
+            - name: models
+              mountPath: /app/ml/artifacts
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: anomaly-models
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: traffic-predictor
+  namespace: aiops
+  labels:
+    app.kubernetes.io/name: traffic-predictor
+    app.kubernetes.io/part-of: aiops
+  annotations:
+    prometheus.io/scrape: "true"
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: traffic-predictor
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+      nodePort: 30022
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: traffic-predictor
+  namespace: aiops
+  labels:
+    app.kubernetes.io/name: traffic-predictor
+    app.kubernetes.io/part-of: aiops
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: traffic-predictor
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: traffic-predictor
+        app.kubernetes.io/part-of: aiops
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10004
+        fsGroup: 10004
+      containers:
+        - name: app
+          image: aiops/traffic-predictor:0.1.0
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: aiops-env
+            - secretRef:
+                name: aiops-db
+          env:
+            - { name: AIOPS_SERVICE_NAME, value: "traffic-predictor" }
+            - { name: FORECAST_HORIZONS, value: "1,6,24" }
+            - { name: FORECAST_HISTORY_DAYS, value: "28" }
+            - { name: FORECAST_INTERVAL_SECONDS, value: "600" }
+            - { name: SCALING_MIN_HEADROOM, value: "0.25" }
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            httpGet: { path: /health, port: 8000 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 8000 }
+            initialDelaySeconds: 40
+            periodSeconds: 20
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: "500m", memory: 384Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rca-engine
+  namespace: aiops
+  labels:
+    app.kubernetes.io/name: rca-engine
+    app.kubernetes.io/part-of: aiops
+  annotations:
+    prometheus.io/scrape: "true"
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: rca-engine
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+      nodePort: 30023
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rca-engine
+  namespace: aiops
+  labels:
+    app.kubernetes.io/name: rca-engine
+    app.kubernetes.io/part-of: aiops
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rca-engine
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rca-engine
+        app.kubernetes.io/part-of: aiops
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10007
+        fsGroup: 10007
+      containers:
+        - name: app
+          image: aiops/rca-engine:0.1.0
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: aiops-env
+            - secretRef:
+                name: aiops-db
+          env:
+            - { name: AIOPS_SERVICE_NAME, value: "rca-engine" }
+            - { name: RCA_WINDOW_SECONDS, value: "300" }
+            - { name: RCA_AUTO_RESOLVE_SECONDS, value: "300" }
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            httpGet: { path: /health, port: 8000 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 8000 }
+            initialDelaySeconds: 40
+            periodSeconds: 20
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: "500m", memory: 384Mi }
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: healing-engine
+  namespace: aiops
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: healing-engine
+  namespace: aiops
+rules:
+  # restart (rolling restart) and rollback (rollout undo) patch the Deployment
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale"]
+    verbs: ["get", "patch", "update"]
+  # rollback reads previous revisions
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list"]
+  # pod restart, health checks, global pod cap, unschedulable detection
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "delete"]
+  # pre-emptive scaling raises an HPA's floor when one owns the Deployment
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: healing-engine
+  namespace: aiops
+subjects:
+  - kind: ServiceAccount
+    name: healing-engine
+    namespace: aiops
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: healing-engine
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: healing-engine
+  namespace: aiops
+  labels:
+    app.kubernetes.io/name: healing-engine
+    app.kubernetes.io/part-of: aiops
+  annotations:
+    prometheus.io/scrape: "true"
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: healing-engine
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+      nodePort: 30024
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: healing-engine
+  namespace: aiops
+  labels:
+    app.kubernetes.io/name: healing-engine
+    app.kubernetes.io/part-of: aiops
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: healing-engine
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: healing-engine
+        app.kubernetes.io/part-of: aiops
+    spec:
+      serviceAccountName: healing-engine
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10006
+        fsGroup: 10006
+      containers:
+        - name: app
+          image: aiops/healing-engine:0.1.0
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: aiops-env
+            - secretRef:
+                name: aiops-db
+          env:
+            - { name: AIOPS_SERVICE_NAME, value: "healing-engine" }
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            httpGet: { path: /health, port: 8000 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 8000 }
+            initialDelaySeconds: 40
+            periodSeconds: 20
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: "250m", memory: 256Mi }
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: api-gateway
+  namespace: aiops
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: api-gateway-chaos
+  namespace: aiops
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: api-gateway-chaos
+  namespace: aiops
+subjects:
+  - kind: ServiceAccount
+    name: api-gateway
+    namespace: aiops
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: api-gateway-chaos
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-gateway
+  namespace: aiops
+  labels:
+    app.kubernetes.io/name: api-gateway
+    app.kubernetes.io/part-of: aiops
+  annotations:
+    prometheus.io/scrape: "true"
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: api-gateway
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+      nodePort: 30080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway
+  namespace: aiops
+  labels:
+    app.kubernetes.io/name: api-gateway
+    app.kubernetes.io/part-of: aiops
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: api-gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: api-gateway
+        app.kubernetes.io/part-of: aiops
+    spec:
+      serviceAccountName: api-gateway
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10005
+        fsGroup: 10005
+      containers:
+        - name: app
+          image: aiops/api-gateway:0.1.0
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: aiops-env
+            - secretRef:
+                name: aiops-db
+          env:
+            - { name: AIOPS_SERVICE_NAME, value: "api-gateway" }
+            - { name: CORS_ORIGINS, value: "http://localhost:3000,http://localhost:5173,http://localhost:4173" }
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            httpGet: { path: /health, port: 8000 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 8000 }
+            initialDelaySeconds: 40
+            periodSeconds: 20
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: "250m", memory: 256Mi }

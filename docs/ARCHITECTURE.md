@@ -169,7 +169,9 @@ change:
   restart counts and OOMKill events come from the real thing.
 - `healing-engine` playbooks swap the Docker SDK for the Kubernetes API: delete a pod
   instead of restarting a container, patch a Deployment's replica count instead of a
-  Compose scale, `rollout undo` instead of a simulated rollback.
+  Compose scale, `rollout undo` instead of a simulated rollback. **Built:**
+  `KubernetesExecutor`, selected by `HEALING_EXECUTOR=auto` inside a pod. See
+  [KUBERNETES.md](KUBERNETES.md).
 - `chaos-agent` can use real pod eviction and network policies.
 
 Everything in layers 3 and 4 — the models, correlation, incident lifecycle, dashboard —

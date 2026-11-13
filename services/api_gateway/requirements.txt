@@ -1,3 +1,5 @@
 # API gateway runtime dependencies.
 # The shared library brings fastapi, uvicorn, pydantic, redis, SQLAlchemy and asyncpg.
 -e ../../libs/aiops_common
+# Kubernetes client: the bad_deploy chaos experiment rolls out a real revision on kind.
+kubernetes==33.1.0

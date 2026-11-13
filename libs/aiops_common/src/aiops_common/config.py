@@ -24,6 +24,11 @@ LogFormat = Literal["json", "console"]
 DpiPlatform = Literal["mojaloop", "mosip", "beckn"]
 
 
+def running_in_kubernetes() -> bool:
+    """True inside a pod. The kubelet injects KUBERNETES_SERVICE_HOST into every container."""
+    return bool(os.getenv("KUBERNETES_SERVICE_HOST"))
+
+
 def find_env_file(start: Path | None = None, filename: str = ".env") -> str | None:
     """Walk up from `start` looking for `filename`; return its path or None.
 
@@ -218,6 +223,16 @@ class HealingSettings(BaseSettings):
     max_actions_per_hour: int = Field(default=10, alias="HEALING_MAX_ACTIONS_PER_HOUR")
     cooldown_seconds: int = Field(default=300, alias="HEALING_COOLDOWN_SECONDS")
     docker_socket: str = Field(default="/var/run/docker.sock", alias="DOCKER_SOCKET")
+    # Which infrastructure the playbooks act on. `auto` picks Kubernetes when the process
+    # runs inside a pod (KUBERNETES_SERVICE_HOST is set) and Docker otherwise, so the same
+    # image works under Compose and on the kind cluster without a config change.
+    executor: Literal["auto", "docker", "kubernetes"] = Field(
+        default="auto", alias="HEALING_EXECUTOR"
+    )
+    k8s_namespace: str = Field(default="aiops", alias="K8S_NAMESPACE")
+    # How long a restart, scale or rollback waits for the Deployment rollout to finish
+    # before reporting failure. A rollout that never completes is a failed remediation.
+    k8s_rollout_timeout_seconds: int = Field(default=90, alias="K8S_ROLLOUT_TIMEOUT_SECONDS")
     # Minimum confidence from the RCA engine before an action is allowed to run.
     min_confidence: float = Field(default=0.7, alias="HEALING_MIN_CONFIDENCE")
 

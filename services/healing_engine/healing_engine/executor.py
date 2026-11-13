@@ -81,6 +81,29 @@ class ExecutorInterface(ABC):
         """Get current number of replicas for a service."""
         ...
 
+    async def service_healthy(self, service: str) -> bool:
+        """Whether the service's containers / pods are up after a remediation.
+
+        Not abstract: an executor that cannot tell reports healthy and leaves the verdict to
+        the SLO verification that follows every action.
+        """
+        return True
+
+
+def build_executor(settings: Any = None) -> ExecutorInterface:
+    """Pick the executor for where this process runs (HEALING_EXECUTOR=auto|docker|kubernetes)."""
+    from aiops_common.config import running_in_kubernetes
+
+    settings = settings or get_settings()
+    mode = settings.healing.executor
+    if mode == "auto":
+        mode = "kubernetes" if running_in_kubernetes() else "docker"
+    if mode == "kubernetes":
+        from .k8s_executor import KubernetesExecutor
+
+        return KubernetesExecutor(settings=settings.healing)
+    return DockerExecutor(socket_path=settings.healing.docker_socket, settings=settings.healing)
+
 
 class DockerExecutor(ExecutorInterface):
     """Docker-based executor for local development and real container operations.
@@ -399,6 +422,18 @@ class DockerExecutor(ExecutorInterface):
             msg = f"Docker error during rollback: {exc}"
             log.error("docker_executor.rollback_failed", service=service, error=str(exc))
             return False, msg
+
+    async def service_healthy(self, service: str) -> bool:
+        """Every container of the service is running (or already coming back)."""
+        try:
+            containers = self.scaler.get_replicas(service)
+            for c in containers:
+                c.reload()
+                if c.status not in ("running", "restarting"):
+                    return False
+        except Exception as exc:  # noqa: BLE001
+            log.warning("docker_executor.health_check_failed", service=service, error=str(exc))
+        return True
 
     async def get_replica_count(self, service: str) -> int:
         """Count running containers for a service."""

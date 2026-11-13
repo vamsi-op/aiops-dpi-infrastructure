@@ -123,6 +123,11 @@ continuous aggregates and Redis, then runs the full test suite.
 
 **If the healthcheck is not green, stop here and fix it.** Everything below assumes it passes.
 
+> **Kubernetes instead of Compose?** `.\scripts\k8s.ps1 up` runs the same platform on a
+> local kind cluster, with the same ports, where the healing playbooks act through the
+> Kubernetes API (pod restarts, Deployment scaling, real `rollout undo`). See
+> **[docs/KUBERNETES.md](docs/KUBERNETES.md)**.
+
 ### Step 3 — Start the full AIOps stack
 
 ```powershell
@@ -450,7 +455,7 @@ that proves it works.
 | 7 | Root cause analysis engine | ml | ✅ done |
 | 8 | Operations dashboard (React + FastAPI) | frontend | ✅ done |
 | 9 | Chaos engineering demo | automation | ⬜ |
-| 10 | Kubernetes migration | infra | ⬜ stretch |
+| 10 | Kubernetes (kind) — manifests, Kubernetes executor, real `rollout undo` | infra | ✅ done — [docs/KUBERNETES.md](docs/KUBERNETES.md) |
 
 Module 8 was built ahead of 2–7 deliberately, against the real schema and event bus. When
 the upstream modules land they write to the same tables and streams, so the dashboard

@@ -14,13 +14,14 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from aiops_common.config import get_settings
+from aiops_common.config import get_settings, running_in_kubernetes
 from aiops_common.constants import MOJALOOP_DEPENDENCIES, MOJALOOP_SERVICES
 from aiops_common.log import get_logger
 from aiops_common.schemas import new_id, utc_now
 
 from . import health_rules
 from .health_rules import DEFAULT_THRESHOLDS
+from .k8s_chaos import roll_out_defective_version
 from .models import (
     Anomaly,
     AutomationSummary,
@@ -489,31 +490,44 @@ async def start_chaos_run(
         body.experiment, "central-ledger"
     )
 
-    # 1. Inject the fault into the target service simulator
-    injected = await _inject_simulator_fault(
-        target_service=target_service,
-        experiment=body.experiment,
-        duration_seconds=body.duration_seconds,
-        magnitude=body.magnitude,
-        parameters=body.parameters,
-    )
-    if not injected:
-        log.warning(
-            "chaos.injection_failed_continuing",
-            target=target_service,
-            experiment=body.experiment,
+    # 1. On Kubernetes a bad deploy is a real rollout of a defective revision; everywhere
+    #    else (and if that rollout fails) the fault is injected into the running simulator.
+    rolled_out: tuple[str, str] | None = None
+    if body.experiment == "bad_deploy" and running_in_kubernetes():
+        rolled_out = await roll_out_defective_version(
+            target_service, get_settings().healing.k8s_namespace
         )
 
-    # 2. If it's a bad deploy experiment, also record a canary deployment
+    if rolled_out is None:
+        injected = await _inject_simulator_fault(
+            target_service=target_service,
+            experiment=body.experiment,
+            duration_seconds=body.duration_seconds,
+            magnitude=body.magnitude,
+            parameters=body.parameters,
+        )
+        if not injected:
+            log.warning(
+                "chaos.injection_failed_continuing",
+                target=target_service,
+                experiment=body.experiment,
+            )
+
+    # 2. If it's a bad deploy experiment, record the deployment for change correlation
     if body.experiment == "bad_deploy":
+        from_version, to_version = rolled_out or ("v1.0.4", "v1.0.5-canary")
         await repo.record_deployment(
             deployment_id=new_id("dep"),
             service=target_service,
-            from_version="v1.0.4",
-            to_version="v1.0.5-canary",
+            from_version=from_version,
+            to_version=to_version,
             change_type="deploy",
             triggered_by="chaos-agent",
-            notes=f"Canary deployment injected for {body.experiment} experiment",
+            notes=(
+                f"Kubernetes rollout of {to_version} for {body.experiment} experiment"
+                if rolled_out
+                else f"Canary deployment injected for {body.experiment} experiment"
+            ),
         )
 
     # 3. Create the chaos run record in TimescaleDB
