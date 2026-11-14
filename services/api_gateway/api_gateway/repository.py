@@ -78,7 +78,6 @@ def _num(value: Any, fallback: float = 0.0) -> float:
         return fallback
 
 
-
 def _fill_buckets(
     found: dict[Any, dict[str, Any]], *, hours: int, bucket_minutes: int
 ) -> list[dict[str, Any]]:
@@ -105,6 +104,7 @@ def _fill_buckets(
             }
         )
     return filled
+
 
 class DashboardRepository:
     """Read-only queries backing the operations dashboard."""
@@ -730,12 +730,6 @@ class DashboardRepository:
         rows = await self._db.fetch_all(
             f"SELECT * FROM {TABLE_CHAOS_RUNS} ORDER BY started_at DESC LIMIT :limit",
             {"limit": limit},
-        )
-        return [self._clean_chaos(row) for row in rows]
-
-    async def active_chaos_runs(self) -> list[dict[str, Any]]:
-        rows = await self._db.fetch_all(
-            f"SELECT * FROM {TABLE_CHAOS_RUNS} WHERE status = 'running' ORDER BY started_at"
         )
         return [self._clean_chaos(row) for row in rows]
 

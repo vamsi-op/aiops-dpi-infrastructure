@@ -87,7 +87,9 @@ class DependencyHealth:
 
     @property
     def healthy(self) -> bool:
-        return self.reachable and self.excess_latency_seconds == 0 and self.excess_error_ratio == 0
+        return (
+            self.reachable and self.excess_latency_seconds == 0 and self.excess_error_ratio == 0
+        )
 
 
 @dataclass
@@ -151,12 +153,18 @@ class DependencyMonitor:
     ) -> None:
         self.service = service
         self.dependencies = tuple(str(d) for d in dependencies)
-        self.url_template = url_template or os.getenv("SIM_DEPENDENCY_URL", "http://{service}:8000")
+        self.url_template: str = (
+            url_template or os.getenv("SIM_DEPENDENCY_URL") or "http://{service}:8000"
+        )
         if enabled is None:
             enabled = os.getenv("SIM_DEPENDENCIES", "true").lower() not in ("0", "false", "no")
         self.enabled = enabled and bool(self.dependencies)
-        self.health: dict[str, DependencyHealth] = {d: DependencyHealth() for d in self.dependencies}
-        self.breakers: dict[str, CircuitBreaker] = {d: CircuitBreaker(d) for d in self.dependencies}
+        self.health: dict[str, DependencyHealth] = {
+            d: DependencyHealth() for d in self.dependencies
+        }
+        self.breakers: dict[str, CircuitBreaker] = {
+            d: CircuitBreaker(d) for d in self.dependencies
+        }
         self._client = client
         self._task: asyncio.Task[None] | None = None
 

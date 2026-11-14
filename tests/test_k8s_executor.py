@@ -58,7 +58,10 @@ def _deployment(
             selector=NS(match_labels={"app.kubernetes.io/name": name}),
             template=NS(
                 metadata=NS(
-                    labels={"app.kubernetes.io/name": name, "app.kubernetes.io/version": version}
+                    labels={
+                        "app.kubernetes.io/name": name,
+                        "app.kubernetes.io/version": version,
+                    }
                 ),
                 spec=NS(containers=[NS(name="app")]),
             ),
@@ -151,7 +154,9 @@ class FakeAutoscaling:
 
 def _pod(phase: str = "Running", unschedulable: bool = False) -> Any:
     conditions = (
-        [NS(type="PodScheduled", status="False", reason="Unschedulable")] if unschedulable else []
+        [NS(type="PodScheduled", status="False", reason="Unschedulable")]
+        if unschedulable
+        else []
     )
     return NS(
         metadata=NS(name="central-ledger-abc"),
@@ -299,7 +304,9 @@ async def test_scale_raises_hpa_floor_when_hpa_owns_deployment():
         spec=NS(scale_target_ref=NS(kind="Deployment", name="central-ledger"), max_replicas=1),
     )
     autoscaling = FakeAutoscaling([hpa])
-    res = await _executor(apps, FakeCore([_pod()]), autoscaling).scale_service("central-ledger", 2)
+    res = await _executor(apps, FakeCore([_pod()]), autoscaling).scale_service(
+        "central-ledger", 2
+    )
     assert res.success is True, res.message
     name, body = autoscaling.patches[0]
     assert name == "central-ledger"
@@ -335,9 +342,7 @@ async def test_scale_in_respects_min_replicas():
 
 async def test_service_healthy_detects_crashloop():
     crashing = _pod()
-    crashing.status.container_statuses = [
-        NS(state=NS(waiting=NS(reason="CrashLoopBackOff")))
-    ]
+    crashing.status.container_statuses = [NS(state=NS(waiting=NS(reason="CrashLoopBackOff")))]
     executor = _executor(FakeApps(_deployment()), FakeCore([crashing]))
     assert await executor.service_healthy("central-ledger") is False
     executor = _executor(FakeApps(_deployment()), FakeCore([_pod()]))

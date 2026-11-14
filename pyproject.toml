@@ -60,8 +60,6 @@ ignore = [
 "services/traffic_predictor/traffic_predictor/predictor.py" = ["S608"]
 "scripts/check_traffic_predictor.py" = ["S608"]
 "services/healing_engine/healing_engine/engine.py" = ["S608"]
-"scripts/check_healing_engine.py" = ["S608", "BLE", "S110", "B007"]
-"scripts/check_rca_engine.py" = ["S608", "BLE", "S110", "B007"]
 "scripts/demo_quick_healing.py" = ["S310", "BLE"]
 
 [tool.ruff.lint.isort]

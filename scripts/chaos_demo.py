@@ -86,7 +86,9 @@ class Gateway:
 
     def get(self, path: str, **query: Any) -> Any:
         if query:
-            path += "?" + urllib.parse.urlencode({k: v for k, v in query.items() if v is not None})
+            path += "?" + urllib.parse.urlencode(
+                {k: v for k, v in query.items() if v is not None}
+            )
         return self._call("GET", path)
 
     def post(self, path: str, body: dict[str, Any]) -> Any:
@@ -111,7 +113,9 @@ def wait_until_quiet(gw: Gateway) -> bool:
             and (datetime.now(UTC) - _ts(a["detected_at"])).total_seconds() < 120
         ]
         open_incidents = [
-            i for i in gw.get("/incidents", limit=50) if i["status"] not in ("resolved", "closed")
+            i
+            for i in gw.get("/incidents", limit=50)
+            if i["status"] not in ("resolved", "closed")
         ]
         if not recent and not open_incidents:
             return True
@@ -144,7 +148,9 @@ def run_scenario(gw: Gateway, name: str) -> Score:
     incident_id: str | None = None
     while time.monotonic() < deadline:
         time.sleep(POLL_SECONDS)
-        current = next((r for r in gw.get("/chaos", limit=20) if r["run_id"] == run["run_id"]), None)
+        current = next(
+            (r for r in gw.get("/chaos", limit=20) if r["run_id"] == run["run_id"]), None
+        )
         if current is None:
             continue
         if score.detect_s is None and current.get("detected_at"):

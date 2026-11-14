@@ -80,7 +80,9 @@ class MetricSample(AiopsModel):
     timestamp: datetime = Field(default_factory=utc_now)
     service: str = Field(description="Monitored DPI service, e.g. `central-ledger`")
     instance: str = Field(default="unknown", description="Pod / container identifier")
-    platform: str = Field(default="mojaloop", description="Label of the monitored DPI system (AIOPS_DPI_PLATFORM)")
+    platform: str = Field(
+        default="mojaloop", description="Label of the monitored DPI system (AIOPS_DPI_PLATFORM)"
+    )
 
     # Traffic
     tps: float = Field(default=0.0, ge=0, description="Transactions per second")
@@ -221,23 +223,6 @@ class PredictionEvent(AiopsModel):
         if self.recommended_replicas < self.current_replicas:
             return "scale_in"
         return "hold"
-
-
-# ---------------------------------------------------------------------------
-# Deployments & change tracking (input to root cause analysis)
-# ---------------------------------------------------------------------------
-class DeploymentEvent(AiopsModel):
-    """A change to a monitored service — the `change` axis of root cause analysis."""
-
-    deployment_id: str = Field(default_factory=lambda: new_id("dep"))
-    occurred_at: datetime = Field(default_factory=utc_now)
-    service: str
-    platform: str = "mojaloop"
-    from_version: str | None = None
-    to_version: str
-    change_type: Literal["deploy", "rollback", "config", "scale"] = "deploy"
-    triggered_by: str = "unknown"
-    notes: str = ""
 
 
 # ---------------------------------------------------------------------------

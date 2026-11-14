@@ -31,6 +31,7 @@ def transitive_dependencies(services: list[str] | set[str]) -> set[str]:
     """Every service the given services call, directly or indirectly."""
     return get_topology().transitive_dependencies(set(services))
 
+
 # Auto-resolve / continuous recovery window (2 minutes)
 AUTO_RESOLVE_AFTER_SECONDS = 120
 
@@ -93,7 +94,9 @@ class IncidentManager:
             find_query,
             {
                 "platform": self.settings.dpi_platform,
-                "services": sorted(set(affected_services) | transitive_dependencies(affected_services)),
+                "services": sorted(
+                    set(affected_services) | transitive_dependencies(affected_services)
+                ),
             },
         )
 
@@ -116,7 +119,9 @@ class IncidentManager:
                 except Exception:  # noqa: BLE001
                     existing_hypo_raw = []
 
-            existing_hypotheses = [RootCauseHypothesis.model_validate(h) for h in existing_hypo_raw]
+            existing_hypotheses = [
+                RootCauseHypothesis.model_validate(h) for h in existing_hypo_raw
+            ]
             # Victims joining a cascade: the root is downstream, already in the incident, and
             # its hypotheses stay. Hypotheses computed from the victims' anomalies alone would
             # name a victim as the root.
@@ -643,46 +648,3 @@ class IncidentManager:
             parts.append(f"\n**Key signals:** {', '.join(f for f, _ in top_features)}")
 
         return " ".join(parts)
-
-    async def get_open_incidents(self) -> list[Incident]:
-        """Retrieve all open incidents."""
-        query = """
-            SELECT incident_id, opened_at, closed_at, status, severity,
-                   platform, title, affected_services, anomaly_ids,
-                   hypotheses, action_ids, ai_summary
-            FROM incidents
-            WHERE status IN ('open', 'mitigating', 'acknowledged')
-            AND platform = :platform
-            ORDER BY opened_at DESC
-        """
-
-        rows = await self.db.fetch_all(query, {"platform": self.settings.dpi_platform})
-
-        incidents = []
-        for row in rows:
-            hypo_data = row.get("hypotheses") or []
-            if isinstance(hypo_data, str):
-                try:
-                    hypo_data = json.loads(hypo_data)
-                except Exception:  # noqa: BLE001
-                    hypo_data = []
-
-            hypotheses = [RootCauseHypothesis.model_validate(h) for h in hypo_data]
-
-            incident = Incident(
-                incident_id=row["incident_id"],
-                opened_at=row["opened_at"],
-                closed_at=row["closed_at"],
-                status=row["status"],
-                severity=row["severity"],
-                platform=row["platform"],
-                title=row["title"],
-                affected_services=row["affected_services"] or [],
-                anomaly_ids=row["anomaly_ids"] or [],
-                hypotheses=hypotheses,
-                action_ids=row["action_ids"] or [],
-                ai_summary=row["ai_summary"] or "",
-            )
-            incidents.append(incident)
-
-        return incidents

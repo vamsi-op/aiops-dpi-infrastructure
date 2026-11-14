@@ -198,10 +198,10 @@ def build_baseline(service: str, rows: list[dict[str, Any]]) -> ServiceBaseline:
         if stats is not None:
             baseline.hourly[key] = stats
 
-    for key, values in by_week.items():
+    for week_key, values in by_week.items():
         stats = _stats(values)
         if stats is not None:
-            baseline.weekly[key] = stats
+            baseline.weekly[week_key] = stats
 
     for feature, values in by_feature.items():
         stats = _stats(values)

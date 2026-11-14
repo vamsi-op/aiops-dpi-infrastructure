@@ -148,7 +148,7 @@ function Copy-Models {
 
 switch ($Action) {
     'up' {
-        Assert-Tool 'docker' 'See docs/SETUP.md section 2.'
+        Assert-Tool 'docker' 'See docs/SETUP.md section 1.'
         Assert-Tool 'kind' 'Install it with: winget install Kubernetes.kind'
         Assert-Tool 'kubectl' 'Docker Desktop ships kubectl; or: winget install Kubernetes.kubectl'
 

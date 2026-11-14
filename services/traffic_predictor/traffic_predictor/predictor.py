@@ -83,7 +83,6 @@ class PredictorStatus:
         }
 
 
-
 def forecast_origin(last_bucket: datetime, now: datetime) -> datetime:
     """The hour forecasts start after (the first point is origin + 1 h, i.e. this hour).
 
@@ -94,6 +93,7 @@ def forecast_origin(last_bucket: datetime, now: datetime) -> datetime:
     """
     previous_hour = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
     return max(last_bucket, previous_hour)
+
 
 class PredictorMetrics:
     def __init__(self, registry: CollectorRegistry) -> None:

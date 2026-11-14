@@ -95,7 +95,7 @@ $docker = Get-Command docker -ErrorAction SilentlyContinue
 if (-not $docker) {
     Write-Warn 'Docker not found on PATH.'
     Write-Warn 'Install Docker Desktop: https://www.docker.com/products/docker-desktop/'
-    Write-Warn 'See docs/SETUP.md section 2 for step-by-step instructions.'
+    Write-Warn 'See docs/SETUP.md section 1 for step-by-step instructions.'
 } else {
     try {
         & docker info --format '{{.ServerVersion}}' | Out-Null

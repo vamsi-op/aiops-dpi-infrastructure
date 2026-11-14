@@ -201,7 +201,7 @@ class HealingEngine:
                             stream_event=str(event),
                             exc_info=True,
                         )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - supervisor: any failure restarts the consumer
                 if not self._running:
                     break
                 log.warning("healing_engine.anomaly_consumer_restarting", error=str(exc))
@@ -240,7 +240,7 @@ class HealingEngine:
                             stream_event=str(event),
                             exc_info=True,
                         )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - supervisor: any failure restarts the consumer
                 if not self._running:
                     break
                 log.warning("healing_engine.incident_consumer_restarting", error=str(exc))
@@ -336,7 +336,7 @@ class HealingEngine:
                             exc_info=True,
                         )
 
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - supervisor: any failure restarts the consumer
                 if not self._running:
                     break
                 log.warning(
@@ -344,6 +344,7 @@ class HealingEngine:
                     error=str(exc),
                 )
                 import asyncio as _asyncio
+
                 await _asyncio.sleep(5)
 
     async def _fetch_anomaly(self, anomaly_id: str) -> AnomalyEvent | None:
@@ -463,7 +464,9 @@ class HealingEngine:
         target = anomaly.service
         # The key the safety rails (claim, cooldown) use. Normally the target itself.
         safety_target = target
-        if playbook == PlaybookName.CIRCUIT_BREAK_CASCADE and parameters.get("downstream_target"):
+        if playbook == PlaybookName.CIRCUIT_BREAK_CASCADE and parameters.get(
+            "downstream_target"
+        ):
             target = str(parameters["downstream_target"])
             parameters["victim_service"] = anomaly.service
             # Tripping callers' breakers is a different action from remediating the root, so
@@ -650,7 +653,7 @@ class HealingEngine:
             # Executor-specific: Docker container status, or Kubernetes pod availability.
             container_healthy = True
             try:
-                verdict = self.executor.service_healthy(target)
+                verdict: Any = self.executor.service_healthy(target)
                 if inspect.isawaitable(verdict):
                     verdict = await verdict
                 if isinstance(verdict, bool):
@@ -661,7 +664,9 @@ class HealingEngine:
             # Capture post-action metric snapshot
             # From when the action *finished*: a Docker restart takes 15-20 s, and samples
             # taken while the old process was still stopping described the fault.
-            action.after_snapshot = await self.snapshot.capture(target, since=action.finished_at)
+            action.after_snapshot = await self.snapshot.capture(
+                target, since=action.finished_at
+            )
 
             # Actual Recovery Verification
             recovered, rec_reason, rec_details = self.snapshot.verify_recovery(

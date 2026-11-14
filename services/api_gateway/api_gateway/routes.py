@@ -146,9 +146,7 @@ async def overview(request: Request) -> Overview:
             "agent (modules 2-3); the first samples arrive within a minute."
         )
     if not counts.get("anomalies_24h"):
-        notes.append(
-            "No anomalies recorded yet: every service is within its learned baseline."
-        )
+        notes.append("No anomalies recorded yet: every service is within its learned baseline.")
     if settings.healing.enabled:
         notes.append("Automated remediation is ENABLED. Playbooks will execute for real.")
     else:

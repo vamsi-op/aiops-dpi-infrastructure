@@ -241,7 +241,9 @@ class MetricsCollector:
                     labels={
                         "source": AGENT_SOURCE,
                         "collector": "promql",
-                        **({RESTART_IN_WINDOW_LABEL: "1"} if resets.get(service, 0) > 0 else {}),
+                        **(
+                            {RESTART_IN_WINDOW_LABEL: "1"} if resets.get(service, 0) > 0 else {}
+                        ),
                         **(
                             {DEPENDENCY_RESTART_LABEL: "1"}
                             if any(

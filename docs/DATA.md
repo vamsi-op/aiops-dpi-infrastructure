@@ -21,7 +21,7 @@ services. None of them is ever loaded from a file.
 
 ## Why the training data is simulated
 
-- **No public source fits.** Mojaloop, MOSIP and Beckn operators don't publish per-service
+- **No public source fits.** DPI operators don't publish per-service
   operational telemetry. Generic AIOps datasets (GAIA, SMD, LO2) don't have this
   platform's features: none of them carries `settlement_lag_seconds`, the payments-specific
   signal the detector relies on. A scaler fitted to another system's magnitudes would also
@@ -82,25 +82,17 @@ data the live pipeline collected. `replay_history.py --clear` removes them.
   detection rate, time to detect, time to root cause and time to remediate against ground
   truth. The results are in `chaos_runs` and on the dashboard's Chaos page.
 
-## Removed: scripts that wrote made-up results
+## Model artifacts
 
-Two earlier scripts wrote results that the platform never produced:
+Trained anomaly models are written to `ml/artifacts/` (one `.joblib` per service; git-ignored)
+and regenerated with `POST http://localhost:8021/train`. The traffic forecaster refits on every
+cycle from the hourly rollup and stores nothing on disk. Every training run is recorded in the
+`model_runs` table (model, version, data window, row count, metrics, artifact path), so a model
+in use can always be traced back to the data that produced it.
 
-- **`seed_demo_data.py`:** written so the dashboard could be built before the backend
-  existed. It inserted scripted anomalies, incidents, healing actions, forecasts, chaos
-  runs and model-training records.
-- **`execute_all_playbooks.py`:** saved healing actions with hard-coded before/after
-  numbers.
+## Test data
 
-Both are deleted. CI's API contract check now uses
-[tests/fixtures/contract_fixture.sql](../tests/fixtures/contract_fixture.sql) instead: one
-row per table, every id prefixed `contract-fixture-`, loaded only into CI's throwaway
-database.
-
-**A database that was ever seeded still holds those rows,** and they can't be told apart
-from real ones. Reset it before any demo or deployment. This deletes all its data:
-
-```powershell
-.\scripts\stack.ps1 reset
-.\.venv\Scripts\python.exe scripts\replay_history.py --from-csv ml/datasets/mojaloop_replay_28d.csv
-```
+No script writes fabricated results to the database: every anomaly, incident, action and
+forecast comes from the running services. CI's API contract check loads
+[tests/fixtures/contract_fixture.sql](../tests/fixtures/contract_fixture.sql) — one row per
+table, every id prefixed `contract-fixture-` — into its own throwaway database only.

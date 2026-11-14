@@ -40,7 +40,9 @@ def test_healing_action_status_constraint_matches_enum():
 
 def test_migration_installs_the_same_status_list():
     schema = check_values(TABLES_SQL.read_text(encoding="utf-8"), "healing_actions", "status")
-    migration = check_values(MIGRATION_001.read_text(encoding="utf-8"), "healing_actions", "status")
+    migration = check_values(
+        MIGRATION_001.read_text(encoding="utf-8"), "healing_actions", "status"
+    )
     assert migration == schema
 
 
