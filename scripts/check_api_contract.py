@@ -15,6 +15,7 @@ Usage (gateway must be running):
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import urllib.error
@@ -22,7 +23,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-BASE_URL = "http://127.0.0.1:8080"
+# The gateway's host port everywhere (Compose, kind, CI). Override to check another deployment.
+BASE_URL = os.environ.get("GATEWAY_URL", "http://127.0.0.1:8080").rstrip("/")
 TYPES_FILE = Path(__file__).resolve().parents[1] / "dashboard/src/api/types.ts"
 
 # TypeScript interface -> (endpoint, how to reach a representative object)
