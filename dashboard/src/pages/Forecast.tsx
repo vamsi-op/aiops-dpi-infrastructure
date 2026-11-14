@@ -137,7 +137,7 @@ export function ForecastPage() {
         title={activeService ? `Actual vs forecast · ${activeService}` : 'Actual vs forecast'}
         hint="solid green is measured traffic, dashed violet is the forecast with its confidence band"
       >
-        <Async state={predictions} emptyWhen={(rows) => rows.length === 0} emptyMessage="No forecasts yet. The traffic predictor (module 5) is not running.">
+        <Async state={predictions} emptyWhen={(rows) => rows.length === 0} emptyMessage="No forecasts yet. The traffic predictor publishes one every 10 minutes.">
           {() =>
             chartData.rows.length === 0 ? (
               <Empty>No data for this service.</Empty>

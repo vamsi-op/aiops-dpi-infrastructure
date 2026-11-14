@@ -147,7 +147,7 @@ async def overview(request: Request) -> Overview:
         )
     if not counts.get("anomalies_24h"):
         notes.append(
-            "No anomalies recorded. The anomaly detector (module 4) is not running yet."
+            "No anomalies recorded yet: every service is within its learned baseline."
         )
     if settings.healing.enabled:
         notes.append("Automated remediation is ENABLED. Playbooks will execute for real.")

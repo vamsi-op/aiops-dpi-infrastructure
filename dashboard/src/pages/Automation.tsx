@@ -154,7 +154,7 @@ export function AutomationPage() {
       </div>
 
       <Card title="Action log" hint="select a row for the before and after snapshots">
-        <Async state={summary} emptyWhen={(data) => data.recent.length === 0} emptyMessage="No remediation actions in this window. The healing engine (module 6) is not running yet.">
+        <Async state={summary} emptyWhen={(data) => data.recent.length === 0} emptyMessage="No remediation actions in this window.">
           {(data) => (
             <div className="table-wrap" style={{ maxHeight: 460, overflowY: 'auto' }}>
               <table>

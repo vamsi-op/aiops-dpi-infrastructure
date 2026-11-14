@@ -125,7 +125,7 @@ export function OverviewPage({ onSelectService, onSelectIncident, onNavigate }: 
             </button>
           }
         >
-          <Async state={incidents} emptyWhen={(rows) => rows.length === 0} emptyMessage="No incidents recorded. The RCA engine (module 7) is not running yet.">
+          <Async state={incidents} emptyWhen={(rows) => rows.length === 0} emptyMessage="No incidents recorded.">
             {(rows) => (
               <div className="table-wrap">
                 <table>

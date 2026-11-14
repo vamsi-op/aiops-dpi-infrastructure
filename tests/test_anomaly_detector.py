@@ -834,20 +834,48 @@ def test_better_than_normal_is_not_an_anomaly() -> None:
 
 
 @pytest.mark.parametrize("label", ["restart_in_rate_window", "dependency_restart_in_rate_window"])
-async def test_restart_window_samples_are_not_scored(label: str) -> None:
+async def test_restart_window_samples_are_scored_on_gauges_only(label: str) -> None:
+    """Rates are distorted after a (dependency) restart, gauges are not.
+
+    Regression, both ways: scoring rates re-flagged a just-remediated service for its old
+    fault; skipping the sample outright blinded detection for six minutes after every
+    Kubernetes rollout, so a bad release with queue depth 60 went unscored.
+    """
     from unittest.mock import MagicMock
 
+    from anomaly_detector.detector import neutralise_rates
+
+    model, _ = fitted_model()
+    # The remediated fault still in the rate window, with healthy gauges...
+    stale_rates = sample(error_ratio=0.05, latency_p99_seconds=2.0).model_copy(
+        update={"labels": {label: "1"}}
+    )
+    calmed = neutralise_rates(stale_rates, model)
+    at = stale_rates.timestamp
+    assert calmed.error_ratio == pytest.approx(
+        model.baseline.stats_for("error_ratio", at.hour, at.weekday()).mean
+    )
+    assert Scorer(THRESHOLD).score(calmed, model).anomaly is None
+
+    # ...but a broken release shows in its gauges, and is scored and caught.
+    broken = sample(error_ratio=0.05, queue_depth=60.0).model_copy(update={"labels": {label: "1"}})
+    result = Scorer(THRESHOLD).score(neutralise_rates(broken, model), model)
+    assert result.anomaly is not None
+    assert "queue_depth" in result.anomaly.contributing_features
+
     detector = AnomalyDetector(None, None, Scorer(THRESHOLD), MagicMock())
-    detector._models[SERVICE] = MagicMock()
-    restarted = sample().model_copy(update={"labels": {label: "1"}})
+    detector._models[SERVICE] = model
+    scorer = MagicMock()
+    scorer.score.return_value = MagicMock(anomaly=None, score=0.1)
+    detector.scorer = scorer
 
     class Msg:
-        data = restarted.model_dump(mode="json")
+        data = broken.model_dump(mode="json")
 
-    scorer = MagicMock()
-    detector.scorer = scorer
-    assert await detector._handle(Msg()) is True
-    scorer.score.assert_not_called()
+    await detector._handle(Msg())
+    scored = scorer.score.call_args.args[0]
+    assert scored.queue_depth == 60.0
+    assert scored.error_ratio < 0.05
 
 
 def test_p99_weight_follows_tail_evidence() -> None:

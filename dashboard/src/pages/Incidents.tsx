@@ -74,7 +74,7 @@ export function IncidentsPage({
       </div>
 
       <Card title="Incidents" hint="each row is one problem, however many services it touched">
-        <Async state={incidents} emptyWhen={(data) => data.length === 0} emptyMessage="No incidents recorded. The RCA engine (module 7) is not running yet.">
+        <Async state={incidents} emptyWhen={(data) => data.length === 0} emptyMessage="No incidents recorded.">
           {(data) => (
             <div className="table-wrap">
               <table>

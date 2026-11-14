@@ -147,6 +147,25 @@ class DetectorMetrics:
         )
 
 
+
+# Window-rate signals; distorted for a rate window after a counter reset.
+RATE_FEATURES = ("tps", "error_ratio", "latency_p50_seconds", "latency_p99_seconds")
+
+
+def neutralise_rates(sample: MetricSample, model: Any) -> MetricSample:
+    """The sample with its rate signals replaced by the baseline for its hour and weekday."""
+    at = sample.timestamp
+    update: dict[str, float] = {}
+    for feature in RATE_FEATURES:
+        stats = model.baseline.stats_for(feature, at.hour, at.weekday())
+        if stats is None:
+            continue
+        # error_ratio is computed from measured_error_ratio on MetricSample.
+        key = "measured_error_ratio" if feature == "error_ratio" else feature
+        value = max(0.0, float(stats.mean))
+        update[key] = min(value, 1.0) if feature == "error_ratio" else value
+    return sample.model_copy(update=update)
+
 class AnomalyDetector:
     """Stream consumer: metric events in, anomaly events out."""
 
@@ -288,18 +307,20 @@ class AnomalyDetector:
                 )
             return False
 
-        # The service restarted within the last rate window: its rates are distorted for five
-        # minutes (see metrics_agent RESET_QUERY). Not scored, so a just-remediated service is
-        # not flagged for the artefact of its own remediation.
-        # Likewise when a dependency restarted: the failed calls made while it was down are
-        # still in this service's rate window.
+        # The service (or a dependency) restarted within the last rate window: its *rate*
+        # signals are distorted for five minutes (see metrics_agent RESET_QUERY) - a remediated
+        # service still shows the fault's errors, and callers still count calls that failed
+        # during the restart. Its gauges (queue, memory, CPU, connections) describe the process
+        # running now. So the sample is scored on its gauges, with the rates set to baseline.
+        #
+        # Skipping the sample outright, as this used to, blinded detection for six minutes
+        # after every Kubernetes rollout - a new pod resets its counters - which is exactly
+        # when a bad release shows: queue 60 and 2% errors went unscored.
         if (
             sample.labels.get("restart_in_rate_window") == "1"
             or sample.labels.get("dependency_restart_in_rate_window") == "1"
         ):
-            self._unusual_streak[sample.service] = 0
-            log.debug("detector.skipped_restart_window", monitored_service=sample.service)
-            return True
+            sample = neutralise_rates(sample, model)
 
         result = self.scorer.score(sample, model)
         self._metrics.scored.labels(sample.service).inc()
