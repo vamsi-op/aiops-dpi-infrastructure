@@ -87,6 +87,27 @@ The flow from there:
    `aiops healing-engine: rollback to revision N`. The pods run `v1.0.4` without the
    defect, and the incident auto-resolves once the SLO window is clean.
 
+## Verified on kind
+
+`python scripts/chaos_demo.py` against the cluster (healing enabled), 14 Nov 2026:
+
+| Scenario | Detect | RCA | Remediate | Root cause | Action | Side effects |
+|---|---|---|---|---|---|---|
+| OOM: memory hog on account-lookup-service | 64 s | 64 s | 76 s | account-lookup-service (0.90) | rolling restart | none |
+| Latency on central-ledger | 52 s | 52 s | 64 s | central-ledger (0.90) | rolling restart | none |
+| Bad deploy of ml-api-adapter | 35 s | 36 s | 48 s | the deployment (0.94) | real `rollout undo` | none |
+
+In the latency run the root was restarted 12 s after detection, before any caller had been
+flagged, so the incident never became a cascade and no breakers were needed. Under Compose,
+where the callers alarmed first, the same fault opened the callers' breakers.
+
+The bad-deploy run leaves this in the rollout history:
+
+```
+5  chaos bad_deploy: v1.0.5-canary
+6  aiops healing-engine: rollback to revision 4
+```
+
 ## First run: what to expect
 
 - **Third-party images download inside the kind node** (TimescaleDB is about 700 MB), so a
