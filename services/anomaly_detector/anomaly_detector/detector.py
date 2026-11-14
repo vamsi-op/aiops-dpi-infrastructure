@@ -291,7 +291,12 @@ class AnomalyDetector:
         # The service restarted within the last rate window: its rates are distorted for five
         # minutes (see metrics_agent RESET_QUERY). Not scored, so a just-remediated service is
         # not flagged for the artefact of its own remediation.
-        if sample.labels.get("restart_in_rate_window") == "1":
+        # Likewise when a dependency restarted: the failed calls made while it was down are
+        # still in this service's rate window.
+        if (
+            sample.labels.get("restart_in_rate_window") == "1"
+            or sample.labels.get("dependency_restart_in_rate_window") == "1"
+        ):
             self._unusual_streak[sample.service] = 0
             log.debug("detector.skipped_restart_window", monitored_service=sample.service)
             return True

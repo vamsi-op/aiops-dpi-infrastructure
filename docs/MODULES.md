@@ -725,6 +725,9 @@ with healing enabled, and each has a regression test.
 | Two engines raced to act on one target; the hourly budget counter leaked | Cooldown is claimed atomically (`SET NX`); the budget probe is always rolled back |
 | Recovery judged on samples taken before or during the restart | The post-action snapshot starts when the action *finishes*; rate signals still inside the 5-minute window after a restart are deferred to SLO auto-resolution |
 | A bad deploy detected 102 s late was restarted instead of rolled back | A deployment of an affected service always outranks the generic "this service is unhealthy" hypothesis |
+| A successful rollback was marked failed on the old process's last gauge (queue 60), still served by Prometheus while the container restarted | A failed first verification is re-checked twice, 20 s apart, on the newest samples only |
+| The attempt cap logged 37 identical `skipped_max_attempts` rows for one incident, and those rows kept the recovered incident open | The escalation is recorded once per incident; auto-resolve judges the latest action that actually ran |
+| RCA "explained" every chaos demo by reading the chaos-run table (0.99) | A running experiment is listed as context (0.6), below the diagnosis RCA makes from telemetry |
 
 ## Hardening of detection (module 4), from the same runs
 
@@ -736,6 +739,10 @@ with healing enabled, and each has a regression test.
 - **Restart windows.** Samples whose 5-minute rate window spans a restart (`resets()`) are
   tagged by the metrics agent and not scored, so a remediation is not flagged for its own
   traffic dip.
+- **Dependency restarts.** The same applies to callers of a restarted service (per the
+  topology): their error and p99 windows still hold the calls that failed during the restart.
+  Those samples are not scored, and SLO auto-resolve ignores their rate signals. Before this,
+  every remediation restart produced five minutes of caller alarms.
 
 ---
 

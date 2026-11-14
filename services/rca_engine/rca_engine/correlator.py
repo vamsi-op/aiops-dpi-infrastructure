@@ -35,6 +35,8 @@ EVENT_WINDOW_SECONDS = 180  # 3 minutes
 
 # Confidence thresholds
 MIN_HYPOTHESIS_CONFIDENCE = 0.3
+# A running chaos experiment is context for an incident, ranked below any diagnosis.
+CHAOS_CONTEXT_CONFIDENCE = 0.6
 # Added when real traces show failed calls into the suspected service.
 TRACE_CONFIRMATION_BOOST = 0.05
 
@@ -332,7 +334,12 @@ class Correlator:
                     RootCauseHypothesis(
                         category=RootCauseCategory.EVENT,
                         target=row["run_id"],
-                        confidence=0.99,  # Very high - we caused it!
+                        # Context, not the diagnosis. At 0.99 this outranked what RCA found
+                        # from telemetry, so every chaos demo "explained" itself by reading the
+                        # chaos table - and the scorecard named the experiment, not the
+                        # failing service. Listed below the telemetry hypotheses, so the
+                        # incident shows both: what broke (the diagnosis) and why (the run).
+                        confidence=CHAOS_CONTEXT_CONFIDENCE,
                         summary=f"Active chaos experiment: {row['experiment']} on {chaos_service}",
                         evidence=[
                             f"Chaos run {row['run_id']} is active",

@@ -140,8 +140,45 @@ async def test_chaos_experiment_correlation(mock_db_with_chaos) -> None:
     assert len(hypotheses) > 0
     event = hypotheses[0]
     assert event.category == RootCauseCategory.EVENT
-    assert event.confidence >= 0.95
     assert "chaos" in event.summary.lower()
+
+
+@pytest.mark.asyncio
+async def test_chaos_context_ranks_below_the_telemetry_diagnosis() -> None:
+    """Regression: the 0.99 chaos-run hypothesis outranked RCA's own finding, so a demo
+    'explained' each fault by reading the chaos table instead of diagnosing it."""
+    start = datetime(2026, 11, 14, 10, 29, 7, tzinfo=UTC)
+
+    class ChaosDB:
+        async def fetch_all(self, query: str, params: dict[str, Any] | None = None):
+            if "chaos_runs" not in query:
+                return []
+            return [
+                {
+                    "run_id": "chaos-1",
+                    "experiment": "network_latency",
+                    "target_service": "central-ledger",
+                    "started_at": start,
+                }
+            ]
+
+    anomalies = [
+        AnomalyEvent(
+            anomaly_id=f"a-{service}",
+            detected_at=start + timedelta(seconds=57 + i * 15),
+            service=service,
+            severity=Severity.CRITICAL,
+            score=0.99,
+            contributing_features=["latency_p99_seconds"],
+            kind=AnomalyKind.LATENCY_SPIKE,
+        )
+        for i, service in enumerate(["central-ledger", "quoting-service", "ml-api-adapter"])
+    ]
+    hypotheses = await RCACorrelator(db=ChaosDB()).correlate_all(anomalies)
+
+    assert hypotheses[0].category == RootCauseCategory.SERVICE
+    assert hypotheses[0].target == "central-ledger"
+    assert any(h.category == RootCauseCategory.EVENT for h in hypotheses[1:])
 
 
 @pytest.mark.asyncio

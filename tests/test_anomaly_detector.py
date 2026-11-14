@@ -833,12 +833,13 @@ def test_better_than_normal_is_not_an_anomaly() -> None:
     assert model.inputs(fast, 12, 2)[ANOMALY_FEATURES.index("latency_p99_seconds")] == 0.0
 
 
-async def test_restart_window_samples_are_not_scored() -> None:
+@pytest.mark.parametrize("label", ["restart_in_rate_window", "dependency_restart_in_rate_window"])
+async def test_restart_window_samples_are_not_scored(label: str) -> None:
     from unittest.mock import MagicMock
 
     detector = AnomalyDetector(None, None, Scorer(THRESHOLD), MagicMock())
     detector._models[SERVICE] = MagicMock()
-    restarted = sample().model_copy(update={"labels": {"restart_in_rate_window": "1"}})
+    restarted = sample().model_copy(update={"labels": {label: "1"}})
 
     class Msg:
         data = restarted.model_dump(mode="json")

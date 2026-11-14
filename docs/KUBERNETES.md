@@ -9,7 +9,7 @@ does not change. What changes is how the healing playbooks act on the cluster:
 | `restart_on_oom` | `docker restart` the containers | Delete the named pod, or do a rolling restart of the Deployment (`kubectl rollout restart`) and wait for it to finish |
 | `scale_out_preemptive` / `scale_in_idle` | Start or stop extra containers | Patch the Deployment's scale one replica at a time. If an HPA owns the Deployment, raise its `minReplicas` floor so the HPA doesn't undo the scale-out. If the new pods can't be scheduled, scale back and report the capacity problem |
 | `rollback_bad_deploy` | Simulated: restarts the containers | **A real `rollout undo`**: the previous ReplicaSet revision's pod template is copied back onto the Deployment |
-| `circuit_break_cascade` | Restarts the root dependency | Rolling restart of the root dependency |
+| `circuit_break_cascade` | Opens every caller's circuit breaker on the root (simulator HTTP API), then restarts the root | Same breakers, then a rolling restart of the root dependency |
 
 The healing engine no longer mounts the Docker socket. It uses its own ServiceAccount,
 bound to a namespaced Role that can only patch Deployments, read ReplicaSets, delete pods

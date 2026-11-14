@@ -90,6 +90,11 @@ RATE_WINDOW_SECONDS: Final[int] = 300
 # flickered 1 -> 0 -> 1 with scrape alignment, and the single untagged sample was flagged.
 RESET_QUERY: Final[str] = "max by (service) (resets(dpi_transaction_total[6m]))"
 RESTART_IN_WINDOW_LABEL: Final[str] = "restart_in_rate_window"
+# Same, for a service whose dependency (direct or transitive, per the topology) restarted:
+# its rate window still holds the calls that failed while the dependency was down. Observed
+# after every remediation restart: the callers alarmed on errors and p99 for the full five
+# minutes, opening noise anomalies long after the dependency had recovered.
+DEPENDENCY_RESTART_LABEL: Final[str] = "dependency_restart_in_rate_window"
 
 # Gauges every DPI service exports; a row is only written when all of them have a value.
 CORE_FIELDS: Final[tuple[str, ...]] = (
@@ -172,6 +177,7 @@ class MetricsCollector:
             missing.append(REPLICAS_QUERY)
         coverage = await self._by_service(WINDOW_COVERAGE_QUERY, moment)
         resets = await self._by_service(RESET_QUERY, moment)
+        topology = get_topology()
         needed = MIN_WINDOW_COVERAGE * RATE_WINDOW_SECONDS / max(1, self._interval_seconds)
 
         samples: list[MetricSample] = []
@@ -236,6 +242,14 @@ class MetricsCollector:
                         "source": AGENT_SOURCE,
                         "collector": "promql",
                         **({RESTART_IN_WINDOW_LABEL: "1"} if resets.get(service, 0) > 0 else {}),
+                        **(
+                            {DEPENDENCY_RESTART_LABEL: "1"}
+                            if any(
+                                resets.get(dependency, 0) > 0
+                                for dependency in topology.transitive_dependencies(service)
+                            )
+                            else {}
+                        ),
                     },
                     **fields,
                 )

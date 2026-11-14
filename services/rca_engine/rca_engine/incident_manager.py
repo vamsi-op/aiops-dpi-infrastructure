@@ -410,10 +410,14 @@ class IncidentManager:
 
             # 3. Continuous SLO Telemetry Check over Recovery Window
             metrics_cutoff = utc_now() - timedelta(seconds=AUTO_RESOLVE_AFTER_SECONDS)
+            # A caller's error ratio and p99 are rate windows that still hold the calls which
+            # failed while a dependency restarted (metrics-agent tags those rows); they kept a
+            # recovered incident open for the full five minutes after every remediation. The
+            # restarted service itself and every gauge are still judged.
             metrics_query = """
                 SELECT service,
-                       AVG(error_ratio) as avg_error,
-                       AVG(latency_p99_seconds) as avg_p99,
+                       AVG(error_ratio) FILTER (WHERE NOT COALESCE(labels->>'dependency_restart_in_rate_window', '') = '1') as avg_error,
+                       AVG(latency_p99_seconds) FILTER (WHERE NOT COALESCE(labels->>'dependency_restart_in_rate_window', '') = '1') as avg_p99,
                        AVG(queue_depth) as avg_queue,
                        AVG(cpu_utilisation_ratio) as avg_cpu,
                        AVG(memory_utilisation_ratio) as avg_mem
