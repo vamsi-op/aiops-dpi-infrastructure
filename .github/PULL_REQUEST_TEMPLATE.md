@@ -17,18 +17,19 @@ Paste the actual command and its result. "Tests pass" on its own is not verifica
 ```
 ```
 
-- [ ] `ruff format .` and `ruff check .` clean
+- [ ] `ruff format --check .` and `ruff check .` clean
 - [ ] `mypy libs services` clean
 - [ ] `pytest tests -q` passes
 - [ ] `AIOPS_RUN_INTEGRATION=1 pytest tests -q` passes (stack running)
 - [ ] Dashboard touched? `npm run typecheck` and `npm run build` pass
 - [ ] API or UI types touched? `python scripts/check_api_contract.py` passes
+- [ ] Detection, RCA or healing touched? `python scripts/chaos_demo.py --scenario <name>` scorecard attached
 
 ## Shared contracts
 
 <!--
 Did you change libs/aiops_common/schemas.py, constants.py, or infra/timescaledb/init/?
-Those affect every module. Say what changed and whether teammates need to act
+Those affect every service. Say what changed and whether teammates need to act
 (for example: "schema change, everyone needs .\scripts\stack.ps1 reset").
 ANOMALY_FEATURES is append-only.
 -->
@@ -43,4 +44,4 @@ Known gaps, deliberate shortcuts, surprises you hit. Bugs you found and fixed al
 the way are worth a line each - and a regression test.
 -->
 
-- [ ] `docs/MODULES.md` updated if this completes a module
+- [ ] Documentation in `docs/` updated if behaviour or configuration changed

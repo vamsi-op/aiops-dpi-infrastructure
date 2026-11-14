@@ -36,7 +36,7 @@ groups:
             Prometheus has been unable to scrape {{ $labels.service }} for 30s. If module 9
             injected kill_service this is expected and the restart policy should clear it
             within a scrape interval; if it persists the container is crash-looping.
-          runbook: "docs/MODULES.md#module-6--self-healing-playbook-engine"
+          runbook: "docs/OPERATIONS.md#1-playbooks"
 
       - alert: DpiPlatformDegraded
         # 5 services in the simulated deployment; fewer than 4 up is a platform event

@@ -6,516 +6,143 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg)](https://www.python.org/)
 
-DPI systems serve millions of people and cannot afford downtime. When a payment switch
-goes down, commerce stops. When an identity service fails, people lose access to
-services they depend on.
+Digital Public Infrastructure — payment switches, identity platforms, open commerce networks —
+serves millions of people and cannot afford downtime. Traditional monitoring reports a failure
+after it has happened. This platform forecasts load before the peak, detects behaviour that is
+unusual for the time of day, explains the root cause, and remediates automatically behind
+explicit safety rails.
 
-Traditional monitoring is reactive — it tells you something *already* broke. This platform
-is proactive: it forecasts load before the spike, flags anomalies before the outage,
-explains the likely cause, and runs a remediation playbook on its own.
-
-A **common platform for any DPI system**. Nothing in detection, root cause analysis or
-healing is specific to one platform: the monitored services and who calls whom come from a
-topology file ([config/](config/README.md)), and every model is learned from each service's own
-metrics. The repository ships a simulated **Mojaloop** (payments) deployment as the workload.
-
-> Project AI-7 · Category: AI-for-DPI · Bracket 2
+It is a **common platform for any DPI system**: the monitored services and their dependencies
+come from a topology file, and every model is learned from each service's own telemetry. The
+repository ships a simulated [Mojaloop](https://mojaloop.io/) payment switch as the reference
+workload.
 
 ---
 
-## What it does
+## Capabilities
 
-| Capability | How |
+| Capability | How it works |
 |---|---|
-| **Predicts traffic** | Forecasts per-service load at 1 / 6 / 24 hour horizons and recommends a replica count *before* the peak arrives |
-| **Detects anomalies** | Isolation Forest over a multivariate feature vector, scored against a weekday × hour seasonal baseline, with per-feature attribution — not static thresholds. Two-sample persistence and an evidence gate keep ordinary load wobble from becoming alerts |
-| **Explains root cause** | Correlates anomalies temporally, across the service dependency graph, against deployments, and against external events, confirmed by logs (Loki) and traces (Tempo). Five alarms become **one** incident with **one** named cause |
-| **Heals itself** | Root-cause-driven playbooks (OOM restart, traffic-aware scale-out, circuit breakers on a cascade's callers, deploy rollback — a real `rollout undo` on Kubernetes), behind five safety rails with post-remediation recovery verification |
-| **SLO auto-resolution** | Verifies recovery against concrete SLOs over a continuous 120s window, filtering out harmless ML noise/jitter so healthy incidents resolve cleanly with an audit trail |
-| **Proves it works** | Chaos experiments and end-to-end scenarios with a scorecard: time-to-detect, time-to-RCA, time-to-remediate |
+| **Monitoring** | Prometheus (metrics), Loki + Alloy (logs), Tempo (traces), Alertmanager and Grafana. DPI-specific signals — transaction rate, error ratio, latency percentiles, queue depth, settlement lag — alongside CPU, memory and connections. |
+| **Anomaly detection** | Per-service Isolation Forest over a nine-signal feature vector, scored against a weekday × hour seasonal baseline, with per-feature attribution. Two-sample persistence and an evidence gate keep ordinary load variation from becoming alerts. |
+| **Traffic forecasting** | Seasonal profile blended with a seasonal-naïve forecast at 1, 6 and 24 hour horizons. Backtested MAPE ≈ 1 %; the measured error sets the headroom of each replica recommendation. |
+| **Root cause analysis** | Correlates anomalies by time, along the dependency graph (the deepest failing dependency is the root), against recent deployments, and against external events — confirmed with log and trace evidence. Many alarms become one incident with one named cause. |
+| **Self-healing** | Playbooks selected from the diagnosed cause: restart on resource exhaustion, circuit breakers on the callers of a failing dependency, rollback of a bad deployment, pre-emptive scale-out. Every action passes five safety rails and is verified against post-action telemetry. |
+| **Operations dashboard** | React dashboard with live service health, anomalies, incidents, forecasts, the remediation log, and one-click chaos experiments. |
+| **Kubernetes-native** | Runs on Kubernetes (kind locally, a single VM for a deployment). Healing uses the Kubernetes API: rolling restarts, scaling that respects an HPA, and a real `rollout undo`. |
+
+## Verified end to end
+
+`scripts/chaos_demo.py` injects each fault through the API gateway and measures the platform's
+response. All three scenarios pass on Docker Compose and on Kubernetes, with no action taken on
+any service that was not faulted.
+
+| Scenario | Fault | Detect | Remediate | Diagnosed root cause | Action |
+|---|---|---|---|---|---|
+| Resource exhaustion | memory leak in `account-lookup-service` | 64 s | 76 s | the leaking service | rolling restart |
+| Dependency failure | latency in `central-ledger` | 52 s | 64 s | `central-ledger`, not its callers | restart; circuit breakers on callers |
+| Bad deployment | defective release of `ml-api-adapter` | 35 s | 48 s | the deployment (CHANGE, 0.94) | `rollout undo` to the previous revision |
+
+*Kubernetes (kind) timings. Detection time includes the metrics sampling interval (15 s) and the
+two-sample persistence requirement.*
 
 ---
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────────────┐
-│  DPI WORKLOAD — any DPI system, described by config/topology.*.json       │
-│  bundled: simulated Mojaloop (5 services, with circuit breakers)          │
-└───────────┬──────────────────────────────────────────────────────────────┘
-            │ metrics · logs · traces
-            ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│  OBSERVABILITY PLANE ✅                                                   │
-│  Prometheus · Loki + Alloy · Tempo · Grafana · Alertmanager              │
-└───────────┬──────────────────────────────────────────────────────────────┘
-            ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│  AIOPS PLANE ✅                                                           │
-│  metrics-agent ──► TimescaleDB (history + feature store)                 │
-│        ├──► anomaly-detector      (Isolation Forest, 5-15s) ✅           │
-│        ├──► traffic-predictor     (1h / 6h / 24h) ✅                     │
-│        ├──► rca-engine            (service · change · event) ✅          │
-│        └──► healing-engine        (playbooks + safety rails) ✅          │
-└───────────┬──────────────────────────────────────────────────────────────┘
-            │ Redis Streams
-            ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│  CONTROL PLANE ✅                                                         │
-│  api-gateway (REST + WebSocket) · dashboard (React) · chaos-agent ⏸️     │
-└──────────────────────────────────────────────────────────────────────────┘
+ DPI workload (any system described by config/topology.*.json)
+        │  metrics · logs · traces
+        ▼
+ Observability    Prometheus · Loki + Alloy · Tempo · Alertmanager · Grafana
+        │  PromQL
+        ▼
+ metrics-agent ──► TimescaleDB (raw samples + 1 m / 1 h rollups)
+        │
+        │  Redis Streams: aiops.metrics → aiops.anomalies → aiops.incidents → aiops.actions
+        ▼
+ anomaly-detector    traffic-predictor    rca-engine    healing-engine
+        │
+        ▼
+ api-gateway (REST + WebSocket) ──► dashboard (React)
 ```
 
-**Current Status (November 2026):**
-- ✅ **Modules 1-8 Complete & Integrated**: Full production-grade stack operational.
-- 🐳 **19 Containers Running**: Observability, TimescaleDB, Redis, API Gateway, 5 Mojaloop services, and all Python AIOps engines.
-- ⚡ **Root-Cause Remediation Flow**: Distinguishes process failures, traffic overload, queue buildup, and dependency failures with automatic fallback to single-replica scale-out (+1).
-- 🛡️ **Multi-Tier Safety Rails**: Hard limit of 20 containers global cap, max 2 remediation attempts per incident, failure cooldown (120s), and human-escalation (`requires_manual_intervention`).
-- 🎯 **SLO-Verified Incident Auto-Resolution**: Resolves incidents based on continuous 120s compliance with concrete SLO thresholds (error ratio $\le 1\%$, p99 latency $\le 250$ms, queue depth $\le 5$), preventing benign ML anomalies from blocking resolution.
-- 🧪 **415 Automated Tests Passing** (plus 15 stack integration tests run with `AIOPS_RUN_INTEGRATION=1`).
-- 🔥 **Chaos scenarios verified end to end** on the live stack: memory hog → restart; dependency latency → root restarted and breakers opened on its callers; bad deploy → blamed on the deployment and rolled back.
-- ☸️ **Kubernetes (kind)** manifests and a Kubernetes executor; single-VM deployment in [docs/DEPLOY_VM.md](docs/DEPLOY_VM.md).
-
-Layers only query downward and communicate upward through the event bus. No service
-reaches into another's database. Full reasoning in
-**[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+Services communicate only through the event bus and their own tables, so each can be restarted,
+scaled or replaced independently. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ---
 
-## Running the project
+## Quick start
 
-Commands are PowerShell, on Windows. First time on this machine? **[docs/SETUP.md](docs/SETUP.md)**
-walks through installing Docker Desktop and WSL 2 from nothing.
-
-### Prerequisites
-
-| Tool | Version | Check |
-|---|---|---|
-| Docker Desktop | any recent | `docker compose version` |
-| Python | **3.11 or 3.12** | `python --version` |
-| Node.js | 20 or newer | `node --version` |
-| Git | any | `git --version` |
-
-Docker Desktop must be **running** — wait for the tray whale to stop animating. Python
-3.13 works for what exists today, but some ML wheels needed in module 5 still lag on it.
-
-### Step 1 — One-time setup
+Requirements: Windows 10/11 with Docker Desktop (WSL 2), Python 3.11 or 3.12, Node.js 20, and
+16 GB RAM. Full instructions, including Linux, are in [docs/SETUP.md](docs/SETUP.md).
 
 ```powershell
-git clone https://github.com/vamsi-op/aiops-dpi-infrastructure.git
-cd aiops-dpi-infrastructure
-
-# If PowerShell refuses to run the scripts:
-Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
-
-.\scripts\bootstrap.ps1
+.\scripts\bootstrap.ps1                    # Python environment and .env
+.\scripts\stack.ps1 up -Layer all          # the full stack on Docker Compose
+.\.venv\Scripts\python.exe scripts\replay_history.py --from-csv ml\datasets\mojaloop_replay_28d.csv
+Invoke-RestMethod -Method Post http://localhost:8021/train -ContentType application/json -Body '{}'
 ```
 
-`bootstrap.ps1` creates `.venv`, installs dependencies, copies `.env.example` to `.env`,
-and verifies the shared library imports. Safe to re-run; add `-Recreate` to start clean.
-
-### Step 2 — Start the data layer
+Then start the dashboard:
 
 ```powershell
-.\scripts\stack.ps1 up          # TimescaleDB + Redis
-.\scripts\healthcheck.ps1       # must end with "All checks passed"
+cd dashboard; npm install; npm run dev     # http://localhost:5173
 ```
 
-The first run pulls ~2.8 GB of images and then applies the schema — give it about 30
-seconds. `healthcheck.ps1` asserts 16 things about Docker, the schema, the hypertable, the
-continuous aggregates and Redis, then runs the full test suite.
-
-**If the healthcheck is not green, stop here and fix it.** Everything below assumes it passes.
-
-> **Kubernetes instead of Compose?** `.\scripts\k8s.ps1 up` runs the same platform on a
-> local kind cluster, with the same ports, where the healing playbooks act through the
-> Kubernetes API (pod restarts, Deployment scaling, real `rollout undo`). See
-> **[docs/KUBERNETES.md](docs/KUBERNETES.md)**.
->
-> **Deploying it?** One cloud VM running the kind cluster, with a password-protected
-> public dashboard: **[docs/DEPLOY_VM.md](docs/DEPLOY_VM.md)**.
-
-### Step 3 — Start the full AIOps stack
+To enable automated remediation, set `HEALING_ENABLED=true` in `.env` and restart the healing
+engine. Then run the chaos scorecard:
 
 ```powershell
-.\scripts\stack.ps1 up -Layer all
+.\.venv\Scripts\python.exe scripts\chaos_demo.py
 ```
 
-Builds and starts 16 containers: the five simulated Mojaloop services, Prometheus, Grafana, 
-the metrics agent, anomaly detector, and traffic predictor. The first run builds images, so 
-allow a few minutes.
+To run on Kubernetes instead: `.\scripts\k8s.ps1 up` — see [docs/KUBERNETES.md](docs/KUBERNETES.md).
 
-- **Grafana** — http://localhost:3000 — opens straight on the DPI dashboard, no setup
-- **Prometheus** — http://localhost:9090 — all 5 Mojaloop targets should be `UP`
-
-Give it about 60 seconds for the `rate()` windows to fill, then verify each module:
-
-```powershell
-.\.venv\Scripts\python.exe scripts\check_observability.py
-.\.venv\Scripts\python.exe scripts\check_metrics_agent.py
-.\.venv\Scripts\python.exe scripts\check_anomaly_detector.py
-.\.venv\Scripts\python.exe scripts\replay_history.py --from-csv ml/datasets/mojaloop_replay_28d.csv  # needed for module 5
-.\.venv\Scripts\python.exe scripts\check_traffic_predictor.py
-```
-
-These verify that: targets are scraped, recording rules work, metrics flow to TimescaleDB,
-anomaly detection beats the baseline on real data, and traffic forecasting beats seasonal-naive 
-at every horizon.
-
-Traffic follows a realistic daily and weekly rhythm, so over 24 hours the Grafana traffic
-panel shows a clear curve. That seasonality is what module 5's forecasting learns.
-
-### Step 4 — Load the training history
-
-The traffic forecaster needs four weeks of history to learn the weekly rhythm. Load the
-archived dataset ([ml/datasets/mojaloop_replay_28d.csv](ml/datasets/mojaloop_replay_28d.csv),
-generated by the simulator's own traffic model; see [docs/DATA.md](docs/DATA.md)):
-
-```powershell
-.\.venv\Scripts\python.exe scripts\replay_history.py --from-csv ml/datasets/mojaloop_replay_28d.csv
-```
-
-This is metric history only. Anomalies, incidents, healing actions and forecasts are never
-loaded from a file: they appear as the live services detect and act on what happens.
-
-### Step 5 — Start the dashboard app
-
-The API gateway is already running in Docker from step 3 (host port 8080). Start the
-dashboard's dev server; it proxies `/api` and `/ws` to `http://127.0.0.1:8080`.
-
-```powershell
-# npm install only needed the first time
-cd dashboard
-npm install
-npm run dev
-```
-
-The health grid stays live as long as the stack from step 3 is running: the metrics agent
-writes a sample every 15 seconds. Services are marked **stale** two minutes after their
-last sample. That is correct behaviour — a service that stops reporting must be visible
-as stale, not silently vanish.
-
-### Step 7 — Run the self-healing demo
-
-Three scenarios, each matching a playbook in the problem statement, run unattended
-through the API gateway and end with a scorecard. Set `HEALING_ENABLED=true` in `.env`
-first, or the scorecard shows detection and RCA only.
-
-```powershell
-.\.venv\Scripts\python.exe scripts\chaos_demo.py                       # all three, ~25 min
-.\.venv\Scripts\python.exe scripts\chaos_demo.py --scenario bad_deploy  # just one
-```
-
-| Scenario | Fault | What the platform should do |
-|----------|-------|-----------------------------|
-| `oom` | memory hog on `account-lookup-service` | detect memory pressure, restart it (`restart_on_oom`) |
-| `cascade` | network latency on `central-ledger` | blame the slow dependency, not its callers; restart it and open the callers' circuit breakers (`circuit_break_cascade`) |
-| `bad_deploy` | defective release of `ml-api-adapter` | blame the deployment (CHANGE hypothesis) and roll it back (`rollback_bad_deploy`) |
-
-Before each scenario the script waits until there are no recent anomalies and no open
-incidents. The scorecard gives time to detect, time to RCA (with the named root cause and its
-confidence), time to remediate, and any healing action taken on a service that was *not*
-faulted. That last column should read "none". The script exits non-zero if a scenario was
-not remediated or caused side effects.
-
-Experiments can also be started one at a time from the dashboard's **Chaos** page.
-
-### Step 8 — Verify healing actions
-
-Check that healing actions executed:
-
-```powershell
-# View healing engine logs
-docker logs aiops-healing-engine --tail 50
-
-# Check RCA engine incident creation
-docker logs aiops-rca-engine --tail 30 | Select-String "incident_created"
-
-# Verify playbook execution (look for "Restarted" messages)
-docker logs aiops-healing-engine | Select-String "Restarted|execute_start"
-```
-
-Healing actions execute when:
-- Master switch `HEALING_ENABLED=true` (set in `.env`)
-- Target not in cooldown (default 300s, 120s failure cooldown)
-- Hourly budget not exceeded (max 10 actions per hour)
-- Confidence threshold met (`>= 0.7`)
-- Max attempts per incident not exceeded (max 2 attempts before escalating to `requires_manual_intervention`)
-- Host resource limits respected: $\ge 256\text{ MB}$ free RAM, $\le 85\%$ CPU, and strict **global cap of 20 containers**
-
-Blocked actions are logged with `skipped_*` status codes (`skipped_cooldown`, `skipped_max_attempts`, `skipped_global_limit`, `skipped_insufficient_capacity`) proving the safety rails work.
-
-Every executed remediation performs **post-action recovery verification** against actual telemetry and container health before declaring success.
-
----
-
-## Advanced Self-Healing & Incident Management
-
-### 1. Root-Cause-Based Remediation Selection
-Rather than naively restarting containers on every alert, the healing engine selects playbooks dynamically based on RCA evidence:
-- **Process Failure / OOM Crash**: Executes container restart (`restart_on_oom`).
-- **Traffic Overload**: When incoming TPS exceeds provisioned capacity with rising queue depth and latency, safely scales out by exactly **+1 replica** (`scale_out_preemptive`).
-- **Persistent Queue Backlog**: Executes queue clearing (`clear_queue_backlog`), escalating from container restart to worker scaling if backlogs persist.
-- **Downstream Dependency Failure (cascade)**: RCA blames the deepest failing dependency; `circuit_break_cascade` opens the circuit breakers of every caller of it (they fail fast and stop piling up connections), restarts the root, and lets the breakers half-open and close once it recovers. Victims are never restarted.
-- **Bad Deployment**: Initiates automated rollback to the previous stable version (`rollback_bad_deploy`).
-
-### 2. Multi-Tier Safety Rails & Host Protection
-- **Global Container Limit (20 Containers)**: Enforces a strict ceiling suitable for local development laptops. Scale-out is skipped if total container count reaches 20.
-- **Incident Attempt Limit (Max 2 Attempts)**: If two remediation attempts fail to resolve an incident, automatic remediation halts and marks the action as `requires_manual_intervention`.
-- **Failure Cooldown**: Records a 120-second cooldown on failed actions as well as successful ones to permanently eliminate container restart thrashing.
-- **Capacity & Headroom Checks**: Checks host CPU and memory before scale-out, skipping if capacity is insufficient.
-
-### 3. SLO-Verified Incident Auto-Resolution
-Eliminates the false-positive trap where 15-second background Isolation Forest noise prevents healthy incidents from closing:
-- **Continuous Recovery Window**: Requires at least 120 seconds of continuous telemetry observation.
-- **Objective SLO Compliance**: Verifies that all affected services meet standard healthy SLO thresholds:
-  - Error Ratio: $\le 1.0\%$ (0.01)
-  - P99 Latency: $\le 250\text{ ms}$ (0.25s)
-  - Queue Depth: $\le 5.0$ items
-  - CPU / Memory Utilisation: $\le 85\%$ (0.85)
-- **Benign Anomaly Suppression**: Sub-threshold informational anomalies (`severity = 'info'`, score $< 0.65$) or minor baseline variations do not block resolution when metrics meet SLOs.
-- **Recurring Failure Protection**: Genuine critical anomalies (`score >= 0.85`) on the root-cause service or active SLO violations keep incidents `OPEN`.
-- **Resolution Audit Trail**: Appends a verified resolution summary to the incident record and publishes an update event to the Redis Stream `aiops.incidents`.
-
----
-
-### Step 9 — Open the dashboard
-
-**http://localhost:5173**
-
-| Page | What you should see |
+| Endpoint | URL |
 |---|---|
-| **Overview** | 5 Mojaloop services, all `healthy`, live TPS and error ratios |
-| **Service detail** | Per-service metric history, its anomalies, forecasts and actions |
-| **Anomalies** | Timeline with per-feature attribution and deviation in sigma |
-| **Forecast** | Actual vs predicted traffic with the scaling decision overlaid |
-| **Incidents** | 5 incidents, each with ranked root-cause hypotheses and evidence |
-| **Automation** | Healing actions, including the `skipped_*` ones proving the rails work |
-| **Chaos** | The seeded `cpu_hog` run with its detect/remediate scorecard |
-
-### Ports
-
-| Service | URL | Notes |
-|---|---|---|
-| Dashboard | http://localhost:5173 | Vite dev server, proxies `/api` and `/ws` to :8080 |
-| API gateway | http://localhost:8080 | `/docs` for interactive OpenAPI |
-| Grafana | http://localhost:3000 | Provisioned DPI dashboard, admin/admin |
-| Prometheus | http://localhost:9090 | `/targets` and `/rules` |
-| TimescaleDB | localhost:5432 | user/db `aiops` |
-| Redis | localhost:6379 | event bus |
-| Metrics agent | http://localhost:8020 | Collection and rollup |
-| Anomaly detector | http://localhost:8021 | Isolation Forest scoring |
-| Traffic predictor | http://localhost:8022 | 1h / 6h / 24h forecasts |
-| Simulated services | localhost:8011–8015 | `/sim`, `/metrics`, `/docs` per service |
-
-Simulated service ports: `ml-api-adapter` 8011, `central-ledger` 8012, `quoting-service`
-8013, `account-lookup-service` 8014, `transaction-request-service` 8015.
-
-Change `POSTGRES_HOST_PORT` / `REDIS_HOST_PORT` in `.env` if those clash with something
-you already run.
-
-### Break something on purpose
-
-The simulator accepts fault injection, which is how modules 4, 6 and 9 are developed and
-demonstrated. Every fault **expires automatically** (30-minute hard cap), so nothing can be
-left broken.
-
-```powershell
-# Add 500 ms of latency to central-ledger for 60 seconds
-curl.exe -X POST http://localhost:8012/sim/faults -H "Content-Type: application/json" `
-  -d '{\"kind\":\"network_latency\",\"magnitude\":0.5,\"duration_seconds\":60}'
-
-# Watch the effect
-curl.exe http://localhost:8012/sim
-
-# Clear everything early
-curl.exe -X DELETE http://localhost:8012/sim/faults
-```
-
-| Fault kind | What it simulates |
-|---|---|
-| `network_latency` | Slow downstream dependency |
-| `error_injection` | Failing requests |
-| `memory_hog` | Memory leak — a monotonic climb, not a spike |
-| `cpu_hog` | CPU saturation |
-| `traffic_spike` | Demand surge with a smooth rise and fall |
-| `queue_backlog` | Work piling up |
-| `settlement_delay` | Payments-specific: settlement falling behind |
-| `bad_deploy` | Composite: errors + latency + queue together |
-| `kill_service` | Terminates the process; the container restarts |
-
-Scaling is also live, and it genuinely relieves pressure — capacity is
-`tps_per_replica x replicas`, and every signal derives from `tps / capacity`:
-
-```powershell
-curl.exe -X POST http://localhost:8012/sim/scale -H "Content-Type: application/json" `
-  -d '{\"replicas\":8,\"reason\":\"manual test\"}'
-```
-
-On `central-ledger`, 1 replica gives load 1.26 / p99 56 s / 100% errors; 8 replicas gives
-load 0.16 / p99 0.21 s / 0.2% errors. That is what lets a remediation be *shown* to have
-worked rather than merely logged.
-
-### Verify it end to end
-
-```powershell
-.\.venv\Scripts\python.exe scripts\check_observability.py  # targets, rules, dashboards
-.\.venv\Scripts\python.exe scripts\ws_smoke.py             # Redis -> gateway -> browser socket
-.\.venv\Scripts\python.exe scripts\check_api_contract.py   # UI types vs live API responses
-```
-
-The first proves live fan-out works; every REST endpoint reads from the database, so they
-would all pass even with WebSockets broken. The second catches `types.ts` drifting from the
-Python models, which `tsc` and `pytest` both miss and which renders as an empty card.
-
-### Run the tests
-
-```powershell
-# Run the complete test suite (unit + ML + healing + RCA + integration)
-.\.venv\Scripts\python.exe -m pytest tests -q
-
-# Run targeted test suites
-.\.venv\Scripts\python.exe -m pytest tests\test_rca_engine.py -v          # 13 tests: correlation & SLO auto-resolution
-.\.venv\Scripts\python.exe -m pytest tests\test_healing_engine.py -v      # 30 tests: safety rails, playbooks & scaling
-.\.venv\Scripts\python.exe -m pytest tests\test_end_to_end_healing.py -v  # 16 tests: 16 end-to-end healing scenarios
-
-# Run integration tests against real TimescaleDB and Redis
-$env:AIOPS_RUN_INTEGRATION = '1'
-.\.venv\Scripts\python.exe -m pytest tests -q
-```
-
-### Stop
-
-```powershell
-Ctrl+C in each terminal
-
-.\scripts\stack.ps1 down        # stop containers, keep data
-.\scripts\stack.ps1 reset       # DESTROY data and re-apply the schema
-```
-
-Use `reset` after changing anything in `infra/timescaledb/init/` — those scripts only run
-against an empty volume.
-
-### If something breaks
-
-| Symptom | Fix |
-|---|---|
-| `running scripts is disabled` | `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned` |
-| `error during connect` from docker | Docker Desktop is not running |
-| `port is already allocated` | Change `POSTGRES_HOST_PORT` / `REDIS_HOST_PORT` in `.env` |
-| Healthcheck says tables are missing | `.\scripts\stack.ps1 reset` |
-| Dashboard loads but every panel is empty | API gateway not running, or the stack from step 3 is down |
-| Services all show `stale` | The metrics agent is not running: `.\scripts\stack.ps1 up -Layer all` |
-
-More detail in **[docs/SETUP.md](docs/SETUP.md)** section 10.
-
-### About the data
-
-No public dataset carries Mojaloop service telemetry, so all traffic comes from the
-simulator. The only file-based data is the 28-day training history, committed as a CSV
-with the command that regenerates it. Every anomaly, incident, healing action
-and forecast is produced by the running services. Details: **[docs/DATA.md](docs/DATA.md)**.
+| Dashboard | http://localhost:5173 (Compose) · http://localhost:8081 (Kubernetes) |
+| API gateway | http://localhost:8080 — interactive API docs at `/docs` |
+| Grafana | http://localhost:3000 |
+| Prometheus | http://localhost:9090 |
 
 ---
+
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [Setup](docs/SETUP.md) | Installing prerequisites, running the stack, troubleshooting |
+| [Architecture](docs/ARCHITECTURE.md) | Layers, data flow, storage, event bus, design decisions |
+| [Components](docs/COMPONENTS.md) | Each service: responsibility, inputs and outputs, API |
+| [Configuration](docs/CONFIGURATION.md) | Environment variables and the DPI topology file |
+| [Operations](docs/OPERATIONS.md) | Self-healing, safety rails, chaos experiments, incident lifecycle |
+| [Data](docs/DATA.md) | Where the training data comes from and how it is generated |
+| [Kubernetes](docs/KUBERNETES.md) | Running on kind; Kubernetes-native healing |
+| [VM deployment](docs/DEPLOY_VM.md) | Deploying to a single cloud VM |
+| [Contributing](CONTRIBUTING.md) | Development workflow and conventions |
 
 ## Repository layout
 
 ```
-├── config/                  Topology of the monitored DPI system (services + dependencies)
-├── libs/aiops_common/       Shared foundation: config, logging, schemas, event bus, DB, topology
-├── infra/                   Config for every off-the-shelf component
-│   └── timescaledb/init/    Schema: tables, hypertable, continuous aggregates
-├── services/                One directory per AIOps microservice
-│   └── api_gateway/         REST + WebSocket backing the dashboard
-├── dashboard/               React + TypeScript operations dashboard
-├── ml/                      Training dataset (CSV) and model artifacts
-├── scripts/                 Bootstrap, stack control, healthcheck, seed, verification
-├── tests/                   Unit + integration tests
-├── deploy/                  Kubernetes (kind) manifests and single-VM setup
-└── docs/                    SETUP · ARCHITECTURE · MODULES · DATA · KUBERNETES · DEPLOY_VM
+├── config/        Topology of the monitored DPI system
+├── dashboard/     React + TypeScript operations dashboard
+├── deploy/        Kubernetes manifests (kind) and single-VM setup
+├── docs/          Documentation
+├── infra/         Configuration for Prometheus, Grafana, Loki, Alloy, Tempo, Alertmanager, TimescaleDB
+├── libs/          aiops_common: configuration, schemas, event bus, database, topology
+├── ml/            Training dataset (28-day CSV) and model artifacts
+├── scripts/       Stack control, data replay, verification, chaos scorecard
+├── services/      The AIOps services and the DPI workload simulator
+└── tests/         Unit and integration tests
 ```
 
----
+## Technology
 
-## Module status
+Python 3.11+ (FastAPI, scikit-learn, Pydantic) · TimescaleDB · Redis Streams · Prometheus ·
+Grafana · Loki · Alloy · Tempo · OpenTelemetry · React 18 + TypeScript + Recharts · Docker Compose ·
+Kubernetes
 
-The project is built in independently verifiable modules. Each one ends with a command
-that proves it works.
+## License
 
-| # | Module | Focus | Status |
-|---|--------|-------|--------|
-| 1 | Project foundation — config, logging, schemas, event bus, storage | infra | ✅ done |
-| 2 | Observability plane + Mojaloop simulator | infra | ✅ done |
-| 3 | Metrics collection agent + DPI exporter | infra | ✅ done |
-| 4 | Anomaly detection (Isolation Forest) | ml | ✅ done |
-| 5 | Traffic prediction + pre-emptive scaling | ml | ✅ done |
-| 6 | Self-healing playbook engine | automation | ✅ done |
-| 7 | Root cause analysis engine | ml | ✅ done |
-| 8 | Operations dashboard (React + FastAPI) | frontend | ✅ done |
-| 9 | Chaos engineering demo | automation | ⬜ |
-| 10 | Kubernetes (kind) — manifests, Kubernetes executor, real `rollout undo` | infra | ✅ done — [docs/KUBERNETES.md](docs/KUBERNETES.md) |
-
-Module 8 was built ahead of 2–7 deliberately, against the real schema and event bus. When
-the upstream modules land they write to the same tables and streams, so the dashboard
-needs no changes.
-
-Detail per module — what it owns, what it does *not* own, and how it is verified — is in
-**[docs/MODULES.md](docs/MODULES.md)**.
-
----
-
-## Contributing
-
-Read **[CONTRIBUTING.md](CONTRIBUTING.md)** first. The short version:
-
-1. Claim an open issue labelled `module`.
-2. Branch: `module-N-short-description`.
-3. Build it. Cross module boundaries only through `schemas.py`, `constants.py`, and the
-   database — never by importing another service.
-4. Run the checks, open a PR.
-
-```powershell
-ruff format .; ruff check . --fix; mypy libs services; pytest tests -q
-```
-
-### Team split
-
-| Role | Modules |
-|---|---|
-| Infrastructure & Monitoring | 2, 3, 10 |
-| ML & Automation | 4, 5, 6, 7, 9 |
-
----
-
-## Design decisions worth knowing
-
-- **Automation is off by default.** `HEALING_ENABLED=false`. Every playbook passes five
-  safety rails — master switch, per-target cooldown, hourly budget, minimum confidence, and
-  max attempts — and a blocked action is recorded with a `skipped_*` status. Being able to
-  show the brakes work is what makes auto-remediation defensible.
-- **Strict 20-container host cap.** Automatic scale-out refuses to create containers if the
-  host already runs 20 containers. This guarantees local laptop safety during live demos.
-- **SLO-based incident resolution.** Machine learning anomaly detectors inherently flag
-  harmless statistical variations during normal traffic. To prevent incidents from getting
-  trapped `OPEN` permanently, resolution requires verified compliance with concrete SLO
-  thresholds over a continuous 120-second recovery window rather than zero anomaly records.
-- **Incident severity monotonicity.** When an open incident correlates new anomalies, its
-  severity is preserved or escalated, never downgraded from critical/warning by incoming
-  informational jitter.
-- **One `MetricSample` shape and one topology file.** Only the collection agent knows where
-  a number came from, and only the topology file knows which services exist and who calls
-  whom. Those two boundaries are what make the platform a common one for any DPI system.
-- **Healing waits for the cause.** The healer waits briefly for RCA's incident before acting,
-  ignores stale and sub-threshold anomalies, and claims each target atomically, so one fault
-  produces one action on the right service.
-- **`ANOMALY_FEATURES` is append-only.** Reordering it silently invalidates every trained
-  model.
-- **The platform monitors itself.** Every service exposes `/health`, `/ready` and
-  `/metrics` through one shared factory.
-- **Timezone-aware UTC everywhere**, enforced by lint.
-
----
-
-## Licence
-
-[Apache 2.0](LICENSE) — matching the open DPI ecosystem.
+[Apache 2.0](LICENSE)

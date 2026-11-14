@@ -1,4 +1,4 @@
-# Running on Kubernetes (module 10)
+# Running on Kubernetes
 
 The platform runs on a local **kind** (Kubernetes-in-Docker) cluster with the same images,
 the same configuration files and the same host ports as the Compose stack. The AIOps logic
@@ -11,7 +11,7 @@ does not change. What changes is how the healing playbooks act on the cluster:
 | `rollback_bad_deploy` | Simulated: restarts the containers | **A real `rollout undo`**: the previous ReplicaSet revision's pod template is copied back onto the Deployment |
 | `circuit_break_cascade` | Opens every caller's circuit breaker on the root (simulator HTTP API), then restarts the root | Same breakers, then a rolling restart of the root dependency |
 
-The healing engine no longer mounts the Docker socket. It uses its own ServiceAccount,
+On Kubernetes the healing engine does not mount the Docker socket. It uses its own ServiceAccount,
 bound to a namespaced Role that can only patch Deployments, read ReplicaSets, delete pods
 and patch HPAs in the `aiops` namespace. Remediation can't reach anything outside it.
 
@@ -20,7 +20,7 @@ and patch HPAs in the `aiops` namespace. Remediation can't reach anything outsid
 Everything in [SETUP.md](SETUP.md), plus:
 
 ```powershell
-winget install Kubernetes.kind
+winget install Kubernetes.kind --version 0.26.0   # matches the node image in deploy/k8s/kind-cluster.yaml
 kubectl version --client    # Docker Desktop already ships kubectl
 ```
 
@@ -145,10 +145,11 @@ Code: [k8s_executor.py](../services/healing_engine/healing_engine/k8s_executor.p
 [k8s_chaos.py](../services/api_gateway/api_gateway/k8s_chaos.py), tests in
 [test_k8s_executor.py](../tests/test_k8s_executor.py).
 
-## Not done yet
+## Limitations
 
-- **Real Mojaloop Helm charts.** The simulator still stands in for Mojaloop. The
-  Deployment names match the real Mojaloop charts, so the swap is a values file, not a code change.
+- **Simulated workload.** The simulator stands in for Mojaloop. Its Deployment names match
+  the real Mojaloop Helm charts, so running against real Mojaloop is a values file plus its
+  topology file, not a code change.
 - **kube-state-metrics and cAdvisor** as `metrics-agent` sources, for real restart and OOMKill counts.
 - **HPAs.** kind ships without metrics-server, so no HPA manifests are included. The
   executor already handles an HPA when one owns a Deployment.
