@@ -655,7 +655,9 @@ async def test_callers_of_a_restarted_dependency_are_tagged() -> None:
 
     values = full_values()
     values[RESET_QUERY] = {"central-ledger": 1.0, "quoting-service": 0.0}
-    by_service = {s.service: s for s in (await make_collector(FakePrometheus(values)).collect()).samples}
+    by_service = {
+        s.service: s for s in (await make_collector(FakePrometheus(values)).collect()).samples
+    }
     assert by_service["quoting-service"].labels.get(DEPENDENCY_RESTART_LABEL) == "1"
     assert RESTART_IN_WINDOW_LABEL not in by_service["quoting-service"].labels
     assert DEPENDENCY_RESTART_LABEL not in by_service["central-ledger"].labels

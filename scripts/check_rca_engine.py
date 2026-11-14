@@ -154,7 +154,9 @@ async def check_cascade_detection() -> None:
         await asyncio.sleep(5)
 
         # Resolve any prior open/mitigating incidents so this test starts fresh
-        await db.execute("UPDATE incidents SET status = 'resolved', closed_at = NOW() WHERE status IN ('open', 'mitigating')")
+        await db.execute(
+            "UPDATE incidents SET status = 'resolved', closed_at = NOW() WHERE status IN ('open', 'mitigating')"
+        )
 
         # Inject fault into central-ledger
         fault_start = time.time()
@@ -252,7 +254,9 @@ async def check_change_correlation() -> None:
 
     try:
         # Resolve any prior open/mitigating incidents
-        await db.execute("UPDATE incidents SET status = 'resolved', closed_at = NOW() WHERE status IN ('open', 'mitigating')")
+        await db.execute(
+            "UPDATE incidents SET status = 'resolved', closed_at = NOW() WHERE status IN ('open', 'mitigating')"
+        )
 
         # Insert a fake deployment
         deploy_time = datetime.now(UTC)
@@ -341,7 +345,9 @@ async def check_event_correlation() -> None:
 
     try:
         # Resolve any prior open/mitigating incidents
-        await db.execute("UPDATE incidents SET status = 'resolved', closed_at = NOW() WHERE status IN ('open', 'mitigating')")
+        await db.execute(
+            "UPDATE incidents SET status = 'resolved', closed_at = NOW() WHERE status IN ('open', 'mitigating')"
+        )
 
         # Insert a chaos run
         chaos_time = datetime.now(UTC)

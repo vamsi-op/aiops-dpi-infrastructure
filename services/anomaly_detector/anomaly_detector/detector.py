@@ -147,7 +147,6 @@ class DetectorMetrics:
         )
 
 
-
 # Window-rate signals; distorted for a rate window after a counter reset.
 RATE_FEATURES = ("tps", "error_ratio", "latency_p50_seconds", "latency_p99_seconds")
 
@@ -165,6 +164,7 @@ def neutralise_rates(sample: MetricSample, model: Any) -> MetricSample:
         value = max(0.0, float(stats.mean))
         update[key] = min(value, 1.0) if feature == "error_ratio" else value
     return sample.model_copy(update=update)
+
 
 class AnomalyDetector:
     """Stream consumer: metric events in, anomaly events out."""

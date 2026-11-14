@@ -656,7 +656,10 @@ def test_scorer_passes_the_sample_hour_to_a_seasonal_model() -> None:
         update={"timestamp": datetime(2026, 9, 3, TROUGH_HOUR, 30, tzinfo=UTC)}
     )
     scorer = Scorer(THRESHOLD)
-    assert scorer.score(at_peak, seasonal).forest_score < scorer.score(at_trough, seasonal).forest_score
+    assert (
+        scorer.score(at_peak, seasonal).forest_score
+        < scorer.score(at_trough, seasonal).forest_score
+    )
 
 
 def test_seasonal_flag_survives_disk_and_old_artifacts_stay_raw(tmp_path: Path) -> None:
@@ -790,14 +793,18 @@ def test_single_unusual_sample_is_held_until_it_persists() -> None:
     assert detector._passes_persistence(SERVICE, False, 0.1) is False  # back to normal resets
     assert detector._passes_persistence(SERVICE, True, 0.7) is False
     # Severe anomalies with one extreme signal are not delayed.
-    assert detector._passes_persistence(
-        "quoting-service", True, IMMEDIATE_SCORE, peak_sigma=IMMEDIATE_SIGMA
-    ) is True
+    assert (
+        detector._passes_persistence(
+            "quoting-service", True, IMMEDIATE_SCORE, peak_sigma=IMMEDIATE_SIGMA
+        )
+        is True
+    )
     # A high score built from several ~2 sigma signals still has to persist (observed: a
     # 0.959 "queue_backlog" with queue depth 0 restarted a healthy service).
-    assert detector._passes_persistence(
-        "account-lookup-service", True, 0.959, peak_sigma=2.1
-    ) is False
+    assert (
+        detector._passes_persistence("account-lookup-service", True, 0.959, peak_sigma=2.1)
+        is False
+    )
 
 
 def test_better_than_normal_is_not_an_anomaly() -> None:
@@ -833,7 +840,9 @@ def test_better_than_normal_is_not_an_anomaly() -> None:
     assert model.inputs(fast, 12, 2)[ANOMALY_FEATURES.index("latency_p99_seconds")] == 0.0
 
 
-@pytest.mark.parametrize("label", ["restart_in_rate_window", "dependency_restart_in_rate_window"])
+@pytest.mark.parametrize(
+    "label", ["restart_in_rate_window", "dependency_restart_in_rate_window"]
+)
 async def test_restart_window_samples_are_scored_on_gauges_only(label: str) -> None:
     """Rates are distorted after a (dependency) restart, gauges are not.
 
@@ -858,7 +867,9 @@ async def test_restart_window_samples_are_scored_on_gauges_only(label: str) -> N
     assert Scorer(THRESHOLD).score(calmed, model).anomaly is None
 
     # ...but a broken release shows in its gauges, and is scored and caught.
-    broken = sample(error_ratio=0.05, queue_depth=60.0).model_copy(update={"labels": {label: "1"}})
+    broken = sample(error_ratio=0.05, queue_depth=60.0).model_copy(
+        update={"labels": {label: "1"}}
+    )
     result = Scorer(THRESHOLD).score(neutralise_rates(broken, model), model)
     assert result.anomaly is not None
     assert "queue_depth" in result.anomaly.contributing_features

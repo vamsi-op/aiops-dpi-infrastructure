@@ -80,7 +80,9 @@ class MetricSample(AiopsModel):
     timestamp: datetime = Field(default_factory=utc_now)
     service: str = Field(description="Monitored DPI service, e.g. `central-ledger`")
     instance: str = Field(default="unknown", description="Pod / container identifier")
-    platform: str = Field(default="mojaloop", description="Label of the monitored DPI system (AIOPS_DPI_PLATFORM)")
+    platform: str = Field(
+        default="mojaloop", description="Label of the monitored DPI system (AIOPS_DPI_PLATFORM)"
+    )
 
     # Traffic
     tps: float = Field(default=0.0, ge=0, description="Transactions per second")

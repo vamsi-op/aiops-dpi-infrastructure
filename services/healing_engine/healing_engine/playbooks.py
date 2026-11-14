@@ -375,7 +375,8 @@ class PlaybookExecutor:
         callers = get_topology().callers_of(service)
         log.info("playbook.circuit_break_cascade", service=service, callers=callers)
 
-        opened, failed = [], []
+        opened: list[str] = []
+        failed: list[str] = []
         async with self._http() as client:
             for caller in callers:
                 url = f"{service_url(caller)}/sim/circuits/{service}"
@@ -398,7 +399,10 @@ class PlaybookExecutor:
         else:
             # The root was remediated moments ago; restarting it again only adds a cold
             # start. The breakers are the action that is still missing.
-            restarted, restart_msg = False, f"{service} was remediated recently; not restarted again"
+            restarted, restart_msg = (
+                False,
+                f"{service} was remediated recently; not restarted again",
+            )
         parts = [
             f"Opened circuit breaker on {service} at {len(opened)}/{len(callers)} caller(s)"
             + (f": {', '.join(opened)}" if opened else ""),

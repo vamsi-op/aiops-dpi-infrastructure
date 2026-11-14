@@ -94,7 +94,9 @@ async def test_trace_evidence_confirms_the_root_and_raises_confidence() -> None:
         ),
     )
     base = next(
-        h for h in await plain.correlate_all(_cascade()) if h.category == RootCauseCategory.SERVICE
+        h
+        for h in await plain.correlate_all(_cascade())
+        if h.category == RootCauseCategory.SERVICE
     )
     confirmed = next(
         h
@@ -169,7 +171,10 @@ async def test_merge_keeps_the_stronger_diagnosis() -> None:
         category=RootCauseCategory.CHANGE, target="dep_1", confidence=0.94, summary="deploy"
     )
     weaker = RootCauseHypothesis(
-        category=RootCauseCategory.SERVICE, target="ml-api-adapter", confidence=0.90, summary="x"
+        category=RootCauseCategory.SERVICE,
+        target="ml-api-adapter",
+        confidence=0.90,
+        summary="x",
     )
     db = _MagicMock()
     db.fetch_one = _AsyncMock(

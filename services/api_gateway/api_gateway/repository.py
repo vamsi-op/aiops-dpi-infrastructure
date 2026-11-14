@@ -78,7 +78,6 @@ def _num(value: Any, fallback: float = 0.0) -> float:
         return fallback
 
 
-
 def _fill_buckets(
     found: dict[Any, dict[str, Any]], *, hours: int, bucket_minutes: int
 ) -> list[dict[str, Any]]:
@@ -105,6 +104,7 @@ def _fill_buckets(
             }
         )
     return filled
+
 
 class DashboardRepository:
     """Read-only queries backing the operations dashboard."""

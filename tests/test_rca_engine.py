@@ -90,7 +90,9 @@ async def test_topological_cascade_detection() -> None:
     assert hypothesis.category == RootCauseCategory.SERVICE
     # central-ledger is called by the other two: it is the root, they are victims.
     assert hypothesis.target == "central-ledger"
-    assert "quoting-service" in hypothesis.summary or any("quoting-service" in e for e in hypothesis.evidence)
+    assert "quoting-service" in hypothesis.summary or any(
+        "quoting-service" in e for e in hypothesis.evidence
+    )
     assert hypothesis.confidence >= 0.70
 
 
@@ -648,7 +650,9 @@ async def test_auto_resolve_succeeds_with_healthy_metrics_and_verified_healing()
 
 
 @pytest.mark.asyncio
-async def test_deployment_of_sole_affected_service_outranks_generic_service_hypothesis() -> None:
+async def test_deployment_of_sole_affected_service_outranks_generic_service_hypothesis() -> (
+    None
+):
     """A late-detected bad deploy must still be blamed on the change, not the service.
 
     Detected 102 s after the deployment, the decayed change confidence (0.83) used to lose
@@ -721,7 +725,11 @@ async def test_auto_resolve_ignores_declined_actions_after_a_successful_one() ->
     actions = [
         {"action_id": "a1", "incident_id": "inc_capped", "status": ActionStatus.SUCCEEDED},
         *(
-            {"action_id": f"s{i}", "incident_id": "inc_capped", "status": "skipped_max_attempts"}
+            {
+                "action_id": f"s{i}",
+                "incident_id": "inc_capped",
+                "status": "skipped_max_attempts",
+            }
             for i in range(5)
         ),
     ]

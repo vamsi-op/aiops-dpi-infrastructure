@@ -31,6 +31,7 @@ def transitive_dependencies(services: list[str] | set[str]) -> set[str]:
     """Every service the given services call, directly or indirectly."""
     return get_topology().transitive_dependencies(set(services))
 
+
 # Auto-resolve / continuous recovery window (2 minutes)
 AUTO_RESOLVE_AFTER_SECONDS = 120
 
@@ -93,7 +94,9 @@ class IncidentManager:
             find_query,
             {
                 "platform": self.settings.dpi_platform,
-                "services": sorted(set(affected_services) | transitive_dependencies(affected_services)),
+                "services": sorted(
+                    set(affected_services) | transitive_dependencies(affected_services)
+                ),
             },
         )
 
@@ -116,7 +119,9 @@ class IncidentManager:
                 except Exception:  # noqa: BLE001
                     existing_hypo_raw = []
 
-            existing_hypotheses = [RootCauseHypothesis.model_validate(h) for h in existing_hypo_raw]
+            existing_hypotheses = [
+                RootCauseHypothesis.model_validate(h) for h in existing_hypo_raw
+            ]
             # Victims joining a cascade: the root is downstream, already in the incident, and
             # its hypotheses stay. Hypotheses computed from the victims' anomalies alone would
             # name a victim as the root.

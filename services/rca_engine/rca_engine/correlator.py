@@ -146,7 +146,9 @@ class Correlator:
             root_services = {most_severe.service}
 
         # Several independent roots: the one that went wrong first.
-        first_seen = {s: min(a.detected_at for a in anomalies if a.service == s) for s in root_services}
+        first_seen = {
+            s: min(a.detected_at for a in anomalies if a.service == s) for s in root_services
+        }
         root_service = min(root_services, key=lambda s: (first_seen[s], s))
 
         # Affected services that (transitively) call the root: the blast radius.
@@ -158,7 +160,9 @@ class Correlator:
 
         evidence = [f"{root_service} is the deepest affected dependency"]
         if downstream_affected:
-            evidence.append(f"Cascade detected to its callers: {', '.join(downstream_affected)}")
+            evidence.append(
+                f"Cascade detected to its callers: {', '.join(downstream_affected)}"
+            )
         evidence.append(f"Total affected services: {len(affected_services)}")
 
         # Higher confidence with more downstream impact
@@ -391,7 +395,8 @@ class Correlator:
         # restarted instead of rolled back.
         affected = {a.service for a in anomalies}
         generic = [
-            h for h in hypotheses
+            h
+            for h in hypotheses
             if h.category == RootCauseCategory.SERVICE and h.target in affected
         ]
         if generic:
