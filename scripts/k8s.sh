@@ -235,8 +235,10 @@ case "$cmd" in
     info "Loading the archived 28-day training set (docs/DATA.md) into TimescaleDB"
     .venv/bin/python scripts/replay_history.py --from-csv ml/datasets/mojaloop_replay_28d.csv
     info "Retraining the anomaly detector on the loaded history"
-    curl -fsS -X POST http://127.0.0.1:8021/train >/dev/null && echo "    anomaly-detector: trained"
-    ok "History loaded. Forecasts refresh on the traffic predictor's next cycle (<= 10 min)."
+    # /train takes a JSON body (days defaults to 28); without one it answers 422.
+    curl -fsS -X POST -H 'Content-Type: application/json' -d '{}'       http://127.0.0.1:8021/train >/dev/null && echo "    anomaly-detector: trained"
+    curl -fsS -X POST http://127.0.0.1:8022/run >/dev/null && echo "    traffic-predictor: forecasts refreshed"
+    ok "History loaded, models trained, forecasts published."
     ;;
   credentials)
     print_credentials

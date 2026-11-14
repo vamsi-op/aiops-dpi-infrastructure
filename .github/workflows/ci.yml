@@ -139,10 +139,10 @@ jobs:
           PYTHONPATH: services/api_gateway
         run: |
           nohup python -m uvicorn api_gateway.asgi:app \
-            --host 127.0.0.1 --port 8000 --log-level warning > gateway.log 2>&1 &
+            --host 127.0.0.1 --port 8080 --log-level warning > gateway.log 2>&1 &
           echo $! > gateway.pid
           for attempt in $(seq 1 30); do
-            if curl -sf http://127.0.0.1:8000/ready > /dev/null; then
+            if curl -sf http://127.0.0.1:8080/ready > /dev/null; then
               echo "gateway ready after ${attempt}s"
               exit 0
             fi
