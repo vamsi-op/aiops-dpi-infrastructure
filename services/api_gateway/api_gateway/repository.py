@@ -20,6 +20,7 @@ infer a type from, so it raises `IndeterminateDatatypeError`.
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -76,6 +77,34 @@ def _num(value: Any, fallback: float = 0.0) -> float:
     except (TypeError, ValueError):
         return fallback
 
+
+
+def _fill_buckets(
+    found: dict[Any, dict[str, Any]], *, hours: int, bucket_minutes: int
+) -> list[dict[str, Any]]:
+    """Every `bucket_minutes` bucket of the last `hours`, zero-filled where nothing happened.
+
+    Buckets align to the epoch, as TimescaleDB's time_bucket does for minute widths.
+    """
+    size = bucket_minutes * 60
+    now = datetime.now(UTC)
+    first = int((now - timedelta(hours=hours)).timestamp()) // size * size
+    last = int(now.timestamp()) // size * size
+    filled = []
+    for start in range(first, last + 1, size):
+        bucket = datetime.fromtimestamp(start, UTC)
+        filled.append(
+            found.get(bucket)
+            or {
+                "bucket": bucket,
+                "total": 0,
+                "critical": 0,
+                "warning": 0,
+                "info": 0,
+                "max_score": 0.0,
+            }
+        )
+    return filled
 
 class DashboardRepository:
     """Read-only queries backing the operations dashboard."""
@@ -286,9 +315,20 @@ class DashboardRepository:
         return self._clean_anomaly(row) if row else None
 
     async def anomaly_timeline(
-        self, *, hours: int = 24, bucket_minutes: int = 15
+        self,
+        *,
+        hours: int = 24,
+        bucket_minutes: int = 15,
+        service: str | None = None,
+        min_score: float = 0.0,
     ) -> list[dict[str, Any]]:
-        """Anomaly counts by severity over time, for the timeline chart."""
+        """Anomaly counts by severity over time, for the timeline chart.
+
+        Every bucket in the window is returned, empty ones included: with only the non-empty
+        buckets a quiet night vanished from a categorical axis and 01:00 sat next to 08:30.
+        Takes the same filters as the anomaly list, so the page's totals can come from here
+        rather than from the list, which is capped.
+        """
         rows = await self._db.fetch_all(
             f"""
             SELECT
@@ -300,16 +340,25 @@ class DashboardRepository:
                 max(score)                                            AS max_score
             FROM {TABLE_ANOMALIES}
             WHERE detected_at > now() - make_interval(hours => :hours)
+              AND (CAST(:service AS text) IS NULL OR service = :service)
+              AND score >= :min_score
             GROUP BY bucket
             ORDER BY bucket
             """,
-            {"hours": hours, "bucket_minutes": bucket_minutes},
+            {
+                "hours": hours,
+                "bucket_minutes": bucket_minutes,
+                "service": service,
+                "min_score": min_score,
+            },
         )
+        found = {}
         for row in rows:
             for key in ("total", "critical", "warning", "info"):
                 row[key] = int(row.get(key) or 0)
             row["max_score"] = _num(row.get("max_score"))
-        return rows
+            found[row["bucket"]] = row
+        return _fill_buckets(found, hours=hours, bucket_minutes=bucket_minutes)
 
     @staticmethod
     def _clean_anomaly(row: dict[str, Any]) -> dict[str, Any]:
@@ -735,8 +784,14 @@ class DashboardRepository:
                 (SELECT count(*) FROM {TABLE_ANOMALIES}
                     WHERE detected_at > now() - interval '24 hours'
                       AND severity = 'critical')                          AS critical_anomalies_24h,
+                -- Actions that ran. Safety-rail skips are counted separately: mixed in,
+                -- they read as "1163 remediations" when 43 had executed.
                 (SELECT count(*) FROM {TABLE_ACTIONS}
-                    WHERE created_at > now() - interval '24 hours')        AS actions_24h,
+                    WHERE created_at > now() - interval '24 hours'
+                      AND status IN ('succeeded', 'failed', 'running'))  AS actions_24h,
+                (SELECT count(*) FROM {TABLE_ACTIONS}
+                    WHERE created_at > now() - interval '24 hours'
+                      AND status LIKE 'skipped%')                         AS actions_blocked_24h,
                 (SELECT count(*) FROM {TABLE_ACTIONS}
                     WHERE created_at > now() - interval '24 hours'
                       AND status = 'succeeded')                           AS actions_succeeded_24h,

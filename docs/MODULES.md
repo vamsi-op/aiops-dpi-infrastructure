@@ -277,8 +277,6 @@ service is the bridge: PromQL in, `service_metrics` rows and `aiops.metrics` eve
 
 ```powershell
 .\scripts\stack.ps1 up -Layer all
-# The seeder and the agent must not both feed the same window - see below.
-.\.venv\Scripts\python.exe scripts\seed_demo_data.py --clear
 # History for modules 4 and 5. Takes a few minutes; the agent owns the last hour.
 .\.venv\Scripts\python.exe scripts\replay_history.py --days 28
 .\.venv\Scripts\python.exe scripts\check_metrics_agent.py
@@ -341,9 +339,9 @@ written for it — `seasonal_multiplier` is a pure function of time, and its doc
 
 Two alternatives were rejected:
 
-- **`seed_demo_data.py`** has its own independent `random`-based generator — it does not import
-  `TrafficModel`. A model trained on it learns a distribution the live system never produces,
-  and the resulting misbehaviour looks like a detector bug rather than a data mismatch.
+- **An independent `random`-based generator** (the removed `seed_demo_data.py` was one) does
+  not import `TrafficModel`. A model trained on it learns a distribution the live system never
+  produces, and the resulting misbehaviour looks like a detector bug rather than a data mismatch.
 - **Public AIOps datasets** (GAIA, SMD, LO2) cannot fit `ANOMALY_FEATURES`. None carry
   `settlement_lag_seconds`, the payments-specific signal this platform is built around, and
   `StandardScaler` fitted to another system's magnitudes makes every one of our normal samples
@@ -370,11 +368,11 @@ Replay is deliberately **fault-free**. `ANOMALY_CONTAMINATION` is 0.02, so an Is
 wants a mostly-normal baseline; the anomalies should come from real fault injection at demo
 time, not be pre-baked into the training set.
 
-### Do not run the seeder and the agent together
+### Only one producer per time window
 
-`scripts/seed_demo_data.py` is the stand-in this module replaces. Both write
-`service_metrics`, and the dashboard sums `tps` across a service's instances within a
-120-second grace window — so seeded rows (`seed-<service>-0`) alongside agent rows inflate
+Any second producer writing `service_metrics` in the live window - historically the removed
+`seed_demo_data.py` - inflates the dashboard: it sums `tps` across a service's instances within a
+120-second grace window, so foreign rows (`seed-<service>-0`) alongside agent rows inflate
 reported traffic with **no error anywhere to explain it**. The agent checks for this once at
 start-up and reports it on `/status` as `conflicting_producers`; the verification script
 fails on it outright.
@@ -668,7 +666,7 @@ anomaly kinds and root cause hypotheses to Docker operations.
 
 **Six Playbooks:**
 - **restart_on_oom**: Memory/CPU pressure, error bursts, latency spikes, multivariate → container restart
-- **circuit_break_cascade**: Service cascades (topological RCA hypothesis) → restart root service
+- **circuit_break_cascade**: Service cascades (topological RCA hypothesis) → open every caller's circuit breaker on the root (`POST /sim/circuits/{root}`), restart the root unless it is in cooldown; breakers half-open and close on recovery
 - **rollback_bad_deploy**: Change root cause hypothesis → rollback to previous version
 - **scale_out_preemptive**: Traffic surge → increment replicas by 1
 - **scale_in_idle**: Traffic drop → decrement replicas (min 1)
@@ -713,6 +711,38 @@ Invoke-RestMethod http://localhost:8024/actions/<action_id>
 - ✅ Idempotency: Duplicate anomalies do not trigger duplicate actions (tracked in engine)
 - ✅ Failure handling: Failed playbooks record 'failed' status with descriptive message
 - ✅ All actions persisted: Including skipped ones, for full audit trail
+
+### Hardening from live chaos runs
+
+Each item below was a failure observed while running chaos scenarios against the live stack
+with healing enabled, and each has a regression test.
+
+| Observed | Fix |
+|----------|-----|
+| A backlog of old anomalies on restart triggered a restart storm | Anomalies older than `HEALING_MAX_EVENT_AGE_SECONDS` (120 s) are ignored; sub-threshold (non-actionable) ones never act |
+| The healer acted before RCA had named a cause, restarting victims of a cascade | It waits up to 15 s for the RCA incident and also checks incidents open on the anomaly's dependencies |
+| Cascade victims were restarted; breakers were blocked by the root's restart cooldown | The cascade playbook targets the RCA root and opens breakers on its callers under a separate safety key (`<root>:breakers`) |
+| Two engines raced to act on one target; the hourly budget counter leaked | Cooldown is claimed atomically (`SET NX`); the budget probe is always rolled back |
+| Recovery judged on samples taken before or during the restart | The post-action snapshot starts when the action *finishes*; rate signals still inside the 5-minute window after a restart are deferred to SLO auto-resolution |
+| A bad deploy detected 102 s late was restarted instead of rolled back | A deployment of an affected service always outranks the generic "this service is unhealthy" hypothesis |
+| A successful rollback was marked failed on the old process's last gauge (queue 60), still served by Prometheus while the container restarted | A failed first verification is re-checked twice, 20 s apart, on the newest samples only |
+| The attempt cap logged 37 identical `skipped_max_attempts` rows for one incident, and those rows kept the recovered incident open | The escalation is recorded once per incident; auto-resolve judges the latest action that actually ran |
+| RCA "explained" every chaos demo by reading the chaos-run table (0.99) | A running experiment is listed as context (0.6), below the diagnosis RCA makes from telemetry |
+
+## Hardening of detection (module 4), from the same runs
+
+- **Persistence.** An anomaly is emitted only after two consecutive anomalous samples, unless
+  the score is ≥ 0.95 *and* one signal is ≥ 4σ.
+- **Evidence gate.** Load gauges alone (CPU, connections, traffic) must move ≥ 3σ; otherwise
+  a user-facing symptom (errors, latency, queue, memory, settlement) must be implicated. The
+  forest had scored CPU 0.40 / 50 connections at 0.96 and restarted healthy services.
+- **Restart windows.** Samples whose 5-minute rate window spans a restart (`resets()`) are
+  tagged by the metrics agent and not scored, so a remediation is not flagged for its own
+  traffic dip.
+- **Dependency restarts.** The same applies to callers of a restarted service (per the
+  topology): their error and p99 windows still hold the calls that failed during the restart.
+  Those samples are not scored, and SLO auto-resolve ignores their rate signals. Before this,
+  every remediation restart produced five minutes of caller alarms.
 
 ---
 
@@ -787,7 +817,6 @@ complete pipeline.
 | `services/api_gateway/Dockerfile` | Containerized gateway deployed via docker-compose.aiops.yml on port 8080 |
 | `dashboard/` | React 18 + TypeScript + Vite. 7 pages: Overview, Service detail, Anomalies, Forecast, Incidents, Automation, Chaos |
 | `dashboard/vite.config.ts` | Dev server proxy to gateway (port 8080), eliminating CORS in development |
-| `scripts/seed_demo_data.py` | A week of Mojaloop telemetry with daily/weekly rhythm, plus 5 scripted failure scenarios (memory leak, bad deploy, traffic surge, cascade, chaos run) |
 | `scripts/ws_smoke.py` | Proves the live path: publishes to Redis, asserts it arrives at the WebSocket |
 | `scripts/check_api_contract.py` | Parses `types.ts` and checks all 20 interfaces against live API responses |
 | `tests/test_gateway.py` | 25 tests over health rules, repository shaping and route behaviour |
@@ -845,18 +874,24 @@ pass even with WebSocket fan-out completely broken. Both blind spots are now cov
 - Scorecard: time-to-detect, time-to-RCA, time-to-remediate, per experiment
 - A written demo runbook
 
-**Verify**: `.\scripts\demo.ps1` runs a scenario start to finish and prints the scorecard.
+**Verify**: `python scripts\chaos_demo.py` runs the scenarios start to finish and prints the scorecard.
 
 ---
 
-## Module 10 — Kubernetes migration ⬜ (stretch)
+## Module 10 — Kubernetes (kind) ✅
 
-- `kind` cluster definition
-- Kubernetes manifests / Helm chart for the whole platform
-- `metrics-agent` reads `kube-state-metrics` and cAdvisor
-- Healing playbooks act through the Kubernetes API: pod deletion, HPA patching,
-  `rollout undo`
-- Real Mojaloop Helm deployment replaces the simulator
+- ✅ `kind` cluster definition: `deploy/k8s/kind-cluster.yaml`
+- ✅ Kustomize manifests for the whole platform: `deploy/k8s/` (data, observability,
+  Mojaloop workload, AIOps services, RBAC)
+- ✅ Prometheus uses Kubernetes service discovery, and Alloy tails pod logs through the API
+- ✅ Healing playbooks act through the Kubernetes API (`k8s_executor.py`): pod deletion,
+  rolling restart, Deployment scaling with HPA floor patching, real `rollout undo`
+- ✅ `bad_deploy` chaos rolls out a genuinely defective ReplicaSet revision
+- ⬜ `metrics-agent` reads `kube-state-metrics` and cAdvisor
+- ⬜ Real Mojaloop Helm deployment replaces the simulator
+
+**Verify**: `pytest tests/test_k8s_executor.py`, then `.\scripts\k8s.ps1 up` and the
+bad-deploy demo in [KUBERNETES.md](KUBERNETES.md).
 
 ---
 

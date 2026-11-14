@@ -49,11 +49,16 @@ export function AnomaliesPage({ onSelectIncident }: { onSelectIncident: (id: str
     },
   );
 
-  const timeline = useApi(() => api.anomalyTimeline(chosen.hours, chosen.bucket), {
+  // Same filters as the list. The page's totals come from here: the list is capped at 300
+  // rows, and counting it showed "300 anomalies" for a day that had over a thousand.
+  const timeline = useApi(
+    () => api.anomalyTimeline(chosen.hours, chosen.bucket, { service: serviceFilter || undefined, min_score: minScore }),
+    {
     intervalMs: 30_000,
-    deps: [chosen.hours],
+    deps: [chosen.hours, serviceFilter, minScore],
     refreshKey: live.counters.anomaly,
-  });
+    },
+  );
 
   const services = useMemo(() => {
     const names = new Set((anomalies.data ?? []).map((row) => row.service));
@@ -67,10 +72,13 @@ export function AnomaliesPage({ onSelectIncident }: { onSelectIncident: (id: str
 
   const stats = useMemo(() => {
     const rows = anomalies.data ?? [];
+    const buckets = timeline.data ?? [];
+    const sum = (key: 'total' | 'critical' | 'info') => buckets.reduce((acc, bucket) => acc + bucket[key], 0);
     return {
-      total: rows.length,
-      critical: rows.filter((row) => row.severity === 'critical').length,
-      actionable: rows.filter((row) => row.score >= row.threshold).length,
+      total: sum('total'),
+      critical: sum('critical'),
+      // Severity "info" is exactly "below the alerting threshold" (see classify._severity).
+      actionable: sum('total') - sum('info'),
       topService:
         rows.length > 0
           ? [...rows.reduce((counts, row) => counts.set(row.service, (counts.get(row.service) ?? 0) + 1), new Map<string, number>())].sort(
@@ -78,7 +86,7 @@ export function AnomaliesPage({ onSelectIncident }: { onSelectIncident: (id: str
             )[0]?.[0] ?? '—'
           : '—',
     };
-  }, [anomalies.data]);
+  }, [anomalies.data, timeline.data]);
 
   return (
     <div className="stack">
@@ -119,12 +127,12 @@ export function AnomaliesPage({ onSelectIncident }: { onSelectIncident: (id: str
         <Kpi label="Anomalies in window" value={String(stats.total)} />
         <Kpi label="Critical" value={String(stats.critical)} tone={stats.critical > 0 ? 'crit' : 'ok'} />
         <Kpi label="Above threshold" value={String(stats.actionable)} foot="escalated to root cause analysis" />
-        <Kpi label="Most affected" value={stats.topService} />
+        <Kpi label="Most affected" value={stats.topService} foot="among the latest 300" />
       </div>
 
       <Card title="Detection timeline" hint="anomaly counts by severity">
-        <Async state={timeline} emptyWhen={(rows) => rows.length === 0} emptyMessage="No anomalies in this window.">
-          {(rows) => <SeverityTimeline data={rows} />}
+        <Async state={timeline} emptyWhen={(rows) => rows.every((row) => row.total === 0)} emptyMessage="No anomalies in this window.">
+          {(rows) => <SeverityTimeline data={rows} withDate={chosen.hours > 24} />}
         </Async>
       </Card>
 

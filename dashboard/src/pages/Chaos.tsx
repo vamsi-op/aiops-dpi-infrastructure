@@ -182,7 +182,7 @@ export function ChaosPage({ onSelectIncident }: { onSelectIncident: (id: string)
       </Card>
 
       <Card title="Experiment history" hint="the scorecard">
-        <Async state={runs} emptyWhen={(rows) => rows.length === 0} emptyMessage="No experiments recorded. The chaos agent (module 9) is not running yet.">
+        <Async state={runs} emptyWhen={(rows) => rows.length === 0} emptyMessage="No experiments run yet. Start one above.">
           {(rows) => (
             <div className="table-wrap">
               <table>

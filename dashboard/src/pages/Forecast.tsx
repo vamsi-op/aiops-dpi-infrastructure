@@ -16,6 +16,9 @@ import { Async, Badge, Card, Empty, Kpi, Notice } from '../components/primitives
 import { formatDateTime, formatNumber, formatRelative } from '../lib/format';
 import { scalingLabel } from '../lib/status';
 
+// History buckets further apart than this are a gap in collection, drawn as a break.
+const HISTORY_GAP_MS = 5 * 60 * 1000;
+
 export function ForecastPage() {
   const live = useLive();
   const [horizon, setHorizon] = useState(6);
@@ -36,25 +39,45 @@ export function ForecastPage() {
 
   const chartData = useMemo(() => {
     const prediction = (predictions.data ?? []).find((row) => row.service === activeService);
-    if (!prediction) return { rows: [], nowX: undefined as string | undefined };
+    if (!prediction) return { rows: [], nowX: undefined as number | undefined };
 
-    // Merge on the timestamp axis: past rows carry `actual`, future rows carry the
-    // forecast and its bounds. Recharts renders the gap correctly with connectNulls.
-    const rows: Record<string, unknown>[] = (history.data?.metrics ?? []).map((point) => ({
-      timestamp: point.bucket,
-      actual: point.tps,
-    }));
+    // Merge on a numeric time axis (epoch ms): past rows carry `actual`, future rows carry
+    // the forecast and its bounds. A categorical axis of timestamp strings spaced 15-second
+    // samples and hourly forecast points equally and collapsed gaps, so 11:30 sat next to
+    // 15:20 and five hours of forecast took the same width as a minute of history.
+    const rows: Record<string, unknown>[] = [];
+    let previous: number | null = null;
+    for (const point of history.data?.metrics ?? []) {
+      const t = Date.parse(point.bucket);
+      // A null row breaks the line where no samples exist (the stack was down), rather
+      // than drawing a smooth curve through hours of missing data.
+      if (previous !== null && t - previous > HISTORY_GAP_MS) rows.push({ t: previous + 1, actual: null });
+      rows.push({ t, actual: point.tps });
+      previous = t;
+    }
 
-    const nowX = rows.at(-1)?.timestamp as string | undefined;
+    const nowX = Date.now();
 
+    const historyEnd = previous;
     for (const point of prediction.points) {
-      rows.push({
-        timestamp: point.timestamp,
+      const t = Date.parse(point.timestamp);
+      const forecast = {
         predicted_tps: point.predicted_tps,
         lower_bound: point.lower_bound,
         upper_bound: point.upper_bound,
-      });
+      };
+      // A forecast point inside the history range (the current hour's bucket) joins the
+      // nearest history row: its own row would have no `actual` and break the line there.
+      if (historyEnd !== null && t <= historyEnd && rows.length > 0) {
+        const nearest = rows.reduce((best, row) =>
+          Math.abs((row.t as number) - t) < Math.abs((best.t as number) - t) ? row : best,
+        );
+        Object.assign(nearest, forecast);
+      } else {
+        rows.push({ t, ...forecast });
+      }
     }
+    rows.sort((a, b) => (a.t as number) - (b.t as number));
 
     return { rows, nowX };
   }, [predictions.data, history.data, activeService]);
@@ -62,7 +85,8 @@ export function ForecastPage() {
   const scaleOutCount = (predictions.data ?? []).filter((row) => row.scaling_action === 'scale_out').length;
   const scaleInCount = (predictions.data ?? []).filter((row) => row.scaling_action === 'scale_in').length;
   const worstMape = (predictions.data ?? []).reduce<number | null>(
-    (worst, row) => (row.backtest_mape === null ? worst : Math.max(worst ?? 0, row.backtest_mape)),
+    // backtest_mape is a fraction (0.014 = 1.4%); shown as a percentage.
+    (worst, row) => (row.backtest_mape === null ? worst : Math.max(worst ?? 0, row.backtest_mape * 100)),
     null,
   );
 
@@ -113,7 +137,7 @@ export function ForecastPage() {
         title={activeService ? `Actual vs forecast · ${activeService}` : 'Actual vs forecast'}
         hint="solid green is measured traffic, dashed violet is the forecast with its confidence band"
       >
-        <Async state={predictions} emptyWhen={(rows) => rows.length === 0} emptyMessage="No forecasts yet. The traffic predictor (module 5) is not running.">
+        <Async state={predictions} emptyWhen={(rows) => rows.length === 0} emptyMessage="No forecasts yet. The traffic predictor publishes one every 10 minutes.">
           {() =>
             chartData.rows.length === 0 ? (
               <Empty>No data for this service.</Empty>
@@ -172,7 +196,7 @@ export function ForecastPage() {
                           )}
                         </td>
                         <td className="num">
-                          {prediction.backtest_mape === null ? '—' : `${formatNumber(prediction.backtest_mape, 1)}%`}
+                          {prediction.backtest_mape === null ? '—' : `${formatNumber(prediction.backtest_mape * 100, 1)}%`}
                         </td>
                       </tr>
                     );

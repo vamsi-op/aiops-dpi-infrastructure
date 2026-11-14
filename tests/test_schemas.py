@@ -46,6 +46,20 @@ def test_error_ratio_is_zero_when_no_traffic() -> None:
     assert MetricSample(service="quoting-service").error_ratio == 0.0
 
 
+def test_measured_error_ratio_takes_precedence_over_counts() -> None:
+    # 300 requests, 0 errors by count - but the measured ratio is 0.15%.
+    sample = MetricSample(
+        service="ml-api-adapter", request_count=300, error_count=0, measured_error_ratio=0.0015
+    )
+    assert sample.error_ratio == pytest.approx(0.0015)
+    assert sample.success_ratio == pytest.approx(0.9985)
+
+
+def test_measured_error_ratio_must_be_a_fraction() -> None:
+    with pytest.raises(ValidationError):
+        MetricSample(service="central-ledger", measured_error_ratio=1.5)
+
+
 def test_error_ratio_is_capped_at_one() -> None:
     sample = MetricSample(service="ml-api-adapter", request_count=5, error_count=50)
     assert sample.error_ratio == 1.0

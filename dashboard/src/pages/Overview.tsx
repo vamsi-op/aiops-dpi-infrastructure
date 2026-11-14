@@ -83,7 +83,7 @@ export function OverviewPage({ onSelectService, onSelectIncident, onNavigate }: 
                 <Kpi
                   label="Remediations 24h"
                   value={String(data.counts.actions_24h)}
-                  foot={`${data.counts.actions_succeeded_24h} executed successfully`}
+                  foot={`${data.counts.actions_succeeded_24h} succeeded · ${data.counts.actions_blocked_24h} blocked by safety rails`}
                 />
               </div>
 
@@ -99,8 +99,8 @@ export function OverviewPage({ onSelectService, onSelectIncident, onNavigate }: 
               >
                 {data.services.length === 0 ? (
                   <Empty>
-                    No service metrics yet. Start the simulator and metrics agent, or seed sample
-                    data with <code>python scripts/seed_demo_data.py --follow</code>.
+                    No service metrics yet. Start the simulator and metrics agent; the first
+                    samples arrive within a minute.
                   </Empty>
                 ) : (
                   <div className="grid grid--services">
@@ -125,7 +125,7 @@ export function OverviewPage({ onSelectService, onSelectIncident, onNavigate }: 
             </button>
           }
         >
-          <Async state={incidents} emptyWhen={(rows) => rows.length === 0} emptyMessage="No incidents recorded. The RCA engine (module 7) is not running yet.">
+          <Async state={incidents} emptyWhen={(rows) => rows.length === 0} emptyMessage="No incidents recorded.">
             {(rows) => (
               <div className="table-wrap">
                 <table>

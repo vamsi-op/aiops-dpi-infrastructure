@@ -446,3 +446,16 @@ def test_higher_headroom_never_recommends_fewer_replicas() -> None:
         for h in (0.1, 0.25, 0.5, 0.9)
     ]
     assert counts == sorted(counts)
+
+
+def test_forecasts_start_at_the_current_hour_even_when_history_is_stale() -> None:
+    """Regression: the forecast origin was the last hourly bucket; with archived history
+    ending a day earlier every forecast and peak landed in the past."""
+    from traffic_predictor.predictor import forecast_origin
+
+    now = datetime(2026, 11, 14, 11, 25, tzinfo=UTC)
+    stale = datetime(2026, 11, 13, 10, 0, tzinfo=UTC)
+    assert forecast_origin(stale, now) == datetime(2026, 11, 14, 10, 0, tzinfo=UTC)
+    # Continuous history: the last complete bucket is already the previous hour.
+    fresh = datetime(2026, 11, 14, 10, 0, tzinfo=UTC)
+    assert forecast_origin(fresh, now) == fresh

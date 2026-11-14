@@ -1,0 +1,29 @@
+{
+  "name": "mojaloop",
+  "services": {
+    "ml-api-adapter": {
+      "calls": [
+        "central-ledger",
+        "quoting-service"
+      ]
+    },
+    "transaction-request-service": {
+      "calls": [
+        "quoting-service",
+        "account-lookup-service"
+      ]
+    },
+    "quoting-service": {
+      "calls": [
+        "central-ledger",
+        "account-lookup-service"
+      ]
+    },
+    "central-ledger": {
+      "calls": []
+    },
+    "account-lookup-service": {
+      "calls": []
+    }
+  }
+}

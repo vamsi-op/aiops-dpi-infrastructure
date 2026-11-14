@@ -205,8 +205,9 @@ async def test_scenario_2_duplicate_incident_prevention(mock_bus):
 
 
 @pytest.mark.asyncio
-async def test_scenario_3_live_vs_seeded_distinction(mock_bus):
-    """Live incidents generated from live telemetry carry the [Live] distinction."""
+async def test_scenario_3_incident_title_names_the_cause(mock_bus):
+    """Titles describe the problem. (They used to carry a "[Live]" prefix from when seeded
+    demo incidents shared the table; there are none any more.)"""
     db = MockAsyncDB()
     incident_mgr = IncidentManager(db=db, bus=mock_bus)
 
@@ -222,9 +223,8 @@ async def test_scenario_3_live_vs_seeded_distinction(mock_bus):
     ]
 
     incident = await incident_mgr.create_incident(anomalies, [])
-    assert incident.title.startswith(
-        "[Live]"
-    ), f"Title '{incident.title}' must start with [Live]"
+    assert not incident.title.startswith("[Live]")
+    assert "account-lookup-service" in incident.title
 
 
 # ---------------------------------------------------------------------------

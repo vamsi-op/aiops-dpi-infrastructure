@@ -54,8 +54,8 @@ check: ## Run full check sequence
 	@echo ""
 	@echo "✓ All checks passed!"
 
-seed: ## Generate 28 days of training history
-	@powershell.exe -ExecutionPolicy Bypass -Command ".\.venv\Scripts\python.exe scripts\replay_history.py --days 28"
+seed: ## Load the archived 28-day training set (docs/DATA.md)
+	@powershell.exe -ExecutionPolicy Bypass -Command ".\.venv\Scripts\python.exe scripts\replay_history.py --from-csv ml/datasets/mojaloop_replay_28d.csv"
 
 train: ## Train anomaly detection models
 	@powershell.exe -ExecutionPolicy Bypass -Command "Invoke-RestMethod -Method POST -Uri http://localhost:8021/train -ContentType 'application/json' -Body '{\"days\":28}'"

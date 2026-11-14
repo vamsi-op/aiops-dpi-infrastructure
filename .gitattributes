@@ -32,6 +32,9 @@ Dockerfile text
 *.joblib binary
 *.pkl binary
 
+# Datasets: always LF on every OS. Not diffed - a 27k-row CSV diff is noise.
+*.csv text eol=lf -diff
+
 # Generated or vendored: collapse in PR diffs and exclude from language stats
 package-lock.json  linguist-generated=true -diff
 dashboard/dist/**  linguist-generated=true -diff

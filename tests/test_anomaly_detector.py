@@ -588,3 +588,367 @@ def test_fit_replaces_non_finite_values() -> None:
     score, raw = model.score([float(NORMAL[f]) for f in ANOMALY_FEATURES])
     assert not math.isnan(score)
     assert not math.isnan(raw)
+
+
+# ---------------------------------------------------------------------------
+# Seasonal model: judge each sample against its hour's normal
+# ---------------------------------------------------------------------------
+# `healthy_rows` peaks at 06:00 (traffic x1.45) and bottoms out at 18:00 (x0.55).
+PEAK_HOUR, TROUGH_HOUR = 6, 18
+
+
+def seasonal_model(rows: list[dict[str, Any]] | None = None):
+    rows = rows if rows is not None else healthy_rows()
+    baseline = build_baseline(SERVICE, rows)
+    vectors = [[float(r[f]) for f in ANOMALY_FEATURES] for r in rows]
+    return model_module.fit(
+        SERVICE,
+        vectors,
+        baseline,
+        version="test",
+        contamination=0.02,
+        data_sources=("test",),
+        hours=[r["timestamp"].hour for r in rows],
+    )
+
+
+def _at_hour(hour: int, scale: float) -> list[float]:
+    values = dict(NORMAL)
+    values["tps"] = NORMAL["tps"] * scale
+    values["cpu_utilisation_ratio"] = NORMAL["cpu_utilisation_ratio"] * scale
+    return [float(values[f]) for f in ANOMALY_FEATURES]
+
+
+def test_seasonal_model_treats_the_daily_peak_as_normal() -> None:
+    """Regression: on raw values the forest's 2% 'contamination' was the busiest and quietest
+    hours of the week, so healthy Friday-evening traffic alerted continuously."""
+    seasonal, metrics = seasonal_model()
+    peak = _at_hour(PEAK_HOUR, 1.45)
+
+    assert metrics["seasonal"] == 1.0
+    assert seasonal.score(peak, hour=PEAK_HOUR)[0] < THRESHOLD
+
+
+def test_seasonal_model_flags_peak_traffic_at_the_wrong_hour() -> None:
+    seasonal, _ = seasonal_model()
+    peak = _at_hour(PEAK_HOUR, 1.45)
+    normal_there = seasonal.score(peak, hour=PEAK_HOUR)[0]
+    wrong_hour = seasonal.score(peak, hour=TROUGH_HOUR)[0]
+    assert wrong_hour > THRESHOLD
+    assert wrong_hour > normal_there
+
+
+def test_training_data_rarely_clears_the_threshold_seasonally() -> None:
+    _, metrics = seasonal_model()
+    assert metrics["train_above_0_65"] < 0.05
+
+
+def test_scorer_passes_the_sample_hour_to_a_seasonal_model() -> None:
+    seasonal, _ = seasonal_model()
+    peak_values = {
+        "tps": NORMAL["tps"] * 1.45,
+        "cpu_utilisation_ratio": NORMAL["cpu_utilisation_ratio"] * 1.45,
+    }
+    at_peak = sample(**peak_values).model_copy(
+        update={"timestamp": datetime(2026, 9, 3, PEAK_HOUR, 30, tzinfo=UTC)}
+    )
+    at_trough = at_peak.model_copy(
+        update={"timestamp": datetime(2026, 9, 3, TROUGH_HOUR, 30, tzinfo=UTC)}
+    )
+    scorer = Scorer(THRESHOLD)
+    assert scorer.score(at_peak, seasonal).forest_score < scorer.score(at_trough, seasonal).forest_score
+
+
+def test_seasonal_flag_survives_disk_and_old_artifacts_stay_raw(tmp_path: Path) -> None:
+    import joblib
+
+    seasonal, _ = seasonal_model()
+    restored = model_module.load(model_module.save(seasonal, tmp_path))
+    assert restored.seasonal is True
+    vector = _at_hour(PEAK_HOUR, 1.45)
+    assert restored.score(vector, hour=PEAK_HOUR) == seasonal.score(vector, hour=PEAK_HOUR)
+
+    # An artifact written before the flag existed must keep scoring raw values.
+    path = model_module.save(fitted_model()[0], tmp_path / "old")
+    payload = joblib.load(path)
+    payload.pop("seasonal", None)
+    joblib.dump(payload, path)
+    assert model_module.load(path).seasonal is False
+
+
+def test_fit_rejects_mismatched_hours() -> None:
+    rows = healthy_rows(200)
+    with pytest.raises(ValueError, match="hours"):
+        model_module.fit(
+            SERVICE,
+            [[float(r[f]) for f in ANOMALY_FEATURES] for r in rows],
+            build_baseline(SERVICE, rows),
+            version="v",
+            contamination=0.02,
+            hours=[0, 1],
+        )
+
+
+# ---------------------------------------------------------------------------
+# Weekday-aware baseline
+# ---------------------------------------------------------------------------
+def _weekly_rows(days: int = 21) -> list[dict[str, Any]]:
+    """Hourly rows over `days`, Fridays carrying 1.4x the traffic of every other day."""
+    start = datetime(2026, 9, 7, tzinfo=UTC)  # a Monday
+    rng = random.Random(3)
+    rows = []
+    for index in range(days * 24 * 4):  # 15-minute rows
+        moment = start + timedelta(minutes=15 * index)
+        boost = 1.4 if moment.weekday() == 4 else 1.0
+        row: dict[str, Any] = {"timestamp": moment}
+        for feature, base in NORMAL.items():
+            scale = boost if feature in {"tps", "cpu_utilisation_ratio"} else 1.0
+            row[feature] = base * scale * rng.uniform(0.97, 1.03)
+        rows.append(row)
+    return rows
+
+
+def test_weekday_bucket_is_preferred_when_well_populated() -> None:
+    baseline = build_baseline(SERVICE, _weekly_rows())
+    friday = baseline.stats_for("tps", 19, weekday=4)
+    any_day = baseline.stats_for("tps", 19)
+    assert friday is baseline.weekly[(4, 19, "tps")]
+    assert friday.samples >= MIN_BUCKET_SAMPLES
+    assert friday.mean > any_day.mean  # Friday is busier than the all-days average
+    # Busy-Friday traffic is ordinary for a Friday, high against all days pooled.
+    busy = NORMAL["tps"] * 1.4
+    assert abs(friday.deviation(busy)) < 1.0
+    assert any_day.deviation(busy) > friday.deviation(busy)
+
+
+def test_sparse_weekday_bucket_falls_back_to_the_hour() -> None:
+    rows = _weekly_rows(days=1)  # one Monday: 4 rows per (weekday, hour) - too few
+    baseline = build_baseline(SERVICE, rows + healthy_rows())
+    assert baseline.weekly[(0, 5, "tps")].samples < MIN_BUCKET_SAMPLES
+    assert baseline.stats_for("tps", 5, weekday=0) is baseline.hourly[(5, "tps")]
+
+
+def test_weekday_statistics_survive_disk_and_old_artifacts_fall_back(tmp_path: Path) -> None:
+    import joblib
+
+    rows = _weekly_rows()
+    baseline = build_baseline(SERVICE, rows)
+    model, _ = model_module.fit(
+        SERVICE,
+        [[float(r[f]) for f in ANOMALY_FEATURES] for r in rows],
+        baseline,
+        version="v",
+        contamination=0.02,
+        hours=[r["timestamp"].hour for r in rows],
+        weekdays=[r["timestamp"].weekday() for r in rows],
+    )
+    path = model_module.save(model, tmp_path)
+    restored = model_module.load(path)
+    assert restored.baseline.weekly == model.baseline.weekly
+
+    payload = joblib.load(path)
+    payload["baseline"].pop("weekly")
+    joblib.dump(payload, path)
+    old = model_module.load(path)
+    assert old.baseline.weekly == {}
+    assert old.baseline.stats_for("tps", 19, weekday=4) is old.baseline.hourly[(19, "tps")]
+
+
+def test_float_noise_on_a_constant_feature_is_not_an_anomaly() -> None:
+    """Regression: error_ratio constant in training left the scaler a ~1e-14 spread, and live
+    float noise (0.002000000000000021 vs 0.002) scaled to 14.5 sigma - a normal sample scored
+    0.97 'critical'."""
+    rows = _weekly_rows()
+    for row in rows:
+        row["error_ratio"] = 0.002  # constant, as on a healthy simulated service
+    baseline = build_baseline(SERVICE, rows)
+    model, _ = model_module.fit(
+        SERVICE,
+        [[float(r[f]) for f in ANOMALY_FEATURES] for r in rows],
+        baseline,
+        version="v",
+        contamination=0.02,
+        hours=[r["timestamp"].hour for r in rows],
+        weekdays=[r["timestamp"].weekday() for r in rows],
+    )
+    typical = {f: baseline.stats_for(f, 12, 2).mean for f in ANOMALY_FEATURES}
+    clean = [typical[f] for f in ANOMALY_FEATURES]
+    noisy = list(clean)
+    noisy[ANOMALY_FEATURES.index("error_ratio")] = 0.002000000000000021
+    assert model.score(noisy, 12, 2)[0] == pytest.approx(model.score(clean, 12, 2)[0], abs=0.02)
+    assert model.score(noisy, 12, 2)[0] < THRESHOLD
+
+
+def test_single_unusual_sample_is_held_until_it_persists() -> None:
+    """Regression: one-off blips (8.9% of normal night-time samples) were emitted; two in a row
+    are required unless the score is severe."""
+    from anomaly_detector.detector import IMMEDIATE_SCORE, IMMEDIATE_SIGMA
+
+    detector = AnomalyDetector(None, None, Scorer(THRESHOLD), None)
+    assert detector._passes_persistence(SERVICE, True, 0.7) is False  # first blip: held
+    assert detector._passes_persistence(SERVICE, True, 0.7) is True  # persists: emitted
+    assert detector._passes_persistence(SERVICE, False, 0.1) is False  # back to normal resets
+    assert detector._passes_persistence(SERVICE, True, 0.7) is False
+    # Severe anomalies with one extreme signal are not delayed.
+    assert detector._passes_persistence(
+        "quoting-service", True, IMMEDIATE_SCORE, peak_sigma=IMMEDIATE_SIGMA
+    ) is True
+    # A high score built from several ~2 sigma signals still has to persist (observed: a
+    # 0.959 "queue_backlog" with queue depth 0 restarted a healthy service).
+    assert detector._passes_persistence(
+        "account-lookup-service", True, 0.959, peak_sigma=2.1
+    ) is False
+
+
+def test_better_than_normal_is_not_an_anomaly() -> None:
+    """Regression: the direction-blind forest flagged a p99 latency *below* normal as
+    critical (0.93). One-sided features are clipped below their baseline."""
+    rows = _weekly_rows()
+    baseline = build_baseline(SERVICE, rows)
+    model, _ = model_module.fit(
+        SERVICE,
+        [[float(r[f]) for f in ANOMALY_FEATURES] for r in rows],
+        baseline,
+        version="v",
+        contamination=0.02,
+        hours=[r["timestamp"].hour for r in rows],
+        weekdays=[r["timestamp"].weekday() for r in rows],
+    )
+    assert model.one_sided
+    typical = [baseline.stats_for(f, 12, 2).mean for f in ANOMALY_FEATURES]
+    fast = list(typical)
+    for feature in ("latency_p50_seconds", "latency_p99_seconds", "cpu_utilisation_ratio"):
+        fast[ANOMALY_FEATURES.index(feature)] *= 0.5  # far better than normal
+    assert model.score(fast, 12, 2)[0] < 0.5
+    slow = list(typical)
+    for feature in ("latency_p50_seconds", "latency_p99_seconds"):
+        slow[ANOMALY_FEATURES.index(feature)] *= 3.0  # far worse: still caught
+    assert model.score(slow, 12, 2)[0] > THRESHOLD
+    # Traffic stays two-sided: a drop keeps its negative deviation (the deviation path, not
+    # the forest, is what flags far-out-of-range values - see scorer._deviation_score), while
+    # a one-sided feature's below-normal deviation is clipped to 0.
+    drop = list(typical)
+    drop[ANOMALY_FEATURES.index("tps")] *= 0.3
+    assert model.inputs(drop, 12, 2)[ANOMALY_FEATURES.index("tps")] < -3
+    assert model.inputs(fast, 12, 2)[ANOMALY_FEATURES.index("latency_p99_seconds")] == 0.0
+
+
+@pytest.mark.parametrize("label", ["restart_in_rate_window", "dependency_restart_in_rate_window"])
+async def test_restart_window_samples_are_scored_on_gauges_only(label: str) -> None:
+    """Rates are distorted after a (dependency) restart, gauges are not.
+
+    Regression, both ways: scoring rates re-flagged a just-remediated service for its old
+    fault; skipping the sample outright blinded detection for six minutes after every
+    Kubernetes rollout, so a bad release with queue depth 60 went unscored.
+    """
+    from unittest.mock import MagicMock
+
+    from anomaly_detector.detector import neutralise_rates
+
+    model, _ = fitted_model()
+    # The remediated fault still in the rate window, with healthy gauges...
+    stale_rates = sample(error_ratio=0.05, latency_p99_seconds=2.0).model_copy(
+        update={"labels": {label: "1"}}
+    )
+    calmed = neutralise_rates(stale_rates, model)
+    at = stale_rates.timestamp
+    assert calmed.error_ratio == pytest.approx(
+        model.baseline.stats_for("error_ratio", at.hour, at.weekday()).mean
+    )
+    assert Scorer(THRESHOLD).score(calmed, model).anomaly is None
+
+    # ...but a broken release shows in its gauges, and is scored and caught.
+    broken = sample(error_ratio=0.05, queue_depth=60.0).model_copy(update={"labels": {label: "1"}})
+    result = Scorer(THRESHOLD).score(neutralise_rates(broken, model), model)
+    assert result.anomaly is not None
+    assert "queue_depth" in result.anomaly.contributing_features
+
+    detector = AnomalyDetector(None, None, Scorer(THRESHOLD), MagicMock())
+    detector._models[SERVICE] = model
+    scorer = MagicMock()
+    scorer.score.return_value = MagicMock(anomaly=None, score=0.1)
+    detector.scorer = scorer
+
+    class Msg:
+        data = broken.model_dump(mode="json")
+
+    await detector._handle(Msg())
+    scored = scorer.score.call_args.args[0]
+    assert scored.queue_depth == 60.0
+    assert scored.error_ratio < 0.05
+
+
+def test_p99_weight_follows_tail_evidence() -> None:
+    from anomaly_detector.model import p99_reliability
+
+    assert p99_reliability(2.2) == pytest.approx(0.36, abs=0.01)
+    assert p99_reliability(7.5) == pytest.approx(0.67, abs=0.01)
+    assert p99_reliability(17.0) == 1.0
+    assert p99_reliability(500.0) == 1.0
+
+
+def test_low_traffic_p99_wobble_is_damped_but_a_real_latency_fault_is_caught() -> None:
+    """Regression: at 7.5 tps one slow request lifted quoting-service's p99 estimate by 25%
+    for five minutes; a 2-sigma reading scored 0.96 and the service was restarted."""
+    rows = _weekly_rows()
+    for row in rows:
+        row["tps"] = 7.5 * row["tps"] / NORMAL["tps"]  # a low-traffic service
+    baseline = build_baseline(SERVICE, rows)
+    model, _ = model_module.fit(
+        SERVICE,
+        [[float(r[f]) for f in ANOMALY_FEATURES] for r in rows],
+        baseline,
+        version="v",
+        contamination=0.02,
+        hours=[r["timestamp"].hour for r in rows],
+        weekdays=[r["timestamp"].weekday() for r in rows],
+    )
+    assert model.evidence_weighted
+    typical = [baseline.stats_for(f, 12, 2).mean for f in ANOMALY_FEATURES]
+    i = ANOMALY_FEATURES.index("latency_p99_seconds")
+    sigma = baseline.stats_for("latency_p99_seconds", 12, 2).sigma
+
+    wobble = list(typical)
+    wobble[i] += 2.1 * sigma
+    assert model.inputs(wobble, 12, 2)[i] == pytest.approx(2.1 * 0.67, abs=0.05)
+
+    # A real latency fault (x3) is still caught by the full pipeline (forest + deviation path).
+    values = dict(zip(ANOMALY_FEATURES, typical, strict=True))
+    values["latency_p99_seconds"] *= 3.0
+    values["latency_p50_seconds"] *= 3.0
+    error_ratio = values.pop("error_ratio")
+    fault = MetricSample(
+        service=SERVICE,
+        timestamp=datetime(2026, 9, 9, 12, 30, tzinfo=UTC),  # a Wednesday, 12:30
+        request_count=1000,
+        error_count=0,
+        measured_error_ratio=error_ratio,
+        **values,
+    )
+    result = Scorer(THRESHOLD).score(fault, model)
+    assert result.anomaly is not None and result.score > THRESHOLD
+
+
+def test_load_gauges_alone_are_weak_evidence() -> None:
+    """Regression: forest scores 0.95-0.98 on CPU/connections ~2-3 sigma with queue 0 and no
+    errors were emitted as queue_backlog and restarted healthy services."""
+    from anomaly_detector.scorer import _weak_evidence
+
+    observed = {  # account-lookup-service, 09:49:21, as recorded
+        "tps": 1.198,
+        "error_ratio": 0.0,
+        "queue_depth": 0.0,
+        "active_connections": 2.147,
+        "latency_p50_seconds": 0.08,
+        "latency_p99_seconds": 0.046,
+        "cpu_utilisation_ratio": 2.95,
+        "settlement_lag_seconds": 0.0,
+        "memory_utilisation_ratio": 0.197,
+    }
+    assert _weak_evidence(observed)
+    # Any symptom past the implication threshold is real evidence...
+    assert not _weak_evidence({**observed, "error_ratio": 2.5})
+    assert not _weak_evidence({**observed, "latency_p99_seconds": 2.1})
+    # ...and so is an extreme load gauge (CPU hog, traffic surge or collapse).
+    assert not _weak_evidence({**observed, "cpu_utilisation_ratio": 6.0})
+    assert not _weak_evidence({**observed, "tps": -4.0})

@@ -1,0 +1,33 @@
+# kind cluster for a single cloud VM (see docs/DEPLOY_VM.md).
+#
+# Same cluster as deploy/k8s/kind-cluster.yaml, but only two ports face the internet:
+#   80    dashboard (nginx, password-protected by `scripts/k8s.sh up --public`)
+#   3000  Grafana (anonymous access switched off by --public)
+# Every other port binds to 127.0.0.1 on the VM: reachable over an SSH tunnel and by the
+# check scripts run on the VM, never from outside - even if the firewall is misconfigured.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: aiops
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.31.4
+    extraPortMappings:
+      - { containerPort: 30081, hostPort: 80, listenAddress: "0.0.0.0", protocol: TCP }
+      - { containerPort: 30300, hostPort: 3000, listenAddress: "0.0.0.0", protocol: TCP }
+      - { containerPort: 30080, hostPort: 8080, listenAddress: "127.0.0.1", protocol: TCP }
+      - { containerPort: 30090, hostPort: 9090, listenAddress: "127.0.0.1", protocol: TCP }
+      - { containerPort: 30100, hostPort: 3100, listenAddress: "127.0.0.1", protocol: TCP }
+      - { containerPort: 30200, hostPort: 3200, listenAddress: "127.0.0.1", protocol: TCP }
+      - { containerPort: 30093, hostPort: 9093, listenAddress: "127.0.0.1", protocol: TCP }
+      - { containerPort: 30432, hostPort: 5432, listenAddress: "127.0.0.1", protocol: TCP }
+      - { containerPort: 30379, hostPort: 6379, listenAddress: "127.0.0.1", protocol: TCP }
+      - { containerPort: 30011, hostPort: 8011, listenAddress: "127.0.0.1", protocol: TCP }
+      - { containerPort: 30012, hostPort: 8012, listenAddress: "127.0.0.1", protocol: TCP }
+      - { containerPort: 30013, hostPort: 8013, listenAddress: "127.0.0.1", protocol: TCP }
+      - { containerPort: 30014, hostPort: 8014, listenAddress: "127.0.0.1", protocol: TCP }
+      - { containerPort: 30015, hostPort: 8015, listenAddress: "127.0.0.1", protocol: TCP }
+      - { containerPort: 30020, hostPort: 8020, listenAddress: "127.0.0.1", protocol: TCP }
+      - { containerPort: 30021, hostPort: 8021, listenAddress: "127.0.0.1", protocol: TCP }
+      - { containerPort: 30022, hostPort: 8022, listenAddress: "127.0.0.1", protocol: TCP }
+      - { containerPort: 30023, hostPort: 8023, listenAddress: "127.0.0.1", protocol: TCP }
+      - { containerPort: 30024, hostPort: 8024, listenAddress: "127.0.0.1", protocol: TCP }

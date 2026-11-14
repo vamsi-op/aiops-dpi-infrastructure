@@ -13,7 +13,7 @@ WORKDIR /app
 
 # Shared library
 COPY libs/aiops_common /app/libs/aiops_common
-RUN pip install --no-cache-dir /app/libs/aiops_common
+RUN pip install --no-cache-dir /app/libs/aiops_common kubernetes==33.1.0
 
 # Application code
 COPY services/api_gateway/api_gateway /app/api_gateway

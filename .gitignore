@@ -68,6 +68,8 @@ ml/artifacts/*
 !ml/artifacts/.gitkeep
 ml/datasets/*
 !ml/datasets/.gitkeep
+# The archived training set is committed on purpose (docs/DATA.md).
+!ml/datasets/mojaloop_replay_28d.csv
 
 # ---- Editors / OS ----
 .vscode/*

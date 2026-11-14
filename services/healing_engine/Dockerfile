@@ -11,8 +11,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Install docker client library
-RUN pip install --no-cache-dir docker==7.1.0
+# Docker SDK for Compose, Kubernetes client for the kind cluster (module 10)
+RUN pip install --no-cache-dir docker==7.1.0 kubernetes==33.1.0
 
 # Install shared library
 COPY libs/aiops_common /app/libs/aiops_common

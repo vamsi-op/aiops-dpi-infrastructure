@@ -1,0 +1,369 @@
+# Simulated Mojaloop workload (the DPI services the platform watches and heals).
+#
+# Generated from one template - every service is the same image with a different
+# SIM_SERVICE, exactly as in docker-compose.observability.yml. Keep the five blocks in step.
+#
+# Deliberate choices:
+# * No livenessProbe. Kubernetes restarting a pod on its own would silently repair the very
+#   failures the chaos experiments inject and the healing engine is meant to remediate -
+#   the same reason Compose does not act on its healthcheck. A process that exits (the
+#   kill_service experiment) is still restarted, as `restart: unless-stopped` did.
+# * A TCP readinessProbe, not /health. A degraded service must stay in its Service's
+#   endpoints, or Prometheus would stop scraping it at exactly the moment its metrics matter.
+# * `app.kubernetes.io/version` on the pod template. The bad_deploy experiment bumps it,
+#   creating a new ReplicaSet revision for the rollback playbook to undo.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ml-api-adapter
+  namespace: aiops
+  labels:
+    app.kubernetes.io/name: ml-api-adapter
+    app.kubernetes.io/part-of: mojaloop
+    aiops.dpi/tier: edge
+  annotations:
+    prometheus.io/scrape: "true"
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: ml-api-adapter
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+      nodePort: 30011
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ml-api-adapter
+  namespace: aiops
+  labels:
+    app.kubernetes.io/name: ml-api-adapter
+    app.kubernetes.io/part-of: mojaloop
+    aiops.dpi/tier: edge
+  annotations:
+    kubernetes.io/change-cause: initial release v1.0.4
+spec:
+  replicas: 1
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ml-api-adapter
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ml-api-adapter
+        app.kubernetes.io/part-of: mojaloop
+        app.kubernetes.io/version: v1.0.4
+    spec:
+      # No legacy service-link env vars: the Service named \"redis\" would inject
+      # REDIS_PORT=tcp://<ip>:6379 over the platform's own REDIS_PORT setting.
+      enableServiceLinks: false
+      containers:
+        - name: app
+          image: aiops/mojaloop-sim:0.1.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: SIM_SERVICE, value: ml-api-adapter }
+            - { name: AIOPS_SERVICE_NAME, value: ml-api-adapter }
+            - { name: SIM_VERSION, value: v1.0.4 }
+          envFrom:
+            - configMapRef:
+                name: aiops-sim-env
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            tcpSocket: { port: 8000 }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { cpu: 400m, memory: 192Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: central-ledger
+  namespace: aiops
+  labels:
+    app.kubernetes.io/name: central-ledger
+    app.kubernetes.io/part-of: mojaloop
+    aiops.dpi/tier: core
+  annotations:
+    prometheus.io/scrape: "true"
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: central-ledger
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+      nodePort: 30012
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: central-ledger
+  namespace: aiops
+  labels:
+    app.kubernetes.io/name: central-ledger
+    app.kubernetes.io/part-of: mojaloop
+    aiops.dpi/tier: core
+  annotations:
+    kubernetes.io/change-cause: initial release v1.0.4
+spec:
+  replicas: 1
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: central-ledger
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: central-ledger
+        app.kubernetes.io/part-of: mojaloop
+        app.kubernetes.io/version: v1.0.4
+    spec:
+      # No legacy service-link env vars: the Service named \"redis\" would inject
+      # REDIS_PORT=tcp://<ip>:6379 over the platform's own REDIS_PORT setting.
+      enableServiceLinks: false
+      containers:
+        - name: app
+          image: aiops/mojaloop-sim:0.1.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: SIM_SERVICE, value: central-ledger }
+            - { name: AIOPS_SERVICE_NAME, value: central-ledger }
+            - { name: SIM_VERSION, value: v1.0.4 }
+          envFrom:
+            - configMapRef:
+                name: aiops-sim-env
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            tcpSocket: { port: 8000 }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { cpu: 400m, memory: 192Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: quoting-service
+  namespace: aiops
+  labels:
+    app.kubernetes.io/name: quoting-service
+    app.kubernetes.io/part-of: mojaloop
+    aiops.dpi/tier: core
+  annotations:
+    prometheus.io/scrape: "true"
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: quoting-service
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+      nodePort: 30013
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: quoting-service
+  namespace: aiops
+  labels:
+    app.kubernetes.io/name: quoting-service
+    app.kubernetes.io/part-of: mojaloop
+    aiops.dpi/tier: core
+  annotations:
+    kubernetes.io/change-cause: initial release v1.0.4
+spec:
+  replicas: 1
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: quoting-service
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: quoting-service
+        app.kubernetes.io/part-of: mojaloop
+        app.kubernetes.io/version: v1.0.4
+    spec:
+      # No legacy service-link env vars: the Service named \"redis\" would inject
+      # REDIS_PORT=tcp://<ip>:6379 over the platform's own REDIS_PORT setting.
+      enableServiceLinks: false
+      containers:
+        - name: app
+          image: aiops/mojaloop-sim:0.1.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: SIM_SERVICE, value: quoting-service }
+            - { name: AIOPS_SERVICE_NAME, value: quoting-service }
+            - { name: SIM_VERSION, value: v1.0.4 }
+          envFrom:
+            - configMapRef:
+                name: aiops-sim-env
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            tcpSocket: { port: 8000 }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { cpu: 400m, memory: 192Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: account-lookup-service
+  namespace: aiops
+  labels:
+    app.kubernetes.io/name: account-lookup-service
+    app.kubernetes.io/part-of: mojaloop
+    aiops.dpi/tier: core
+  annotations:
+    prometheus.io/scrape: "true"
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: account-lookup-service
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+      nodePort: 30014
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: account-lookup-service
+  namespace: aiops
+  labels:
+    app.kubernetes.io/name: account-lookup-service
+    app.kubernetes.io/part-of: mojaloop
+    aiops.dpi/tier: core
+  annotations:
+    kubernetes.io/change-cause: initial release v1.0.4
+spec:
+  replicas: 1
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: account-lookup-service
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: account-lookup-service
+        app.kubernetes.io/part-of: mojaloop
+        app.kubernetes.io/version: v1.0.4
+    spec:
+      # No legacy service-link env vars: the Service named \"redis\" would inject
+      # REDIS_PORT=tcp://<ip>:6379 over the platform's own REDIS_PORT setting.
+      enableServiceLinks: false
+      containers:
+        - name: app
+          image: aiops/mojaloop-sim:0.1.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: SIM_SERVICE, value: account-lookup-service }
+            - { name: AIOPS_SERVICE_NAME, value: account-lookup-service }
+            - { name: SIM_VERSION, value: v1.0.4 }
+          envFrom:
+            - configMapRef:
+                name: aiops-sim-env
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            tcpSocket: { port: 8000 }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { cpu: 400m, memory: 192Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: transaction-request-service
+  namespace: aiops
+  labels:
+    app.kubernetes.io/name: transaction-request-service
+    app.kubernetes.io/part-of: mojaloop
+    aiops.dpi/tier: edge
+  annotations:
+    prometheus.io/scrape: "true"
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: transaction-request-service
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+      nodePort: 30015
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: transaction-request-service
+  namespace: aiops
+  labels:
+    app.kubernetes.io/name: transaction-request-service
+    app.kubernetes.io/part-of: mojaloop
+    aiops.dpi/tier: edge
+  annotations:
+    kubernetes.io/change-cause: initial release v1.0.4
+spec:
+  replicas: 1
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: transaction-request-service
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: transaction-request-service
+        app.kubernetes.io/part-of: mojaloop
+        app.kubernetes.io/version: v1.0.4
+    spec:
+      # No legacy service-link env vars: the Service named \"redis\" would inject
+      # REDIS_PORT=tcp://<ip>:6379 over the platform's own REDIS_PORT setting.
+      enableServiceLinks: false
+      containers:
+        - name: app
+          image: aiops/mojaloop-sim:0.1.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: SIM_SERVICE, value: transaction-request-service }
+            - { name: AIOPS_SERVICE_NAME, value: transaction-request-service }
+            - { name: SIM_VERSION, value: v1.0.4 }
+          envFrom:
+            - configMapRef:
+                name: aiops-sim-env
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            tcpSocket: { port: 8000 }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { cpu: 400m, memory: 192Mi }

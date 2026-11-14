@@ -38,6 +38,7 @@ from .correlator import Correlator
 from .engine import RCAEngine
 from .incident_manager import IncidentManager
 from .routes import router
+from .telemetry import TelemetryClient
 
 SERVICE_NAME = str(AiopsService.RCA_ENGINE)
 
@@ -78,7 +79,7 @@ app: FastAPI = build_app(
 )
 
 # Initialize RCA components
-correlator = Correlator(database)
+correlator = Correlator(database, telemetry=TelemetryClient())
 incident_manager = IncidentManager(database, bus)
 engine = RCAEngine(
     database,

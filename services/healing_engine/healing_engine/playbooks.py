@@ -11,11 +11,20 @@ Playbooks are idempotent and safe to retry.
 
 from __future__ import annotations
 
+import os
+from collections.abc import Callable
 from typing import Any, ClassVar
 
-from aiops_common.constants import AnomalyKind, PlaybookName, RootCauseCategory
+import httpx
+
+from aiops_common.constants import (
+    AnomalyKind,
+    PlaybookName,
+    RootCauseCategory,
+)
 from aiops_common.log import get_logger
 from aiops_common.schemas import AnomalyEvent, Incident
+from aiops_common.topology import get_topology
 
 from .executor import ExecutorInterface, ScaleResult
 
@@ -127,6 +136,42 @@ class PlaybookRegistry:
                     return PlaybookName.CIRCUIT_BREAK_CASCADE, parameters
 
         # -------------------------------------------------------------
+        # 3b. Cascade victim, whatever the root-cause category
+        # -------------------------------------------------------------
+        # If a service this one depends on is already part of the incident, this anomaly is
+        # (at least partly) inherited from it. Restarting the victim cannot help and adds a
+        # cold start; tripping its breaker on that dependency can. This also covers incidents
+        # whose primary hypothesis is an EVENT (e.g. a chaos run on the dependency), which
+        # the SERVICE rule above does not.
+        if incident and incident.affected_services:
+            # All dependencies, not just direct ones: transaction-request-service reaches
+            # central-ledger through quoting-service, and was restarted as collateral when
+            # only direct dependencies were checked.
+            failing_dependencies = sorted(
+                _all_dependencies(anomaly.service) & set(incident.affected_services)
+            )
+            if failing_dependencies:
+                # The deepest one - the affected dependency with no affected dependency of
+                # its own - is the root the breakers belong on.
+                deepest = [
+                    d
+                    for d in failing_dependencies
+                    if not (_all_dependencies(d) & set(incident.affected_services))
+                ]
+                target = (deepest or failing_dependencies)[0]
+                parameters["root_cause"] = "downstream_dependency_failure"
+                parameters["downstream_target"] = target
+                parameters["reason"] = (
+                    f"{anomaly.service} depends on {target}, which is part of this incident"
+                )
+                log.info(
+                    "playbook.cascade_victim",
+                    service=anomaly.service,
+                    downstream_root=target,
+                )
+                return PlaybookName.CIRCUIT_BREAK_CASCADE, parameters
+
+        # -------------------------------------------------------------
         # 4. Telemetry-based Root Cause Diagnosis (Live Metrics)
         # -------------------------------------------------------------
         snap = snapshot or {}
@@ -232,11 +277,34 @@ class PlaybookRegistry:
         return playbook, parameters
 
 
+def _all_dependencies(service: str) -> set[str]:
+    """Every service `service` calls, directly or indirectly."""
+    return get_topology().transitive_dependencies(service)
+
+
+# How long `circuit_break_cascade` keeps callers' breakers open before they half-open and
+# probe the root cause. Long enough for a restart and its recovery window.
+BREAKER_OPEN_SECONDS = 120
+
+
+def service_url(service: str) -> str:
+    """Base URL of a DPI service. Compose and Kubernetes both resolve the bare service name."""
+    template = os.getenv("SIM_SERVICE_URL_TEMPLATE", "http://{service}:8000")
+    return template.format(service=service)
+
+
 class PlaybookExecutor:
     """Executes playbooks using the provided executor interface."""
 
-    def __init__(self, executor: ExecutorInterface):
+    def __init__(
+        self,
+        executor: ExecutorInterface,
+        http_client_factory: Callable[[], Any] | None = None,
+    ):
         self.executor = executor
+        # Application-level actions (circuit breakers) talk to the services' own control
+        # API rather than to Docker or Kubernetes. Injectable for tests.
+        self._http = http_client_factory or (lambda: httpx.AsyncClient(timeout=5.0))
 
     async def execute(
         self,
@@ -259,7 +327,9 @@ class PlaybookExecutor:
             return ScaleResult(success, msg, {"execution_mode": "real"})
 
         elif playbook == PlaybookName.CIRCUIT_BREAK_CASCADE:
-            success, msg = await self._circuit_break_cascade(target_service)
+            success, msg = await self._circuit_break_cascade(
+                target_service, restart_root=bool(parameters.get("restart_root", True))
+            )
             return ScaleResult(success, msg, {"execution_mode": "real"})
 
         elif playbook == PlaybookName.ROLLBACK_BAD_DEPLOY:
@@ -290,19 +360,53 @@ class PlaybookExecutor:
         log.info("playbook.restart_on_oom", service=service)
         return await self.executor.restart_container(service)
 
-    async def _circuit_break_cascade(self, service: str) -> tuple[bool, str]:
-        """Remediate the root dependency in a cascade to break the failure chain.
+    async def _circuit_break_cascade(
+        self, service: str, *, restart_root: bool = True
+    ) -> tuple[bool, str]:
+        """Stop a cascade at its root: trip every caller's breaker, then remediate the root.
 
-        Applies to: SERVICE root cause with cascade pattern. Note: network-level
-        traffic rejection/proxy circuit breaking is not configured on this container path;
-        restarting the root dependency clears the failure chain.
+        Applies to: SERVICE root cause with a cascade pattern. `service` is the root cause.
+        Every service that calls it (per the topology) gets its breaker on `service`
+        opened, so callers stop waiting on it and fail fast - their latency and errors
+        recover immediately and the cascade stops spreading upstream. The root is then
+        restarted. The breakers half-open after BREAKER_OPEN_SECONDS and close themselves once
+        a probe finds the root healthy, so no second action is needed to undo this.
         """
-        log.info("playbook.circuit_break_cascade", service=service)
-        success, msg = await self.executor.restart_container(service)
-        return (
-            success,
-            f"{msg} (Remediated root dependency; network circuit breaker proxy not present)",
-        )
+        callers = get_topology().callers_of(service)
+        log.info("playbook.circuit_break_cascade", service=service, callers=callers)
+
+        opened, failed = [], []
+        async with self._http() as client:
+            for caller in callers:
+                url = f"{service_url(caller)}/sim/circuits/{service}"
+                try:
+                    response = await client.post(
+                        url,
+                        json={
+                            "action": "open",
+                            "duration_seconds": BREAKER_OPEN_SECONDS,
+                            "opened_by": "healing-engine:circuit_break_cascade",
+                        },
+                    )
+                    (opened if response.status_code == 200 else failed).append(caller)
+                except Exception as exc:  # noqa: BLE001 - one unreachable caller must not stop the rest
+                    log.warning("playbook.breaker_open_failed", caller=caller, error=str(exc))
+                    failed.append(caller)
+
+        if restart_root:
+            restarted, restart_msg = await self.executor.restart_container(service)
+        else:
+            # The root was remediated moments ago; restarting it again only adds a cold
+            # start. The breakers are the action that is still missing.
+            restarted, restart_msg = False, f"{service} was remediated recently; not restarted again"
+        parts = [
+            f"Opened circuit breaker on {service} at {len(opened)}/{len(callers)} caller(s)"
+            + (f": {', '.join(opened)}" if opened else ""),
+        ]
+        if failed:
+            parts.append(f"could not reach {', '.join(failed)}")
+        parts.append(restart_msg)
+        return bool(opened) or restarted, "; ".join(parts)
 
     async def _rollback_bad_deploy(self, service: str) -> tuple[bool, str]:
         """Rollback to previous version when deployment preceded anomaly.

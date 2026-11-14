@@ -1,0 +1,46 @@
+# kind cluster for the AIOps DPI platform (module 10).
+#
+#   kind create cluster --config deploy/k8s/kind-cluster.yaml
+#
+# Or let the helper do everything (cluster, images, manifests):
+#   .\scripts\k8s.ps1 up
+#
+# One node keeps the footprint inside Docker Desktop's default allocation. Every
+# platform endpoint is published on the SAME host port the Compose stack uses, so the
+# dashboard, Grafana and every scripts/check_*.py work unchanged against the cluster.
+# The flip side: stop the Compose stack first (.\scripts\stack.ps1 down) - both cannot
+# own port 8080 at once.
+#
+# Each mapping goes host port -> NodePort; the Service manifests pin the same NodePorts.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: aiops
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.31.4
+    extraPortMappings:
+      # Dashboard (nginx: UI + /api and /ws proxied to the gateway)
+      - { containerPort: 30081, hostPort: 8081, protocol: TCP }
+      # Control plane: API gateway, Grafana, Prometheus
+      - { containerPort: 30080, hostPort: 8080, protocol: TCP }
+      - { containerPort: 30300, hostPort: 3000, protocol: TCP }
+      - { containerPort: 30090, hostPort: 9090, protocol: TCP }
+      # Logs, traces, alerts
+      - { containerPort: 30100, hostPort: 3100, protocol: TCP }
+      - { containerPort: 30200, hostPort: 3200, protocol: TCP }
+      - { containerPort: 30093, hostPort: 9093, protocol: TCP }
+      # Data layer (scripts on the host read TimescaleDB and Redis directly)
+      - { containerPort: 30432, hostPort: 5432, protocol: TCP }
+      - { containerPort: 30379, hostPort: 6379, protocol: TCP }
+      # Simulated Mojaloop services
+      - { containerPort: 30011, hostPort: 8011, protocol: TCP }
+      - { containerPort: 30012, hostPort: 8012, protocol: TCP }
+      - { containerPort: 30013, hostPort: 8013, protocol: TCP }
+      - { containerPort: 30014, hostPort: 8014, protocol: TCP }
+      - { containerPort: 30015, hostPort: 8015, protocol: TCP }
+      # AIOps services
+      - { containerPort: 30020, hostPort: 8020, protocol: TCP }
+      - { containerPort: 30021, hostPort: 8021, protocol: TCP }
+      - { containerPort: 30022, hostPort: 8022, protocol: TCP }
+      - { containerPort: 30023, hostPort: 8023, protocol: TCP }
+      - { containerPort: 30024, hostPort: 8024, protocol: TCP }

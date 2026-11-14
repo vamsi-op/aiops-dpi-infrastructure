@@ -451,6 +451,9 @@ button {
 
 /* ------------------------------------------------------------------ tables */
 .table-wrap {
+  /* Positioning context for the .sr-only caption. Without it the caption is placed
+     against the document, below the app shell, and the page scrolled into empty space. */
+  position: relative;
   overflow-x: auto;
 }
 

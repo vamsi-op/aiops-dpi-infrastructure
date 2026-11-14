@@ -88,7 +88,9 @@ async def test_topological_cascade_detection() -> None:
 
     assert hypothesis is not None
     assert hypothesis.category == RootCauseCategory.SERVICE
-    assert hypothesis.target in {"central-ledger", "ml-api-adapter", "quoting-service"}
+    # central-ledger is called by the other two: it is the root, they are victims.
+    assert hypothesis.target == "central-ledger"
+    assert "quoting-service" in hypothesis.summary or any("quoting-service" in e for e in hypothesis.evidence)
     assert hypothesis.confidence >= 0.70
 
 
@@ -138,8 +140,45 @@ async def test_chaos_experiment_correlation(mock_db_with_chaos) -> None:
     assert len(hypotheses) > 0
     event = hypotheses[0]
     assert event.category == RootCauseCategory.EVENT
-    assert event.confidence >= 0.95
     assert "chaos" in event.summary.lower()
+
+
+@pytest.mark.asyncio
+async def test_chaos_context_ranks_below_the_telemetry_diagnosis() -> None:
+    """Regression: the 0.99 chaos-run hypothesis outranked RCA's own finding, so a demo
+    'explained' each fault by reading the chaos table instead of diagnosing it."""
+    start = datetime(2026, 11, 14, 10, 29, 7, tzinfo=UTC)
+
+    class ChaosDB:
+        async def fetch_all(self, query: str, params: dict[str, Any] | None = None):
+            if "chaos_runs" not in query:
+                return []
+            return [
+                {
+                    "run_id": "chaos-1",
+                    "experiment": "network_latency",
+                    "target_service": "central-ledger",
+                    "started_at": start,
+                }
+            ]
+
+    anomalies = [
+        AnomalyEvent(
+            anomaly_id=f"a-{service}",
+            detected_at=start + timedelta(seconds=57 + i * 15),
+            service=service,
+            severity=Severity.CRITICAL,
+            score=0.99,
+            contributing_features=["latency_p99_seconds"],
+            kind=AnomalyKind.LATENCY_SPIKE,
+        )
+        for i, service in enumerate(["central-ledger", "quoting-service", "ml-api-adapter"])
+    ]
+    hypotheses = await RCACorrelator(db=ChaosDB()).correlate_all(anomalies)
+
+    assert hypotheses[0].category == RootCauseCategory.SERVICE
+    assert hypotheses[0].target == "central-ledger"
+    assert any(h.category == RootCauseCategory.EVENT for h in hypotheses[1:])
 
 
 @pytest.mark.asyncio
@@ -284,11 +323,14 @@ class MockIncidentDB:
         params = params or {}
         q = query.lower()
         if "from healing_actions" in q:
+            # Emulates the query: actions in chronological order, latest first wins, and
+            # `skipped_*` rows excluded when the query says so.
             inc_id = params.get("incident_id")
-            for act in self.healing_actions:
-                if act.get("incident_id") == inc_id:
-                    return act
-            return self.healing_actions[0] if self.healing_actions else None
+            actions = [a for a in self.healing_actions if a.get("incident_id") == inc_id]
+            actions = actions or list(self.healing_actions)
+            if "not like 'skipped%'" in q:
+                actions = [a for a in actions if not str(a.get("status")).startswith("skipped")]
+            return actions[-1] if actions else None
         if "select ai_summary from incidents" in q:
             inc_id = params.get("incident_id")
             for inc in self.incidents:
@@ -603,3 +645,90 @@ async def test_auto_resolve_succeeds_with_healthy_metrics_and_verified_healing()
     assert incident["status"] == "resolved"
     assert "Resolution:" in incident["ai_summary"]
     assert "Remediation verified recovery" in incident["ai_summary"]
+
+
+@pytest.mark.asyncio
+async def test_deployment_of_sole_affected_service_outranks_generic_service_hypothesis() -> None:
+    """A late-detected bad deploy must still be blamed on the change, not the service.
+
+    Detected 102 s after the deployment, the decayed change confidence (0.83) used to lose
+    to the fixed 0.90 "only X is affected" hypothesis, and the healer restarted instead of
+    rolling back.
+    """
+    deploy_time = datetime(2026, 10, 6, 12, 0, 0, tzinfo=UTC)
+
+    class QueryAwareDB:
+        async def fetch_all(self, query: str, params: dict[str, Any] | None = None):
+            if "deployment" not in query.lower():
+                return []
+            return [
+                {
+                    "deployment_id": "dep-1",
+                    "occurred_at": deploy_time,
+                    "service": "ml-api-adapter",
+                    "to_version": "v2.0.0",
+                    "change_type": "deploy",
+                }
+            ]
+
+    anomaly = AnomalyEvent(
+        anomaly_id="anom-1",
+        detected_at=deploy_time + timedelta(seconds=102),
+        service="ml-api-adapter",
+        severity=Severity.CRITICAL,
+        score=0.99,
+        contributing_features=["error_ratio"],
+        kind=AnomalyKind.ERROR_BURST,
+    )
+
+    hypotheses = await RCACorrelator(db=QueryAwareDB()).correlate_all([anomaly])
+
+    assert hypotheses[0].category == RootCauseCategory.CHANGE
+    assert hypotheses[0].confidence > 0.90
+
+
+@pytest.mark.asyncio
+async def test_auto_resolve_ignores_declined_actions_after_a_successful_one() -> None:
+    """Regression: the healer's attempt cap logged skipped_max_attempts on every later
+    anomaly, and the latest such row kept a recovered incident open with all SLOs green."""
+    from aiops_common.constants import ActionStatus
+    from rca_engine.incident_manager import IncidentManager
+
+    now = datetime.now(UTC)
+    incident = {
+        "incident_id": "inc_capped",
+        "opened_at": now - timedelta(seconds=600),
+        "status": "mitigating",
+        "affected_services": ["account-lookup-service"],
+        "hypotheses": [
+            {
+                "target": "account-lookup-service",
+                "category": "service",
+                "confidence": 0.95,
+                "summary": "account-lookup-service failure",
+            }
+        ],
+        "ai_summary": "",
+    }
+    healthy = {
+        "service": "account-lookup-service",
+        "avg_error": 0.001,
+        "avg_p99": 0.08,
+        "avg_queue": 0.0,
+        "avg_cpu": 0.35,
+        "avg_mem": 0.40,
+    }
+    actions = [
+        {"action_id": "a1", "incident_id": "inc_capped", "status": ActionStatus.SUCCEEDED},
+        *(
+            {"action_id": f"s{i}", "incident_id": "inc_capped", "status": "skipped_max_attempts"}
+            for i in range(5)
+        ),
+    ]
+    db = MockIncidentDB(
+        incidents=[incident], healing_actions=actions, service_metrics=[healthy], anomalies=[]
+    )
+
+    await IncidentManager(db=db, bus=MockEventBus()).check_auto_resolve()
+
+    assert "inc_capped" in db.resolved_ids

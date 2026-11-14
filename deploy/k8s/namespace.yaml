@@ -1,0 +1,63 @@
+# Everything the platform runs lives in one namespace. The healing engine's RBAC is a
+# namespaced Role, so remediation can never reach outside it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: aiops
+  labels:
+    app.kubernetes.io/part-of: aiops-dpi
+---
+# Environment shared by the five simulated Mojaloop services.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aiops-sim-env
+  namespace: aiops
+data:
+  AIOPS_ENV: kind
+  AIOPS_LOG_LEVEL: INFO
+  AIOPS_LOG_FORMAT: json
+  AIOPS_DPI_PLATFORM: mojaloop
+  MOJALOOP_SIM_BASE_TPS: "25"
+  MOJALOOP_SIM_SEASONALITY: "true"
+  OTLP_ENDPOINT: http://tempo:4318
+  TRACING_ENABLED: "true"
+  TRACE_SAMPLE_RATIO: "1.0"
+---
+# Environment shared by every AIOps service - the Kubernetes twin of the `x-aiops-common`
+# anchor in docker-compose.aiops.yml. Service DNS names are identical to the Compose ones,
+# so no address changes between the two substrates.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aiops-env
+  namespace: aiops
+data:
+  AIOPS_ENV: kind
+  AIOPS_LOG_LEVEL: INFO
+  AIOPS_LOG_FORMAT: json
+  AIOPS_DPI_PLATFORM: mojaloop
+  POSTGRES_HOST: timescaledb
+  POSTGRES_PORT: "5432"
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+  REDIS_DB: "0"
+  PROMETHEUS_URL: http://prometheus:9090
+  LOKI_URL: http://loki:3100
+  TEMPO_URL: http://tempo:3200
+  ALERTMANAGER_URL: http://alertmanager:9093
+  OTLP_ENDPOINT: http://tempo:4318
+  TRACING_ENABLED: "true"
+  TRACE_SAMPLE_RATIO: "1.0"
+  K8S_NAMESPACE: aiops
+  # Healing rails. Same defaults as Compose; flip HEALING_ENABLED to "true" (and restart
+  # the healing engine and gateway) to let playbooks act on the cluster.
+  HEALING_ENABLED: "false"
+  HEALING_EXECUTOR: kubernetes
+  HEALING_MAX_ACTIONS_PER_HOUR: "10"
+  HEALING_COOLDOWN_SECONDS: "300"
+  HEALING_MIN_CONFIDENCE: "0.7"
+  HEALING_MIN_REPLICAS: "1"
+  HEALING_MAX_REPLICAS: "3"
+  HEALING_GLOBAL_MAX_CONTAINERS: "20"
+  K8S_ROLLOUT_TIMEOUT_SECONDS: "90"

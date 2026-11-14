@@ -78,9 +78,8 @@ to let Prometheus do collection and use PromQL as our query language.
 ### One `MetricSample` shape for everything
 The anomaly detector should not know whether a number came from Prometheus, a Kubernetes
 API, or a business event. `metrics-agent` is the only component that knows about sources;
-everything downstream sees a uniform, validated feature vector. This is what makes the
-platform portable from Mojaloop to MOSIP to Beckn — swap the collection adapter, keep the
-intelligence.
+everything downstream sees a uniform, validated feature vector. Together with the topology
+file (section 7), this is what makes it a common platform rather than a Mojaloop tool.
 
 ---
 
@@ -143,20 +142,27 @@ append-only. Reordering it would silently invalidate every saved model.
 
 ---
 
-## 7. Portability to other DPI platforms
+## 7. One platform for any DPI system
 
-The `platform` field on every record and the `AIOPS_DPI_PLATFORM` setting exist so a
-single deployment can be re-targeted:
+No AIOps service names a DPI platform. What each one needs is generic:
 
-| Platform | Services monitored | Distinctive metric |
-|----------|-------------------|--------------------|
-| Mojaloop | ml-api-adapter, quoting-service, central-ledger, account-lookup | `settlement_lag_seconds` |
-| MOSIP | authentication, ID repository, credential issuance | `verification_latency_seconds` |
-| Beckn | gateway, BAP, BPP registry | search-to-confirm funnel latency |
+| Component | Needs | Comes from |
+|-----------|-------|------------|
+| metrics-agent | the services to collect | Prometheus discovery (`up`), with the topology for reporting |
+| anomaly-detector | a model per service | trained on that service's own history |
+| traffic-predictor | per-service load history | the same history |
+| rca-engine | who calls whom, to find the deepest failing dependency | **topology file** |
+| healing-engine | a service's callers (for circuit breakers) and dependencies | **topology file** |
+| dashboard | the service graph | `GET /api/topology` |
 
-`MetricSample` already carries all three DPI-specific fields, so the schema does not
-change when the target does — only the collection adapter in module 3 and the metric
-profile it queries.
+The topology is a JSON file (`config/topology.*.json`, format in
+[config/README.md](../config/README.md)), selected with `AIOPS_TOPOLOGY` (Compose) or the
+`aiops-topology` ConfigMap (Kubernetes), and validated at load: unknown callees, self-calls
+and cycles are rejected. `AIOPS_DPI_PLATFORM` is only a label on records.
+
+To monitor another DPI system: expose the `dpi_*` metrics with a `service` label, write its
+topology file, and train. The bundled workload is a simulated Mojaloop deployment
+(`config/topology.mojaloop.json`).
 
 ---
 
@@ -169,7 +175,9 @@ change:
   restart counts and OOMKill events come from the real thing.
 - `healing-engine` playbooks swap the Docker SDK for the Kubernetes API: delete a pod
   instead of restarting a container, patch a Deployment's replica count instead of a
-  Compose scale, `rollout undo` instead of a simulated rollback.
+  Compose scale, `rollout undo` instead of a simulated rollback. **Built:**
+  `KubernetesExecutor`, selected by `HEALING_EXECUTOR=auto` inside a pod. See
+  [KUBERNETES.md](KUBERNETES.md).
 - `chaos-agent` can use real pod eviction and network policies.
 
 Everything in layers 3 and 4 — the models, correlation, incident lifecycle, dashboard —

@@ -14,13 +14,14 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from aiops_common.config import get_settings
-from aiops_common.constants import MOJALOOP_DEPENDENCIES, MOJALOOP_SERVICES
+from aiops_common.config import get_settings, running_in_kubernetes
 from aiops_common.log import get_logger
 from aiops_common.schemas import new_id, utc_now
+from aiops_common.topology import get_topology
 
 from . import health_rules
 from .health_rules import DEFAULT_THRESHOLDS
+from .k8s_chaos import roll_out_defective_version
 from .models import (
     Anomaly,
     AutomationSummary,
@@ -142,11 +143,11 @@ async def overview(request: Request) -> Overview:
     if not snapshots:
         notes.append(
             "No metrics in the database yet. Start the Mojaloop simulator and metrics "
-            "agent (modules 2-3), or run scripts/seed_demo_data.py for sample data."
+            "agent (modules 2-3); the first samples arrive within a minute."
         )
     if not counts.get("anomalies_24h"):
         notes.append(
-            "No anomalies recorded. The anomaly detector (module 4) is not running yet."
+            "No anomalies recorded yet: every service is within its learned baseline."
         )
     if settings.healing.enabled:
         notes.append("Automated remediation is ENABLED. Playbooks will execute for real.")
@@ -234,11 +235,13 @@ async def service_detail(
 
 @router.get("/topology", summary="Service dependency graph used by root cause analysis")
 async def topology() -> dict[str, Any]:
+    graph = get_topology()
     return {
-        "services": list(MOJALOOP_SERVICES),
+        "name": graph.name,
+        "services": list(graph.services),
         "edges": [
             {"from": service, "to": dependency}
-            for service, dependencies in MOJALOOP_DEPENDENCIES.items()
+            for service, dependencies in graph.dependencies.items()
             for dependency in dependencies
         ],
     }
@@ -266,8 +269,12 @@ async def anomaly_timeline(
     request: Request,
     hours: Annotated[int, Query(ge=1, le=720)] = 24,
     bucket_minutes: Annotated[int, Query(ge=1, le=1440)] = 15,
+    service: str | None = None,
+    min_score: Annotated[float, Query(ge=0.0, le=1.0)] = 0.0,
 ) -> list[TimelineBucket]:
-    rows = await _repo(request).anomaly_timeline(hours=hours, bucket_minutes=bucket_minutes)
+    rows = await _repo(request).anomaly_timeline(
+        hours=hours, bucket_minutes=bucket_minutes, service=service, min_score=min_score
+    )
     return [TimelineBucket(**row) for row in rows]
 
 
@@ -318,6 +325,11 @@ async def incident_detail(request: Request, incident_id: str) -> IncidentDetail:
 
 
 def _incident_model(row: dict[str, Any]) -> Incident:
+    # Older incidents were stored with a "[Live] " title prefix (from when seeded demo
+    # incidents shared the table). Served without it.
+    title = row.get("title") or ""
+    if title.startswith("[Live] "):
+        row = {**row, "title": title.removeprefix("[Live] ")}
     opened, closed = row.get("opened_at"), row.get("closed_at")
     duration = (closed - opened).total_seconds() if opened and closed else None
     return Incident(**row, duration_seconds=duration)
@@ -489,31 +501,44 @@ async def start_chaos_run(
         body.experiment, "central-ledger"
     )
 
-    # 1. Inject the fault into the target service simulator
-    injected = await _inject_simulator_fault(
-        target_service=target_service,
-        experiment=body.experiment,
-        duration_seconds=body.duration_seconds,
-        magnitude=body.magnitude,
-        parameters=body.parameters,
-    )
-    if not injected:
-        log.warning(
-            "chaos.injection_failed_continuing",
-            target=target_service,
-            experiment=body.experiment,
+    # 1. On Kubernetes a bad deploy is a real rollout of a defective revision; everywhere
+    #    else (and if that rollout fails) the fault is injected into the running simulator.
+    rolled_out: tuple[str, str] | None = None
+    if body.experiment == "bad_deploy" and running_in_kubernetes():
+        rolled_out = await roll_out_defective_version(
+            target_service, get_settings().healing.k8s_namespace
         )
 
-    # 2. If it's a bad deploy experiment, also record a canary deployment
+    if rolled_out is None:
+        injected = await _inject_simulator_fault(
+            target_service=target_service,
+            experiment=body.experiment,
+            duration_seconds=body.duration_seconds,
+            magnitude=body.magnitude,
+            parameters=body.parameters,
+        )
+        if not injected:
+            log.warning(
+                "chaos.injection_failed_continuing",
+                target=target_service,
+                experiment=body.experiment,
+            )
+
+    # 2. If it's a bad deploy experiment, record the deployment for change correlation
     if body.experiment == "bad_deploy":
+        from_version, to_version = rolled_out or ("v1.0.4", "v1.0.5-canary")
         await repo.record_deployment(
             deployment_id=new_id("dep"),
             service=target_service,
-            from_version="v1.0.4",
-            to_version="v1.0.5-canary",
+            from_version=from_version,
+            to_version=to_version,
             change_type="deploy",
             triggered_by="chaos-agent",
-            notes=f"Canary deployment injected for {body.experiment} experiment",
+            notes=(
+                f"Kubernetes rollout of {to_version} for {body.experiment} experiment"
+                if rolled_out
+                else f"Canary deployment injected for {body.experiment} experiment"
+            ),
         )
 
     # 3. Create the chaos run record in TimescaleDB

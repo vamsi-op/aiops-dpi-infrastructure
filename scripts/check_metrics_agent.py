@@ -529,7 +529,7 @@ async def check_no_conflicting_producer(db: Database, status: dict[str, Any]) ->
         fail(
             f"{seeded} seeded row(s) in the last 5 minutes (agent reported {conflicts}). "
             "The dashboard sums tps across instances, so reported traffic is inflated. "
-            "Run: python scripts/seed_demo_data.py --clear"
+            "Reset the database (.\\scripts\\stack.ps1 reset) to remove them."
         )
     else:
         ok("no seeded rows in the recent window; the agent is the only producer")

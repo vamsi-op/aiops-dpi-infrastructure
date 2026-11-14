@@ -4,6 +4,7 @@
 # prometheus-client and OpenTelemetry.
 #
 # Docker SDK is needed to execute remediation actions (restart containers, scale services).
-# Module 10 will add kubernetes client for production deployment.
+# The Kubernetes client drives the same playbooks on the kind cluster (module 10).
 -e ../../libs/aiops_common
 docker==7.1.0
+kubernetes==33.1.0

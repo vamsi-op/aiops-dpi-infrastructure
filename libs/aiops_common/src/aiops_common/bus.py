@@ -300,9 +300,15 @@ class EventBus:
         """
         await self.ensure_group(stream, group)
         while True:
-            for event in await self.read(
-                stream, group, consumer, count=count, block_ms=block_ms
-            ):
+            try:
+                events = await self.read(
+                    stream, group, consumer, count=count, block_ms=block_ms
+                )
+            except EventBusError as exc:
+                log.debug("bus.subscribe_read_idle", stream=str(stream), error=str(exc))
+                await asyncio.sleep(0.5)
+                continue
+            for event in events:
                 yield event
                 if auto_ack:
                     await self.ack(stream, group, event.message_id)
@@ -433,6 +439,14 @@ class EventBus:
         self, key: str, value: str = "1", *, ttl_seconds: int | None = None
     ) -> None:
         await self.client.set(key, value, ex=ttl_seconds)
+
+    async def claim_flag(self, key: str, value: str = "1", *, ttl_seconds: int) -> bool:
+        """Atomically set `key` only if it is absent (Redis SET NX). True if this caller won.
+
+        For check-then-act races: two workers that both read "no flag" and then both act is
+        exactly the bug a plain get + set cannot prevent.
+        """
+        return bool(await self.client.set(key, value, ex=ttl_seconds, nx=True))
 
     async def get_flag(self, key: str) -> str | None:
         value = await self.client.get(key)

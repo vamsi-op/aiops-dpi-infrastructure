@@ -124,10 +124,13 @@ jobs:
       # mypy checks the backend against its Pydantic models and tsc checks the frontend
       # against types.ts, but nothing checks those two agree. A field renamed on one side
       # passes both jobs and renders an empty card in the browser. This closes that gap by
-      # seeding data, serving the real gateway, and diffing every required UI field
-      # against the actual response bodies.
-      - name: Seed demo data
-        run: python scripts/seed_demo_data.py --days 1
+      # loading one fixture row per table, serving the real gateway, and diffing every
+      # required UI field against the actual response bodies. The fixture exists only in
+      # this throwaway database; see the header of tests/fixtures/contract_fixture.sql.
+      - name: Load contract fixture
+        env:
+          PGPASSWORD: aiops_ci_password
+        run: psql -h localhost -U aiops -d aiops -v ON_ERROR_STOP=1 -f tests/fixtures/contract_fixture.sql
 
       - name: Start API gateway
         # `services/api_gateway` is not an installed package - pytest puts it on the path

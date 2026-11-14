@@ -41,6 +41,22 @@ ORDER BY service
 MIN_SAMPLES_PER_BUCKET = 2
 
 
+SELECT_LATEST_TPS = """
+SELECT tps
+FROM service_metrics
+WHERE service = :service
+  AND timestamp > now() - interval '10 minutes'
+ORDER BY timestamp DESC
+LIMIT 1
+"""
+
+
+async def load_latest_tps(db: Database, service: str) -> float | None:
+    """The service's most recent live throughput, if it reported in the last 10 minutes."""
+    row = await db.fetch_one(SELECT_LATEST_TPS, {"service": service})
+    return float(row["tps"]) if row and row.get("tps") is not None else None
+
+
 async def load_services(db: Database, *, days: int) -> list[str]:
     rows = await db.fetch_all(SELECT_SERVICES, {"days": days})
     return [str(row["service"]) for row in rows]

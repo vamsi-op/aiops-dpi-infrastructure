@@ -24,7 +24,7 @@ def test_all_signals_nominal_is_healthy() -> None:
     status, reasons = health_rules.evaluate(
         {
             "error_ratio": 0.002,
-            "latency_p99_seconds": 0.4,
+            "latency_p99_seconds": 0.12,
             "cpu_utilisation_ratio": 0.35,
             "memory_utilisation_ratio": 0.5,
             "queue_depth": 2,
@@ -48,8 +48,8 @@ def test_stale_wins_over_every_other_signal() -> None:
     [
         ({"error_ratio": 0.02}, "degraded"),
         ({"error_ratio": 0.08}, "critical"),
-        ({"latency_p99_seconds": 1.5}, "degraded"),
-        ({"latency_p99_seconds": 4.0}, "critical"),
+        ({"latency_p99_seconds": 0.4}, "degraded"),
+        ({"latency_p99_seconds": 1.5}, "critical"),
         ({"memory_utilisation_ratio": 0.85}, "degraded"),
         ({"memory_utilisation_ratio": 0.95}, "critical"),
         ({"cpu_utilisation_ratio": 0.8}, "degraded"),

@@ -145,15 +145,16 @@ async def check_cascade_detection() -> None:
     await db.connect()
 
     try:
-        # Clear any existing faults
+        # Clear any existing faults across all services and let settle
         for service, port in SIM_PORTS.items():
             try:
-                delete(f"http://localhost:{port}/faults")
+                delete(f"http://localhost:{port}/sim/faults")
             except Exception:
                 pass
+        await asyncio.sleep(5)
 
-        # Record baseline incident count
-        await db.fetchval("SELECT COUNT(*) FROM incidents WHERE status = 'open'")
+        # Resolve any prior open/mitigating incidents so this test starts fresh
+        await db.execute("UPDATE incidents SET status = 'resolved', closed_at = NOW() WHERE status IN ('open', 'mitigating')")
 
         # Inject fault into central-ledger
         fault_start = time.time()
@@ -161,40 +162,38 @@ async def check_cascade_detection() -> None:
             f"  Injecting error_injection into central-ledger at {datetime.now(UTC).isoformat()}"
         )
         post_json(
-            f"http://localhost:{SIM_PORTS['central-ledger']}/faults",
+            f"http://localhost:{SIM_PORTS['central-ledger']}/sim/faults",
             {
-                "fault_type": "error_injection",
-                "magnitude": 0.30,
+                "kind": "error_injection",
+                "magnitude": 0.40,
+                "duration_seconds": 300,
             },
         )
 
-        # Wait for cascade to develop and be detected
-        print(f"  Waiting {SETTLE_SECONDS}s for cascade to develop...")
-        await asyncio.sleep(SETTLE_SECONDS)
+        # Poll for cascade incident to develop and be detected
+        print("  Waiting for cascade incident to be created (max 240s)...")
+        cascade_incident = None
+        deadline = time.time() + 240
+        while time.time() < deadline:
+            incidents = await db.fetch_all(
+                f"""
+                SELECT incident_id, opened_at, affected_services, hypotheses, ai_summary
+                FROM {TABLE_INCIDENTS}
+                WHERE 'central-ledger' = ANY(affected_services)
+                AND opened_at >= :p1
+                ORDER BY opened_at DESC
+                LIMIT 10
+            """,
+                {"p1": datetime.fromtimestamp(fault_start - 30, tz=UTC)},
+            )
+            if incidents:
+                cascade_incident = incidents[0]
+                break
+            await asyncio.sleep(5)
 
-        # Check for incident with topological correlation
-        incidents = await db.fetch(
-            f"""
-            SELECT incident_id, opened_at, affected_services, hypotheses_json, ai_summary
-            FROM {TABLE_INCIDENTS}
-            WHERE status = 'open'
-            AND opened_at >= $1
-            ORDER BY opened_at DESC
-            LIMIT 5
-        """,
-            datetime.fromtimestamp(fault_start, tz=UTC),
-        )
-
-        if not incidents:
+        if not cascade_incident:
             fail("No incident created after fault injection")
             return
-
-        # Find incident affecting central-ledger
-        cascade_incident = None
-        for inc in incidents:
-            if "central-ledger" in inc["affected_services"]:
-                cascade_incident = inc
-                break
 
         if not cascade_incident:
             fail("No incident found affecting central-ledger")
@@ -206,12 +205,12 @@ async def check_cascade_detection() -> None:
         )
 
         # Check for topological hypothesis
-        hypotheses = cascade_incident["hypotheses_json"]
+        hypotheses = cascade_incident["hypotheses"]
         if not hypotheses:
             fail("Incident has no hypotheses")
             return
 
-        topological = [h for h in hypotheses if h.get("category") == "SERVICE"]
+        topological = [h for h in hypotheses if h.get("category", "").upper() == "SERVICE"]
         if not topological:
             warn("No SERVICE hypothesis found (expected for cascade detection)")
         else:
@@ -233,7 +232,7 @@ async def check_cascade_detection() -> None:
             fail("No AI summary in incident")
 
         # Clean up fault
-        delete(f"http://localhost:{SIM_PORTS['central-ledger']}/faults")
+        delete(f"http://localhost:{SIM_PORTS['central-ledger']}/sim/faults")
         print("  Fault cleared")
 
     finally:
@@ -252,19 +251,27 @@ async def check_change_correlation() -> None:
     await db.connect()
 
     try:
+        # Resolve any prior open/mitigating incidents
+        await db.execute("UPDATE incidents SET status = 'resolved', closed_at = NOW() WHERE status IN ('open', 'mitigating')")
+
         # Insert a fake deployment
         deploy_time = datetime.now(UTC)
+        deploy_id = f"deploy-{int(deploy_time.timestamp())}"
         await db.execute(
             """
-            INSERT INTO deployments (service, version, deployed_at, deployed_by, deployment_id)
-            VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT DO NOTHING
-        """,
-            "quoting-service",
-            "v1.2.3-test",
-            deploy_time,
-            "check-script",
-            f"deploy-{int(deploy_time.timestamp())}",
+            INSERT INTO deployments (deployment_id, occurred_at, service, platform, to_version, change_type, triggered_by)
+            VALUES (:deployment_id, :occurred_at, :service, :platform, :to_version, :change_type, :triggered_by)
+            ON CONFLICT (deployment_id) DO NOTHING
+            """,
+            {
+                "deployment_id": deploy_id,
+                "occurred_at": deploy_time,
+                "service": "quoting-service",
+                "platform": "mojaloop",
+                "to_version": "v1.2.3-test",
+                "change_type": "deploy",
+                "triggered_by": "check-script",
+            },
         )
 
         print(f"  Inserted deployment for quoting-service at {deploy_time.isoformat()}")
@@ -273,39 +280,41 @@ async def check_change_correlation() -> None:
         await asyncio.sleep(5)
         print("  Injecting fault into quoting-service")
         post_json(
-            f"http://localhost:{SIM_PORTS['quoting-service']}/faults",
+            f"http://localhost:{SIM_PORTS['quoting-service']}/sim/faults",
             {
-                "fault_type": "error_injection",
-                "magnitude": 0.25,
+                "kind": "error_injection",
+                "magnitude": 0.40,
             },
         )
 
-        # Wait for detection and correlation
-        print(f"  Waiting {SETTLE_SECONDS}s for detection and correlation...")
-        await asyncio.sleep(SETTLE_SECONDS)
+        # Poll for detection and correlation
+        print("  Waiting for quoting-service incident (max 180s)...")
+        incident = None
+        deadline = time.time() + 180
+        while time.time() < deadline:
+            incidents = await db.fetch_all(
+                f"""
+                SELECT incident_id, affected_services, hypotheses
+                FROM {TABLE_INCIDENTS}
+                WHERE status IN ('open', 'mitigating', 'resolved')
+                AND opened_at >= :p1
+                AND 'quoting-service' = ANY(affected_services)
+                ORDER BY opened_at DESC
+                LIMIT 3
+            """,
+                {"p1": deploy_time - timedelta(seconds=10)},
+            )
+            if incidents:
+                incident = incidents[0]
+                break
+            await asyncio.sleep(5)
 
-        # Check for incident with change correlation
-        incidents = await db.fetch(
-            f"""
-            SELECT incident_id, affected_services, hypotheses_json
-            FROM {TABLE_INCIDENTS}
-            WHERE status = 'open'
-            AND opened_at >= $1
-            AND 'quoting-service' = ANY(affected_services)
-            ORDER BY opened_at DESC
-            LIMIT 3
-        """,
-            deploy_time - timedelta(seconds=10),
-        )
-
-        if not incidents:
+        if not incident:
             warn("No incident found for quoting-service after deployment+fault")
             return
+        hypotheses = incident["hypotheses"]
 
-        incident = incidents[0]
-        hypotheses = incident["hypotheses_json"]
-
-        change = [h for h in hypotheses if h.get("category") == "CHANGE"]
+        change = [h for h in hypotheses if h.get("category", "").upper() == "CHANGE"]
         if not change:
             warn("No CHANGE hypothesis found (expected when fault follows deployment)")
         else:
@@ -315,7 +324,7 @@ async def check_change_correlation() -> None:
             )
 
         # Clean up
-        delete(f"http://localhost:{SIM_PORTS['quoting-service']}/faults")
+        delete(f"http://localhost:{SIM_PORTS['quoting-service']}/sim/faults")
         print("  Fault cleared")
 
     finally:
@@ -331,19 +340,26 @@ async def check_event_correlation() -> None:
     await db.connect()
 
     try:
-        # Insert a chaos event
+        # Resolve any prior open/mitigating incidents
+        await db.execute("UPDATE incidents SET status = 'resolved', closed_at = NOW() WHERE status IN ('open', 'mitigating')")
+
+        # Insert a chaos run
         chaos_time = datetime.now(UTC)
+        chaos_id = f"chaos-{int(chaos_time.timestamp())}"
         await db.execute(
             """
-            INSERT INTO events (event_id, event_type, service, description, created_at)
-            VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT DO NOTHING
-        """,
-            f"chaos-{int(chaos_time.timestamp())}",
-            "chaos_experiment",
-            "ml-api-adapter",
-            "Network latency injection",
-            chaos_time,
+            INSERT INTO chaos_runs (run_id, started_at, experiment, target_service, platform, status)
+            VALUES (:run_id, :started_at, :experiment, :target_service, :platform, :status)
+            ON CONFLICT (run_id) DO NOTHING
+            """,
+            {
+                "run_id": chaos_id,
+                "started_at": chaos_time,
+                "experiment": "network_latency",
+                "target_service": "ml-api-adapter",
+                "platform": "mojaloop",
+                "status": "running",
+            },
         )
 
         print(f"  Inserted chaos event for ml-api-adapter at {chaos_time.isoformat()}")
@@ -351,36 +367,40 @@ async def check_event_correlation() -> None:
         # Inject fault
         await asyncio.sleep(5)
         post_json(
-            f"http://localhost:{SIM_PORTS['ml-api-adapter']}/faults",
+            f"http://localhost:{SIM_PORTS['ml-api-adapter']}/sim/faults",
             {
-                "fault_type": "network_latency",
+                "kind": "network_latency",
                 "magnitude": 0.5,
             },
         )
 
-        print(f"  Waiting {SETTLE_SECONDS}s for detection and correlation...")
-        await asyncio.sleep(SETTLE_SECONDS)
+        print("  Waiting for ml-api-adapter chaos incident (max 180s)...")
+        incident = None
+        deadline = time.time() + 180
+        while time.time() < deadline:
+            incidents = await db.fetch_all(
+                f"""
+                SELECT incident_id, hypotheses
+                FROM {TABLE_INCIDENTS}
+                WHERE status IN ('open', 'mitigating', 'resolved')
+                AND opened_at >= :p1
+                AND 'ml-api-adapter' = ANY(affected_services)
+                ORDER BY opened_at DESC
+                LIMIT 3
+            """,
+                {"p1": chaos_time - timedelta(seconds=10)},
+            )
+            if incidents:
+                incident = incidents[0]
+                break
+            await asyncio.sleep(5)
 
-        # Check for incident with event correlation
-        incidents = await db.fetch(
-            f"""
-            SELECT incident_id, hypotheses_json
-            FROM {TABLE_INCIDENTS}
-            WHERE status = 'open'
-            AND opened_at >= $1
-            AND 'ml-api-adapter' = ANY(affected_services)
-            ORDER BY opened_at DESC
-            LIMIT 3
-        """,
-            chaos_time - timedelta(seconds=10),
-        )
-
-        if not incidents:
+        if not incident:
             warn("No incident found for ml-api-adapter after chaos event")
             return
 
-        hypotheses = incidents[0]["hypotheses_json"]
-        event = [h for h in hypotheses if h.get("category") == "EVENT"]
+        hypotheses = incident["hypotheses"]
+        event = [h for h in hypotheses if h.get("category", "").upper() == "EVENT"]
 
         if not event:
             warn("No EVENT hypothesis found (expected for chaos experiment)")
@@ -396,7 +416,7 @@ async def check_event_correlation() -> None:
                 warn(f"Expected 99% confidence for chaos, got {event[0]['confidence']:.0%}")
 
         # Clean up
-        delete(f"http://localhost:{SIM_PORTS['ml-api-adapter']}/faults")
+        delete(f"http://localhost:{SIM_PORTS['ml-api-adapter']}/sim/faults")
         print("  Fault cleared")
 
     finally:

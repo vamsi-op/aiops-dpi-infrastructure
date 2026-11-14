@@ -7,7 +7,7 @@ import contextlib
 import json
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
@@ -22,7 +22,7 @@ from aiops_common.schemas import ForecastPoint, ModelRun, PredictionEvent, utc_n
 from . import capacity as capacity_module
 from .backtest import HorizonAccuracy, evaluate, headroom_for
 from .forecaster import BASELINE_NAME, MODEL_NAME, fit, forecast
-from .history import load_history, load_services
+from .history import load_history, load_latest_tps, load_services
 
 log = get_logger(__name__)
 
@@ -82,6 +82,18 @@ class PredictorStatus:
             "scaling_recommendations": self.scaling_recommendations,
         }
 
+
+
+def forecast_origin(last_bucket: datetime, now: datetime) -> datetime:
+    """The hour forecasts start after (the first point is origin + 1 h, i.e. this hour).
+
+    Not simply the last hourly bucket: when history is not continuous up to the present - a
+    fresh deployment loaded with archived history, or a collection outage - that bucket can be
+    a day old, and every forecast and its "peak expected" time landed in the past (observed:
+    peaks dated Nov 13 on Nov 14).
+    """
+    previous_hour = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
+    return max(last_bucket, previous_hour)
 
 class PredictorMetrics:
     def __init__(self, registry: CollectorRegistry) -> None:
@@ -272,8 +284,9 @@ class TrafficPredictor:
                 )
 
             capacity = capacities.get(service) or capacity_module.fallback_capacity(service)
-            current_tps = history[-1].tps if history else 0.0
-            origin = history[-1].at
+            origin = forecast_origin(history[-1].at, utc_now())
+            latest = await load_latest_tps(self._db, service)
+            current_tps = latest if latest is not None else history[-1].tps
 
             for horizon in self._horizons:
                 event = self._build_event(

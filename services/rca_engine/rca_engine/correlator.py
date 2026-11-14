@@ -13,15 +13,18 @@ from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from aiops_common.config import get_settings
-from aiops_common.constants import MOJALOOP_DEPENDENCIES, RootCauseCategory
+from aiops_common.constants import RootCauseCategory
 from aiops_common.log import get_logger
 from aiops_common.schemas import (
     AnomalyEvent,
     RootCauseHypothesis,
 )
+from aiops_common.topology import get_topology
 
 if TYPE_CHECKING:
     from aiops_common.db import Database
+
+    from .telemetry import TelemetryClient
 
 log = get_logger(__name__)
 
@@ -32,6 +35,10 @@ EVENT_WINDOW_SECONDS = 180  # 3 minutes
 
 # Confidence thresholds
 MIN_HYPOTHESIS_CONFIDENCE = 0.3
+# A running chaos experiment is context for an incident, ranked below any diagnosis.
+CHAOS_CONTEXT_CONFIDENCE = 0.6
+# Added when real traces show failed calls into the suspected service.
+TRACE_CONFIRMATION_BOOST = 0.05
 
 
 class Correlator:
@@ -41,9 +48,12 @@ class Correlator:
     change_window_seconds: int = CHANGE_WINDOW_SECONDS
     event_window_seconds: int = EVENT_WINDOW_SECONDS
 
-    def __init__(self, db: Database) -> None:
+    def __init__(self, db: Database, telemetry: TelemetryClient | None = None) -> None:
         self.db = db
         self.settings = get_settings()
+        # Logs (Loki) and traces (Tempo service graph) as extra evidence. Optional: without
+        # it, hypotheses rest on metrics alone, exactly as before.
+        self.telemetry = telemetry
 
     async def correlate_temporal(
         self,
@@ -116,30 +126,39 @@ class Correlator:
                 ],
             )
 
-        # Find root service(s) - those not downstream of any other affected service
-        root_services = set(affected_services)
-
-        for service in affected_services:
-            downstream = MOJALOOP_DEPENDENCIES.get(service, ())
-            # Remove services that are downstream of this one
-            root_services -= {d for d in downstream if d in affected_services}
+        # Find the root: an affected service none of whose own dependencies is affected.
+        #
+        # The topology maps each service to the services it *calls*. Failure flows
+        # the other way - a degraded dependency makes its callers wait and fail - so the root
+        # of a cascade is the deepest affected callee, not the outermost caller. (This used
+        # to be inverted and blamed ml-api-adapter, the edge, for a central-ledger failure;
+        # the circuit-breaker playbook would then have tripped breakers on the wrong service.)
+        topology = get_topology()
+        root_services = {
+            service
+            for service in affected_services
+            if not any(dep in affected_services for dep in topology.dependencies_of(service))
+        }
 
         if not root_services:
             # Cycle or no clear root - fall back to service with most severe anomaly
             most_severe = max(anomalies, key=lambda a: a.score)
             root_services = {most_severe.service}
 
-        # Count affected downstream services per root candidate
-        root_service = next(iter(root_services))  # Take first if multiple
-        downstream_affected = [
-            svc
-            for svc in MOJALOOP_DEPENDENCIES.get(root_service, ())
-            if svc in affected_services
-        ]
+        # Several independent roots: the one that went wrong first.
+        first_seen = {s: min(a.detected_at for a in anomalies if a.service == s) for s in root_services}
+        root_service = min(root_services, key=lambda s: (first_seen[s], s))
 
-        evidence = [f"Service {root_service} is upstream of affected services"]
+        # Affected services that (transitively) call the root: the blast radius.
+        downstream_affected = sorted(
+            s
+            for s in affected_services
+            if s != root_service and topology.calls_transitively(s, root_service)
+        )
+
+        evidence = [f"{root_service} is the deepest affected dependency"]
         if downstream_affected:
-            evidence.append(f"Cascade detected to: {', '.join(downstream_affected)}")
+            evidence.append(f"Cascade detected to its callers: {', '.join(downstream_affected)}")
         evidence.append(f"Total affected services: {len(affected_services)}")
 
         # Higher confidence with more downstream impact
@@ -179,11 +198,13 @@ class Correlator:
         """
 
         lookback = earliest_anomaly - timedelta(seconds=window_seconds)
+        # Look 60 s forward so a deployment recorded just after fault injection still correlates.
+        lookahead = earliest_anomaly + timedelta(seconds=60)
         rows = await self.db.fetch_all(
             query,
             {
                 "start": lookback,
-                "end": earliest_anomaly,
+                "end": lookahead,
                 "platform": self.settings.dpi_platform,
             },
         )
@@ -300,12 +321,25 @@ class Correlator:
                 continue
             affected_services = {a.service for a in anomalies}
 
+            # A bad_deploy experiment *is* a deployment: it records (on Kubernetes, rolls out)
+            # a new version, and correlate_change turns that into a CHANGE hypothesis. An
+            # EVENT hypothesis here outranked it at 0.99, so healing restarted the service
+            # instead of rolling it back - which on Kubernetes would restart straight back
+            # into the defective version. The change is the root cause; let it lead.
+            if row.get("experiment") == "bad_deploy":
+                continue
+
             if chaos_service in affected_services:
                 hypotheses.append(
                     RootCauseHypothesis(
                         category=RootCauseCategory.EVENT,
                         target=row["run_id"],
-                        confidence=0.99,  # Very high - we caused it!
+                        # Context, not the diagnosis. At 0.99 this outranked what RCA found
+                        # from telemetry, so every chaos demo "explained" itself by reading the
+                        # chaos table - and the scorecard named the experiment, not the
+                        # failing service. Listed below the telemetry hypotheses, so the
+                        # incident shows both: what broke (the diagnosis) and why (the run).
+                        confidence=CHAOS_CONTEXT_CONFIDENCE,
                         summary=f"Active chaos experiment: {row['experiment']} on {chaos_service}",
                         evidence=[
                             f"Chaos run {row['run_id']} is active",
@@ -347,6 +381,26 @@ class Correlator:
         event_hypotheses = await self.correlate_event(anomalies)
         hypotheses.extend(event_hypotheses)
 
+        if self.telemetry is not None and hypotheses:
+            await self._attach_telemetry(anomalies, hypotheses)
+
+        # A deployment *of an affected service* is a more specific explanation than "this
+        # service is the one affected", whatever the timing inside the change window. The
+        # change confidence decays with time-to-anomaly (1 - t/600); detection at 102 s gave
+        # 0.83, below the fixed 0.90 of the single-service hypothesis, so a bad deploy was
+        # restarted instead of rolled back.
+        affected = {a.service for a in anomalies}
+        generic = [
+            h for h in hypotheses
+            if h.category == RootCauseCategory.SERVICE and h.target in affected
+        ]
+        if generic:
+            floor = max(h.confidence for h in generic) + 0.02
+            for h in hypotheses:
+                # correlate_change only emits deployments of affected services.
+                if h.category == RootCauseCategory.CHANGE:
+                    h.confidence = round(min(0.99, max(h.confidence, floor)), 3)
+
         # Sort by confidence, highest first
         hypotheses.sort(key=lambda h: h.confidence, reverse=True)
 
@@ -361,6 +415,37 @@ class Correlator:
         )
 
         return hypotheses
+
+    async def _attach_telemetry(
+        self, anomalies: list[AnomalyEvent], hypotheses: list[RootCauseHypothesis]
+    ) -> None:
+        """Add log and trace evidence to every service hypothesis.
+
+        Failed calls *into* a suspected service, seen in real traces, confirm it is hurting
+        its callers - the cascade direction observed, not inferred - and raise confidence a
+        little. Logs only add evidence text: a service that logs no errors can still be the
+        cause (a slow ledger often logs nothing), so silence must not count against it.
+        """
+        times = [a.detected_at for a in anomalies]
+        window = int((max(times) - min(times)).total_seconds()) + self.temporal_window_seconds
+        evidence = await self.telemetry.collect(window)  # type: ignore[union-attr]
+        for hypothesis in hypotheses:
+            if hypothesis.category != RootCauseCategory.SERVICE:
+                continue
+            lines = evidence.statements(hypothesis.target)
+            hypothesis.evidence.extend(lines)
+            failing = evidence.failing_callers_of(hypothesis.target)
+            if failing:
+                hypothesis.correlated_metrics["trace_failed_calls_in"] = round(
+                    sum(failed for _, failed, _ in failing), 1
+                )
+                hypothesis.confidence = round(
+                    min(0.99, hypothesis.confidence + TRACE_CONFIRMATION_BOOST), 3
+                )
+            if evidence.log_problems.get(hypothesis.target):
+                hypothesis.correlated_metrics["log_problems"] = float(
+                    evidence.log_problems[hypothesis.target]
+                )
 
     correlate = correlate_all
 

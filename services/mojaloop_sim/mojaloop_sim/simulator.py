@@ -16,9 +16,11 @@ import asyncio
 import contextlib
 import random
 
+from aiops_common.constants import MOJALOOP_DEPENDENCIES
 from aiops_common.log import get_logger
 from aiops_common.schemas import utc_now
 
+from .dependencies import DependencyMonitor, combine
 from .faults import FaultKind, FaultRegistry
 from .metrics import SimulatorMetrics
 from .profiles import ServiceProfile, get_profile
@@ -60,6 +62,11 @@ class Simulator:
             self.profile, base_tps=base_tps, seasonality=seasonality, rng=rng
         )
         self.faults = FaultRegistry(self.service, tick_seconds=TICK_SECONDS)
+        # Downstream calls and their circuit breakers: how a degraded dependency cascades
+        # into this service, and how an open breaker stops it (see dependencies.py).
+        self.dependencies = DependencyMonitor(
+            self.service, MOJALOOP_DEPENDENCIES.get(self.service, ())
+        )
         self.metrics = SimulatorMetrics(self.profile, rng=rng)
 
         self.last_state: ServiceState | None = None
@@ -73,6 +80,7 @@ class Simulator:
         if self._task is None or self._task.done():
             self._stopping.clear()
             self._task = asyncio.create_task(self._run(), name=f"sim-{self.service}")
+            self.dependencies.start()
             log.info(
                 "sim.started",
                 monitored_service=self.service,
@@ -83,6 +91,7 @@ class Simulator:
 
     async def stop(self) -> None:
         self._stopping.set()
+        await self.dependencies.stop()
         if self._task is not None:
             self._task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -105,7 +114,7 @@ class Simulator:
         """Advance the simulation one step and update the exported metrics."""
         now = utc_now()
         active = self.faults.active(now)
-        effects = self.faults.effects(now)
+        effects = combine(self.faults.effects(now), self.dependencies.effects())
 
         state = self.model.sample(now, effects)
         self.last_state = state
@@ -196,5 +205,6 @@ class Simulator:
                 "settlement_lag_seconds": round(state.settlement_lag_seconds, 2),
             },
             "active_faults": [fault.to_dict() for fault in self.faults.active()],
+            "dependencies": self.dependencies.snapshot(),
             "injectable_faults": [str(kind) for kind in FaultKind],
         }

@@ -59,7 +59,7 @@ FAULT_CASES: list[tuple[str, str, float, set[AnomalyKind]]] = [
         0.25,
         # A large error ratio may drag latency and queue depth with it, which legitimately
         # reads as multivariate - that is the honest answer for a composite signature.
-        {AnomalyKind.ERROR_BURST, AnomalyKind.MULTIVARIATE},
+        {AnomalyKind.ERROR_BURST, AnomalyKind.MULTIVARIATE, AnomalyKind.LATENCY_SPIKE},
     ),
     (
         "quoting-service",

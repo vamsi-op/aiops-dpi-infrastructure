@@ -1,34 +1,37 @@
-"""Per-service, hour-of-day-aware baseline statistics (module 4).
+"""Per-service, time-of-week-aware baseline statistics (module 4).
 
 Why this exists separately from the Isolation Forest
 ----------------------------------------------------
 The forest answers "is this sample unusual". It cannot say *why*, and an anomaly a human
 cannot interpret is an alert they will learn to ignore. These baselines answer the second
-question: for this service, at this hour of the day, how far from normal is each individual
+question: for this service, at this time of the week, how far from normal is each individual
 signal, measured in standard deviations.
 
 That is what fills `AnomalyEvent.feature_deviations`, what ranks
 `contributing_features`, and what `classify` reads to pick an `AnomalyKind` so module 6 can
-match a playbook. The forest decides *whether*; the baselines decide *what*.
+match a playbook. A seasonal model's forest also scores these deviations (see `model.fit`).
 
-Why hour-of-day
----------------
+Why time of week
+----------------
 The simulator's traffic follows a two-peak daily curve with roughly 2.7x between trough and
 peak, and a weekday/weekend swing on top. A single global mean would put every busy afternoon
 several sigma above "normal" and every quiet night several sigma below, so the detector would
-fire twice a day, for ever, on healthy traffic. Bucketing by hour removes the seasonality that
-is *expected* and leaves the deviation that is not.
+fire twice a day, for ever, on healthy traffic. Bucketing by hour removes the daily cycle.
 
-Weekday is deliberately **not** a third dimension. 28 days gives ~28 samples per
-(service, hour) bucket at hourly resolution; splitting by weekday as well would leave 4, and a
-standard deviation over 4 points is noise dressed as statistics. Module 5's forecaster models
-the weekly component instead, where it has the resolution to do it properly.
+Hour alone still pooled busy weekdays with quiet weekends. Friday evening - the busiest hour
+of the week - then sat well above an "all days at 19:00" average, and the detector raised
+warnings every Friday evening on healthy traffic. So statistics are kept per
+**(weekday, hour)** as well, and used whenever that bucket has enough samples
+(MIN_BUCKET_SAMPLES). The 28-day training set holds 16+ rows per (weekday, hour) - 15-minute
+rows over four weeks, plus 1-minute rows for the latest two days - and live collection adds
+four a minute. Sparse buckets fall back to hour of day, then to the service-wide figures.
 """
 
 from __future__ import annotations
 
 import math
 import statistics
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -73,21 +76,48 @@ class ServiceBaseline:
     service: str
     # (hour, feature) -> stats
     hourly: dict[tuple[int, str], FeatureStats] = field(default_factory=dict)
+    # (weekday, hour, feature) -> stats; weekday is Monday=0. Preferred when well populated.
+    weekly: dict[tuple[int, int, str], FeatureStats] = field(default_factory=dict)
     # feature -> stats, over all hours. The fallback for sparse buckets.
     overall: dict[str, FeatureStats] = field(default_factory=dict)
 
-    def stats_for(self, feature: str, hour: int) -> FeatureStats | None:
+    def stats_for(
+        self, feature: str, hour: int, weekday: int | None = None
+    ) -> FeatureStats | None:
+        """Most specific well-populated statistics: (weekday, hour), then hour, then overall."""
+        if weekday is not None:
+            stats = self.weekly.get((weekday, hour, feature))
+            if stats is not None and stats.samples >= MIN_BUCKET_SAMPLES:
+                return stats
         stats = self.hourly.get((hour, feature))
         if stats is not None and stats.samples >= MIN_BUCKET_SAMPLES:
             return stats
         return self.overall.get(feature)
 
+    def deviation_vector(
+        self, values: Sequence[float], hour: int | None, weekday: int | None = None
+    ) -> list[float]:
+        """`values` (ordered as ANOMALY_FEATURES) as signed sigma from that time's normal.
+
+        Unrounded, for the forest. `hour=None` uses the service-wide statistics. A feature
+        with no statistics at all reads 0.0 - "as expected" - rather than its raw value, which
+        would be on a different scale from every other column.
+        """
+        out = []
+        for feature, value in zip(ANOMALY_FEATURES, values, strict=True):
+            if hour is None:
+                stats = self.overall.get(feature)
+            else:
+                stats = self.stats_for(feature, hour, weekday)
+            out.append(stats.deviation(float(value)) if stats is not None else 0.0)
+        return out
+
     def deviations(self, sample: Any, at: datetime) -> dict[str, float]:
         """Signed sigma deviation for every feature in `ANOMALY_FEATURES`."""
-        hour = at.hour
+        hour, weekday = at.hour, at.weekday()
         out: dict[str, float] = {}
         for feature in ANOMALY_FEATURES:
-            stats = self.stats_for(feature, hour)
+            stats = self.stats_for(feature, hour, weekday)
             if stats is None:
                 continue
             value = float(getattr(sample, feature, 0.0) or 0.0)
@@ -102,6 +132,10 @@ class ServiceBaseline:
                 f"{hour}|{feature}": [s.mean, s.sigma, s.samples]
                 for (hour, feature), s in self.hourly.items()
             },
+            "weekly": {
+                f"{weekday}|{hour}|{feature}": [s.mean, s.sigma, s.samples]
+                for (weekday, hour, feature), s in self.weekly.items()
+            },
             "overall": {f: [s.mean, s.sigma, s.samples] for f, s in self.overall.items()},
         }
 
@@ -111,6 +145,12 @@ class ServiceBaseline:
         for key, (mean, sigma, samples) in payload.get("hourly", {}).items():
             hour_text, feature = key.split("|", 1)
             baseline.hourly[(int(hour_text), feature)] = FeatureStats(
+                float(mean), float(sigma), int(samples)
+            )
+        # Absent from artifacts saved before weekday buckets existed: those fall back to hourly.
+        for key, (mean, sigma, samples) in payload.get("weekly", {}).items():
+            weekday_text, hour_text, feature = key.split("|", 2)
+            baseline.weekly[(int(weekday_text), int(hour_text), feature)] = FeatureStats(
                 float(mean), float(sigma), int(samples)
             )
         for feature, (mean, sigma, samples) in payload.get("overall", {}).items():
@@ -136,11 +176,12 @@ def build_baseline(service: str, rows: list[dict[str, Any]]) -> ServiceBaseline:
     """
     baseline = ServiceBaseline(service=service)
     by_hour: dict[tuple[int, str], list[float]] = {}
+    by_week: dict[tuple[int, int, str], list[float]] = {}
     by_feature: dict[str, list[float]] = {f: [] for f in ANOMALY_FEATURES}
 
     for row in rows:
         moment = row["timestamp"]
-        hour = moment.hour
+        hour, weekday = moment.hour, moment.weekday()
         for feature in ANOMALY_FEATURES:
             raw = row.get(feature)
             if raw is None:
@@ -149,12 +190,18 @@ def build_baseline(service: str, rows: list[dict[str, Any]]) -> ServiceBaseline:
             if math.isnan(value) or math.isinf(value):
                 continue
             by_hour.setdefault((hour, feature), []).append(value)
+            by_week.setdefault((weekday, hour, feature), []).append(value)
             by_feature[feature].append(value)
 
     for key, values in by_hour.items():
         stats = _stats(values)
         if stats is not None:
             baseline.hourly[key] = stats
+
+    for key, values in by_week.items():
+        stats = _stats(values)
+        if stats is not None:
+            baseline.weekly[key] = stats
 
     for feature, values in by_feature.items():
         stats = _stats(values)

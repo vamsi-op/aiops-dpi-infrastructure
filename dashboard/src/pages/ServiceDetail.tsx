@@ -179,7 +179,7 @@ export function ServiceDetailPage({ service, onBack }: { service: string; onBack
               <div className="grid grid--halves">
                 <Card title="Forecast" hint="predicted load and the replica recommendation">
                   {data.predictions.length === 0 ? (
-                    <Empty>No forecasts yet. The traffic predictor (module 5) is not running.</Empty>
+                    <Empty>No forecasts yet. The traffic predictor publishes one every 10 minutes.</Empty>
                   ) : (
                     <div className="table-wrap">
                       <table>

@@ -92,8 +92,8 @@ export const api = {
 
   anomalies: (params: { hours?: number; service?: string; min_score?: number; limit?: number } = {}) =>
     request<Anomaly[]>('/anomalies', params),
-  anomalyTimeline: (hours = 24, bucketMinutes = 15) =>
-    request<TimelineBucket[]>('/anomalies/timeline', { hours, bucket_minutes: bucketMinutes }),
+  anomalyTimeline: (hours = 24, bucketMinutes = 15, filters: { service?: string; min_score?: number } = {}) =>
+    request<TimelineBucket[]>('/anomalies/timeline', { hours, bucket_minutes: bucketMinutes, ...filters }),
 
   incidents: (params: { status?: string; hours?: number; limit?: number } = {}) =>
     request<Incident[]>('/incidents', params),

@@ -1,0 +1,193 @@
+# Data layer: TimescaleDB (StatefulSet) and Redis.
+#
+# Credentials match the Compose defaults in .env.example. This is a local kind cluster;
+# a real deployment would source the Secret from a secret manager instead of a manifest.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: aiops-db
+  namespace: aiops
+type: Opaque
+stringData:
+  POSTGRES_DB: aiops
+  POSTGRES_USER: aiops
+  POSTGRES_PASSWORD: aiops_local_dev_password
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: timescaledb
+  namespace: aiops
+  labels:
+    app.kubernetes.io/name: timescaledb
+    app.kubernetes.io/part-of: data
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: timescaledb
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+      nodePort: 30432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: timescaledb
+  namespace: aiops
+  labels:
+    app.kubernetes.io/name: timescaledb
+    app.kubernetes.io/part-of: data
+spec:
+  serviceName: timescaledb
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: timescaledb
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: timescaledb
+        app.kubernetes.io/part-of: data
+    spec:
+      # No legacy service-link env vars: the Service named \"redis\" would inject
+      # REDIS_PORT=tcp://<ip>:6379 over the platform's own REDIS_PORT setting.
+      enableServiceLinks: false
+      containers:
+        - name: timescaledb
+          image: timescale/timescaledb:2.17.2-pg16
+          args:
+            - -c
+            - shared_preload_libraries=timescaledb,pg_stat_statements
+            - -c
+            - max_connections=200
+            - -c
+            - shared_buffers=256MB
+            - -c
+            - work_mem=16MB
+            - -c
+            - timescaledb.max_background_workers=8
+          envFrom:
+            - secretRef:
+                name: aiops-db
+          env:
+            - name: TIMESCALEDB_TELEMETRY
+              value: "off"
+            # A sub-directory, because the volume root is not guaranteed to be empty.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 200m, memory: 512Mi }
+            limits: { memory: 1Gi }
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            # Same schema scripts as Compose (infra/timescaledb/init), created as a
+            # ConfigMap by scripts/k8s.ps1. They run once, on an empty volume.
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+      volumes:
+        - name: init
+          configMap:
+            name: timescaledb-init
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: aiops
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/part-of: data
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+      nodePort: 30379
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-data
+  namespace: aiops
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: aiops
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/part-of: data
+spec:
+  replicas: 1
+  # One writer on a ReadWriteOnce volume: never run two pods at once.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis
+        app.kubernetes.io/part-of: data
+    spec:
+      # No legacy service-link env vars: the Service named \"redis\" would inject
+      # REDIS_PORT=tcp://<ip>:6379 over the platform's own REDIS_PORT setting.
+      enableServiceLinks: false
+      containers:
+        - name: redis
+          image: redis:7.4-alpine
+          args:
+            - redis-server
+            - --appendonly
+            - "yes"
+            - --appendfsync
+            - everysec
+            - --maxmemory
+            - 512mb
+            - --maxmemory-policy
+            - noeviction
+          ports:
+            - containerPort: 6379
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 600Mi }
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: redis-data
