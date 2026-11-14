@@ -82,7 +82,7 @@ spec:
             periodSeconds: 20
             failureThreshold: 3
           resources:
-            requests: { cpu: 50m, memory: 128Mi }
+            requests: { cpu: 25m, memory: 128Mi }
             limits: { cpu: "500m", memory: 256Mi }
           volumeMounts:
             - name: topology
@@ -181,7 +181,7 @@ spec:
             periodSeconds: 20
             failureThreshold: 3
           resources:
-            requests: { cpu: 50m, memory: 128Mi }
+            requests: { cpu: 25m, memory: 128Mi }
             limits: { cpu: "1", memory: 768Mi }
           volumeMounts:
             - name: models
@@ -265,7 +265,7 @@ spec:
             periodSeconds: 20
             failureThreshold: 3
           resources:
-            requests: { cpu: 50m, memory: 128Mi }
+            requests: { cpu: 25m, memory: 128Mi }
             limits: { cpu: "500m", memory: 384Mi }
 ---
 apiVersion: v1
@@ -341,7 +341,7 @@ spec:
             periodSeconds: 20
             failureThreshold: 3
           resources:
-            requests: { cpu: 50m, memory: 128Mi }
+            requests: { cpu: 25m, memory: 128Mi }
             limits: { cpu: "500m", memory: 384Mi }
           volumeMounts:
             - name: topology
@@ -469,7 +469,7 @@ spec:
             periodSeconds: 20
             failureThreshold: 3
           resources:
-            requests: { cpu: 50m, memory: 128Mi }
+            requests: { cpu: 25m, memory: 128Mi }
             limits: { cpu: "250m", memory: 256Mi }
           volumeMounts:
             - name: topology
@@ -582,7 +582,7 @@ spec:
             periodSeconds: 20
             failureThreshold: 3
           resources:
-            requests: { cpu: 50m, memory: 128Mi }
+            requests: { cpu: 25m, memory: 128Mi }
             limits: { cpu: "250m", memory: 256Mi }
           volumeMounts:
             - name: topology

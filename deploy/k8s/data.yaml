@@ -85,7 +85,7 @@ spec:
             initialDelaySeconds: 10
             periodSeconds: 10
           resources:
-            requests: { cpu: 200m, memory: 512Mi }
+            requests: { cpu: 100m, memory: 512Mi }
             limits: { memory: 1Gi }
           volumeMounts:
             - name: data
@@ -182,7 +182,7 @@ spec:
               command: ["redis-cli", "ping"]
             periodSeconds: 10
           resources:
-            requests: { cpu: 50m, memory: 64Mi }
+            requests: { cpu: 25m, memory: 64Mi }
             limits: { memory: 600Mi }
           volumeMounts:
             - name: data
