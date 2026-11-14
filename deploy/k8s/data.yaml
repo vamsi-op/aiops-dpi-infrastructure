@@ -51,6 +51,9 @@ spec:
         app.kubernetes.io/name: timescaledb
         app.kubernetes.io/part-of: data
     spec:
+      # No legacy service-link env vars: the Service named \"redis\" would inject
+      # REDIS_PORT=tcp://<ip>:6379 over the platform's own REDIS_PORT setting.
+      enableServiceLinks: false
       containers:
         - name: timescaledb
           image: timescale/timescaledb:2.17.2-pg16
@@ -156,6 +159,9 @@ spec:
         app.kubernetes.io/name: redis
         app.kubernetes.io/part-of: data
     spec:
+      # No legacy service-link env vars: the Service named \"redis\" would inject
+      # REDIS_PORT=tcp://<ip>:6379 over the platform's own REDIS_PORT setting.
+      enableServiceLinks: false
       containers:
         - name: redis
           image: redis:7.4-alpine

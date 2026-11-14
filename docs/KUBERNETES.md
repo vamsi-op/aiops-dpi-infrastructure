@@ -87,6 +87,22 @@ The flow from there:
    `aiops healing-engine: rollback to revision N`. The pods run `v1.0.4` without the
    defect, and the incident auto-resolves once the SLO window is clean.
 
+## First run: what to expect
+
+- **Third-party images download inside the kind node** (TimescaleDB is about 700 MB), so a
+  first `up` can spend several minutes on "ContainerCreating". `kind load docker-image` for
+  those images fails against Docker Desktop's multi-platform image store
+  (`content digest ... not found`), so the node pulls them itself. If `up` times out waiting
+  for TimescaleDB, wait for the pull to finish and re-run `.\scripts\k8s.ps1 up`: it is
+  idempotent.
+- **AIOps pods crash-loop until TimescaleDB and Redis are ready.** That is expected and
+  clears on its own. `kubectl delete pod` skips the back-off timer.
+- **No detection for the first 5 minutes.** The metrics agent writes a sample only once a
+  service has a full 5-minute rate window.
+- **Pods do not get service-link environment variables** (`enableServiceLinks: false`). The
+  Service named `redis` would otherwise inject `REDIS_PORT=tcp://<ip>:6379` and override the
+  platform's own `REDIS_PORT`, crashing every Python service.
+
 ## Layout
 
 ```

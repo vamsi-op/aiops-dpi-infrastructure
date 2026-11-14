@@ -61,6 +61,10 @@ function Assert-Tool([string]$Name, [string]$Hint) {
 function Invoke-Native {
     param([string]$Exe, [string[]]$Arguments)
     Write-Host "$Exe $($Arguments -join ' ')" -ForegroundColor DarkGray
+    # Success is judged by the exit code. kind, docker and kubectl print progress on stderr,
+    # which Windows PowerShell 5.1 turns into terminating errors under ErrorActionPreference
+    # Stop whenever output is captured or redirected.
+    $ErrorActionPreference = 'Continue'
     & $Exe @Arguments
     if ($LASTEXITCODE -ne 0) { throw "$Exe exited with code $LASTEXITCODE" }
 }
@@ -72,6 +76,7 @@ function Invoke-Kubectl([string[]]$Arguments) {
 # Build a ConfigMap from files and apply it server-side (no 256 KB annotation limit, and
 # re-running replaces the contents instead of failing because the map exists).
 function Set-ConfigMap([string]$Name, [string[]]$FromFiles) {
+    $ErrorActionPreference = 'Continue'  # native stderr is progress, not failure (see Invoke-Native)
     $kargs = @('--context', $Context, '-n', $Namespace, 'create', 'configmap', $Name,
               '--dry-run=client', '-o', 'yaml')
     foreach ($f in $FromFiles) { $kargs += "--from-file=$f" }
@@ -112,6 +117,7 @@ function Import-Images {
 }
 
 function Wait-Rollouts {
+    $ErrorActionPreference = 'Continue'  # native stderr is progress, not failure (see Invoke-Native)
     Write-Host "==> Waiting for rollouts (up to ${TimeoutSeconds}s each)" -ForegroundColor Cyan
     Invoke-Kubectl @('-n', $Namespace, 'rollout', 'status', 'statefulset/timescaledb', "--timeout=${TimeoutSeconds}s")
     $deployments = & kubectl --context $Context -n $Namespace get deployments -o name
@@ -123,6 +129,7 @@ function Wait-Rollouts {
 # Copy already-trained Isolation Forests from ml/artifacts so detection works at once,
 # instead of waiting for enough cluster history to POST /train.
 function Copy-Models {
+    $ErrorActionPreference = 'Continue'  # native stderr is progress, not failure (see Invoke-Native)
     $models = Get-ChildItem 'ml/artifacts' -Filter '*.joblib' -ErrorAction SilentlyContinue
     if (-not $models) {
         Write-Host '    no trained models in ml/artifacts - run POST http://localhost:8021/train later' -ForegroundColor Yellow
@@ -145,7 +152,13 @@ switch ($Action) {
         Assert-Tool 'kind' 'Install it with: winget install Kubernetes.kind'
         Assert-Tool 'kubectl' 'Docker Desktop ships kubectl; or: winget install Kubernetes.kubectl'
 
-        $clusters = & kind get clusters 2>$null
+        # Windows PowerShell 5.1 turns any native stderr line into a terminating error under
+        # ErrorActionPreference=Stop, even when redirected - and with no cluster yet, kind
+        # prints "No kind clusters found." to stderr. Relax it for this one call.
+        $previous = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        $clusters = @(& kind get clusters 2>$null)
+        $ErrorActionPreference = $previous
         if ($clusters -notcontains $ClusterName) {
             Write-Host "==> Creating kind cluster '$ClusterName'" -ForegroundColor Cyan
             Invoke-Native 'kind' @('create', 'cluster', '--config', 'deploy/k8s/kind-cluster.yaml', '--wait', '120s')
@@ -188,8 +201,12 @@ switch ($Action) {
     }
     'healing' {
         $value = if ($Off) { 'false' } else { 'true' }
-        $patch = "{`"data`":{`"HEALING_ENABLED`":`"$value`"}}"
-        Invoke-Kubectl @('-n', $Namespace, 'patch', 'configmap', 'aiops-env', '--type', 'merge', '-p', $patch)
+        # Via a file: Windows PowerShell 5.1 strips the double quotes from a JSON argument
+        # passed to a native program, so kubectl received invalid JSON and the switch failed.
+        $patchFile = Join-Path ([System.IO.Path]::GetTempPath()) 'aiops-healing-patch.json'
+        Set-Content -Path $patchFile -Value "{`"data`":{`"HEALING_ENABLED`":`"$value`"}}" -Encoding ascii
+        Invoke-Kubectl @('-n', $Namespace, 'patch', 'configmap', 'aiops-env', '--type', 'merge', '--patch-file', $patchFile)
+        Remove-Item $patchFile -ErrorAction SilentlyContinue
         # envFrom is read at pod start, so the pods that read the flag must restart.
         Invoke-Kubectl @('-n', $Namespace, 'rollout', 'restart', 'deployment/healing-engine', 'deployment/api-gateway')
         Invoke-Kubectl @('-n', $Namespace, 'rollout', 'status', 'deployment/healing-engine', "--timeout=${TimeoutSeconds}s")

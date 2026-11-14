@@ -49,6 +49,9 @@ spec:
         app.kubernetes.io/name: metrics-agent
         app.kubernetes.io/part-of: aiops
     spec:
+      # No legacy service-link env vars: the Service named \"redis\" would inject
+      # REDIS_PORT=tcp://<ip>:6379 over the platform's own REDIS_PORT setting.
+      enableServiceLinks: false
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
@@ -143,6 +146,9 @@ spec:
         app.kubernetes.io/name: anomaly-detector
         app.kubernetes.io/part-of: aiops
     spec:
+      # No legacy service-link env vars: the Service named \"redis\" would inject
+      # REDIS_PORT=tcp://<ip>:6379 over the platform's own REDIS_PORT setting.
+      enableServiceLinks: false
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
@@ -224,6 +230,9 @@ spec:
         app.kubernetes.io/name: traffic-predictor
         app.kubernetes.io/part-of: aiops
     spec:
+      # No legacy service-link env vars: the Service named \"redis\" would inject
+      # REDIS_PORT=tcp://<ip>:6379 over the platform's own REDIS_PORT setting.
+      enableServiceLinks: false
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
@@ -298,6 +307,9 @@ spec:
         app.kubernetes.io/name: rca-engine
         app.kubernetes.io/part-of: aiops
     spec:
+      # No legacy service-link env vars: the Service named \"redis\" would inject
+      # REDIS_PORT=tcp://<ip>:6379 over the platform's own REDIS_PORT setting.
+      enableServiceLinks: false
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
@@ -425,6 +437,9 @@ spec:
         app.kubernetes.io/name: healing-engine
         app.kubernetes.io/part-of: aiops
     spec:
+      # No legacy service-link env vars: the Service named \"redis\" would inject
+      # REDIS_PORT=tcp://<ip>:6379 over the platform's own REDIS_PORT setting.
+      enableServiceLinks: false
       serviceAccountName: healing-engine
       securityContext:
         runAsNonRoot: true
@@ -534,6 +549,9 @@ spec:
         app.kubernetes.io/name: api-gateway
         app.kubernetes.io/part-of: aiops
     spec:
+      # No legacy service-link env vars: the Service named \"redis\" would inject
+      # REDIS_PORT=tcp://<ip>:6379 over the platform's own REDIS_PORT setting.
+      enableServiceLinks: false
       serviceAccountName: api-gateway
       securityContext:
         runAsNonRoot: true
@@ -614,6 +632,9 @@ spec:
         app.kubernetes.io/name: dashboard
         app.kubernetes.io/part-of: aiops-ui
     spec:
+      # No legacy service-link env vars: the Service named \"redis\" would inject
+      # REDIS_PORT=tcp://<ip>:6379 over the platform's own REDIS_PORT setting.
+      enableServiceLinks: false
       automountServiceAccountToken: false
       containers:
         - name: app
