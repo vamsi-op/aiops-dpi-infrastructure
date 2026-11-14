@@ -647,8 +647,10 @@ spec:
                 optional: true
           ports:
             - containerPort: 8080
+          # TCP, not HTTP: on a public VM every path is behind basic auth, so an HTTP probe got
+          # 401 and the dashboard never became ready (the site stayed unreachable).
           readinessProbe:
-            httpGet: { path: /, port: 8080 }
+            tcpSocket: { port: 8080 }
             periodSeconds: 10
           resources:
             requests: { cpu: 10m, memory: 16Mi }
