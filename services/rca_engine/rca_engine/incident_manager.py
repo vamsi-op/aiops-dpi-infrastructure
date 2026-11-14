@@ -215,10 +215,6 @@ class IncidentManager:
             else:
                 title = f"Multiple services affected: {', '.join(affected_services[:3])}"
 
-        # Ensure live incidents are clearly distinguished from seeded demo incidents
-        if not title.startswith("[Live]"):
-            title = f"[Live] {title}"
-
         # Create incident record
         incident = Incident(
             opened_at=utc_now(),

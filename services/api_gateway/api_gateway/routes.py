@@ -269,8 +269,12 @@ async def anomaly_timeline(
     request: Request,
     hours: Annotated[int, Query(ge=1, le=720)] = 24,
     bucket_minutes: Annotated[int, Query(ge=1, le=1440)] = 15,
+    service: str | None = None,
+    min_score: Annotated[float, Query(ge=0.0, le=1.0)] = 0.0,
 ) -> list[TimelineBucket]:
-    rows = await _repo(request).anomaly_timeline(hours=hours, bucket_minutes=bucket_minutes)
+    rows = await _repo(request).anomaly_timeline(
+        hours=hours, bucket_minutes=bucket_minutes, service=service, min_score=min_score
+    )
     return [TimelineBucket(**row) for row in rows]
 
 
@@ -321,6 +325,11 @@ async def incident_detail(request: Request, incident_id: str) -> IncidentDetail:
 
 
 def _incident_model(row: dict[str, Any]) -> Incident:
+    # Older incidents were stored with a "[Live] " title prefix (from when seeded demo
+    # incidents shared the table). Served without it.
+    title = row.get("title") or ""
+    if title.startswith("[Live] "):
+        row = {**row, "title": title.removeprefix("[Live] ")}
     opened, closed = row.get("opened_at"), row.get("closed_at")
     duration = (closed - opened).total_seconds() if opened and closed else None
     return Incident(**row, duration_seconds=duration)

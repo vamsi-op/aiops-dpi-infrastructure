@@ -22,16 +22,19 @@ Status = Literal["healthy", "degraded", "critical", "stale", "unknown"]
 class Thresholds:
     """Warning and critical trip points for each display signal."""
 
+    # Warning = the SLO the rest of the platform enforces (RCA auto-resolve, healing
+    # verification: error <= 1%, p99 <= 250 ms, queue <= 5). The tiles used to turn amber
+    # only at 1 s p99 and a queue of 50, so a service breaching its SLO showed green.
     error_ratio_warning: float = 0.01  # 1% of requests failing
     error_ratio_critical: float = 0.05  # 5% is a user-visible outage
-    latency_p99_warning_seconds: float = 1.0
-    latency_p99_critical_seconds: float = 3.0
+    latency_p99_warning_seconds: float = 0.25
+    latency_p99_critical_seconds: float = 1.0
     cpu_warning: float = 0.75
     cpu_critical: float = 0.90
     memory_warning: float = 0.80
     memory_critical: float = 0.92
-    queue_warning: float = 50.0
-    queue_critical: float = 200.0
+    queue_warning: float = 5.0
+    queue_critical: float = 50.0
     # Mojaloop-specific: settlement falling behind is a business problem before it is
     # ever an infrastructure one.
     settlement_lag_warning_seconds: float = 30.0

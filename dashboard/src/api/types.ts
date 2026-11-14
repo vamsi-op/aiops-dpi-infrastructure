@@ -64,6 +64,7 @@ export interface OverviewCounts {
   critical_anomalies_24h: number;
   actions_24h: number;
   actions_succeeded_24h: number;
+  actions_blocked_24h: number;
   chaos_active: number;
   deployments_24h: number;
 }

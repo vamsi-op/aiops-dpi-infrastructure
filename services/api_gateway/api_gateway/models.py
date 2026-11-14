@@ -75,8 +75,9 @@ class OverviewCounts(ViewModel):
     open_incidents: int = 0
     anomalies_24h: int = 0
     critical_anomalies_24h: int = 0
-    actions_24h: int = 0
+    actions_24h: int = 0  # executed (succeeded, failed or running)
     actions_succeeded_24h: int = 0
+    actions_blocked_24h: int = 0  # stopped by a safety rail (skipped_*)
     chaos_active: int = 0
     deployments_24h: int = 0
 

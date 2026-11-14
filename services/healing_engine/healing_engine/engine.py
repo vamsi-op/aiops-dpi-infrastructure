@@ -760,7 +760,10 @@ class HealingEngine:
                 update_inc_sql = f"""
                     UPDATE {TABLE_INCIDENTS}
                     SET action_ids = array_append(action_ids, :action_id),
-                        status = :status
+                        -- A resolved incident stays resolved: an action that finishes after
+                        -- the incident closed (a long restart, a manual resolve) used to
+                        -- reopen it as "mitigating", where nothing would ever close it again.
+                        status = CASE WHEN status = 'resolved' THEN status ELSE :status END
                     WHERE incident_id = :incident_id
                 """
                 await self.db.execute(

@@ -82,7 +82,6 @@ export function IncidentsPage({
                 <thead>
                   <tr>
                     <th scope="col">Status</th>
-                    <th scope="col">Source</th>
                     <th scope="col">Severity</th>
                     <th scope="col">Incident</th>
                     <th scope="col">Root cause</th>
@@ -94,22 +93,11 @@ export function IncidentsPage({
                 <tbody>
                   {data.map((incident) => {
                     const cause = incident.hypotheses[0];
-                    const isLive =
-                      incident.incident_id.startsWith('inc_live_') ||
-                      incident.title?.startsWith('[Live]') ||
-                      incident.hypotheses?.some((h) =>
-                        h.evidence?.some((e) => e.toLowerCase().includes('live')),
-                      );
                     return (
                       <tr key={incident.incident_id} onClick={() => onSelect(incident.incident_id)} style={{ cursor: 'pointer' }}>
                         <td>
                           <Badge tone={incidentTone(incident.status)} dot pulse={incident.status === 'open'}>
                             {incident.status}
-                          </Badge>
-                        </td>
-                        <td>
-                          <Badge tone={isLive ? 'ok' : 'idle'}>
-                            {isLive ? 'Live' : 'Demo'}
                           </Badge>
                         </td>
                         <td>
@@ -179,9 +167,6 @@ function IncidentDetailView({
                         {incident.status}
                       </Badge>
                       <Badge tone={severityTone(incident.severity)}>{incident.severity}</Badge>
-                      <Badge tone={incident.incident_id.startsWith('inc_live_') || incident.title?.startsWith('[Live]') ? 'ok' : 'idle'}>
-                        {incident.incident_id.startsWith('inc_live_') || incident.title?.startsWith('[Live]') ? 'Live Telemetry' : 'Demo Scenario'}
-                      </Badge>
                       <span className="mono">{incident.incident_id}</span>
                     </div>
                     <span className="card__hint">

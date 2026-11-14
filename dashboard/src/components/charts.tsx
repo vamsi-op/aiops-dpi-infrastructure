@@ -12,6 +12,7 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
+  ComposedChart,
   Legend,
   Line,
   LineChart,
@@ -41,17 +42,19 @@ function ChartTooltip({
   label,
   decimals = 2,
   suffix = '',
+  labelFormatter,
 }: {
   active?: boolean;
   payload?: TooltipPayloadEntry[];
   label?: string | number;
   decimals?: number;
   suffix?: string;
+  labelFormatter?: (label: string | number | undefined) => string;
 }) {
   if (!active || !payload?.length) return null;
   return (
     <div className="chart-tooltip">
-      <div className="chart-tooltip__label">{formatClock(String(label))}</div>
+      <div className="chart-tooltip__label">{labelFormatter ? labelFormatter(label) : formatClock(String(label))}</div>
       {payload.map((entry) => (
         <div key={String(entry.dataKey)} className="chart-tooltip__row" style={{ color: entry.color }}>
           <span>{entry.name}</span>
@@ -232,12 +235,16 @@ export function ForecastChart({
 }: {
   data: Record<string, unknown>[];
   height?: number;
-  nowX?: string;
+  nowX?: number;
 }) {
+  const span = data.length > 1 ? Number(data.at(-1)?.t) - Number(data[0]?.t) : 0;
+  const withDate = span > 24 * 3600 * 1000;
   return (
     <div style={{ height }}>
       <ResponsiveContainer width="100%" height="100%">
-        <AreaChart data={data} margin={{ top: 8, right: 16, bottom: 4, left: 0 }}>
+        {/* ComposedChart, not AreaChart: AreaChart silently drops <Line> children, so the
+              actual and forecast lines never rendered - only the band did. */}
+        <ComposedChart data={data} margin={{ top: 8, right: 16, bottom: 4, left: 0 }}>
           <defs>
             <linearGradient id="band" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor="#818cf8" stopOpacity={0.22} />
@@ -245,30 +252,34 @@ export function ForecastChart({
             </linearGradient>
           </defs>
           <CartesianGrid stroke={GRID} strokeDasharray="3 3" vertical={false} />
-          <XAxis dataKey="timestamp" {...axisProps} tickFormatter={(value) => formatClock(String(value))} minTickGap={44} />
+          <XAxis
+            dataKey="t"
+            type="number"
+            scale="time"
+            domain={['dataMin', 'dataMax']}
+            {...axisProps}
+            tickFormatter={(value) => bucketLabel(new Date(Number(value)).toISOString(), withDate)}
+            minTickGap={44}
+          />
           <YAxis {...axisProps} width={52} label={{ value: 'TPS', angle: -90, position: 'insideLeft', fill: AXIS, fontSize: 10.5 }} />
-          <Tooltip content={<ChartTooltip decimals={1} />} />
+          <Tooltip
+            content={
+              <ChartTooltip decimals={1} labelFormatter={(value) => bucketLabel(new Date(Number(value)).toISOString(), true)} />
+            }
+          />
           <Legend wrapperStyle={{ fontSize: 11, paddingTop: 6 }} iconType="plainline" iconSize={14} />
-          {/* Upper bound drawn first, then the lower bound in the background colour: a
-              cheap way to render a band without a dedicated component. */}
+          {/* A range area ([lower, upper]). The band used to be the upper bound filled to
+              zero with the lower bound painted over it in a background colour, which left
+              an opaque rectangle across the chart that hid the actual line. */}
           <Area
             type="monotone"
-            dataKey="upper_bound"
+            dataKey={(row: Record<string, unknown>) =>
+              row.lower_bound == null ? null : [row.lower_bound as number, row.upper_bound as number]
+            }
             name="Confidence band"
             stroke="none"
             fill="url(#band)"
             isAnimationActive={false}
-            connectNulls
-          />
-          <Area
-            type="monotone"
-            dataKey="lower_bound"
-            name="lower"
-            stroke="none"
-            fill="#0b0f16"
-            fillOpacity={1}
-            isAnimationActive={false}
-            legendType="none"
             connectNulls
           />
           <Line
@@ -279,7 +290,6 @@ export function ForecastChart({
             strokeWidth={2}
             dot={false}
             isAnimationActive={false}
-            connectNulls
           />
           <Line
             type="monotone"
@@ -300,28 +310,39 @@ export function ForecastChart({
               label={{ value: 'now', fill: '#9aa8bf', fontSize: 10, position: 'top' }}
             />
           )}
-        </AreaChart>
+        </ComposedChart>
       </ResponsiveContainer>
     </div>
   );
 }
 
 /** Stacked severity counts over time, for the anomaly timeline. */
+// Axis label for a time bucket: HH:MM, with the date when the window spans days.
+function bucketLabel(value: unknown, withDate: boolean): string {
+  const date = new Date(String(value));
+  if (Number.isNaN(date.getTime())) return '';
+  const time = date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false });
+  if (!withDate) return time;
+  return `${date.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })} ${time}`;
+}
+
 export function SeverityTimeline({
   data,
   height = 180,
+  withDate = false,
 }: {
   data: { bucket: string; critical: number; warning: number; info: number }[];
   height?: number;
+  withDate?: boolean;
 }) {
   return (
     <div style={{ height }}>
       <ResponsiveContainer width="100%" height="100%">
         <BarChart data={data} margin={{ top: 8, right: 16, bottom: 4, left: 0 }}>
           <CartesianGrid stroke={GRID} strokeDasharray="3 3" vertical={false} />
-          <XAxis dataKey="bucket" {...axisProps} tickFormatter={(value) => formatClock(String(value))} minTickGap={44} />
+          <XAxis dataKey="bucket" {...axisProps} tickFormatter={(value) => bucketLabel(value, withDate)} minTickGap={44} />
           <YAxis {...axisProps} width={40} allowDecimals={false} />
-          <Tooltip content={<ChartTooltip decimals={0} />} />
+          <Tooltip content={<ChartTooltip decimals={0} labelFormatter={(value) => bucketLabel(value, true)} />} />
           <Legend wrapperStyle={{ fontSize: 11, paddingTop: 6 }} iconType="square" iconSize={10} />
           <Bar dataKey="critical" name="Critical" stackId="s" fill="#f87171" isAnimationActive={false} />
           <Bar dataKey="warning" name="Warning" stackId="s" fill="#fbbf24" isAnimationActive={false} />

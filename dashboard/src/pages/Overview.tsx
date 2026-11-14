@@ -83,7 +83,7 @@ export function OverviewPage({ onSelectService, onSelectIncident, onNavigate }: 
                 <Kpi
                   label="Remediations 24h"
                   value={String(data.counts.actions_24h)}
-                  foot={`${data.counts.actions_succeeded_24h} executed successfully`}
+                  foot={`${data.counts.actions_succeeded_24h} succeeded · ${data.counts.actions_blocked_24h} blocked by safety rails`}
                 />
               </div>
 
