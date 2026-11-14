@@ -22,7 +22,7 @@ This guide uses AWS EC2. Any provider with an Ubuntu 24.04 x86_64 VM works the s
 | Setting | Value |
 |---|---|
 | AMI | Ubuntu Server 24.04 LTS, **64-bit (x86)** |
-| Instance type | `t3.xlarge` (4 vCPU, 16 GB). `t3.large` (8 GB) works but is tight; the setup adds 4 GB swap as a buffer |
+| Instance type | `t3.xlarge` (4 vCPU, 16 GB) on a paid account. On the **AWS Free plan** (accounts created after 15 July 2025) choose **`m7i-flex.large`** (2 vCPU, 8 GB), the largest free-plan type: the running platform uses about 2.8 GB and a third of a core; only the first image build is slower. The setup adds 4 GB swap as a buffer |
 | Key pair | Create one and keep the `.pem` file safe |
 | Storage | 40 GB gp3 (images and build cache take ~10 GB) |
 | Security group | SSH `22` from **My IP** only; HTTP `80` and TCP `3000` from anywhere (or only your reviewers' IPs) |
