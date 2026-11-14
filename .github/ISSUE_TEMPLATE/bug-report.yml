@@ -18,7 +18,7 @@ body:
       description: Exact commands. A reproduction someone else can run is worth ten descriptions.
       placeholder: |
         1. .\scripts\stack.ps1 up -Layer all
-        2. python scripts\run_chaos_experiment.py --service central-ledger --experiment error_injection
+        2. python scripts\chaos_demo.py --scenario cascade
         3. Open http://localhost:5173 -> Incidents
         4. Incident list is empty
     validations:

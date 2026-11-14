@@ -12,7 +12,7 @@ services. None of them is ever loaded from a file.
 |---|---|---|
 | Live service telemetry: traffic, latency, errors, CPU/memory, queue depth, settlement lag | Mojaloop simulator ([services/mojaloop_sim](../services/mojaloop_sim)) → Prometheus → metrics agent | `service_metrics` (TimescaleDB) |
 | **Training history (28 days)** | The simulator's own traffic model, replayed over past timestamps | **[ml/datasets/mojaloop_replay_28d.csv](../ml/datasets/mojaloop_replay_28d.csv)**, loaded into `service_metrics` with `source=replay` |
-| Faults | Chaos experiments injected into the simulator (dashboard → Chaos, or `scripts/run_chaos_experiment.py`) | `chaos_runs` |
+| Faults | Chaos experiments injected into the simulator (dashboard → Chaos, or `scripts/chaos_demo.py`) | `chaos_runs` |
 | Anomalies | Anomaly detector (Isolation Forest) scoring live telemetry | `anomalies` |
 | Incidents and root causes | RCA engine correlating anomalies | `incidents` |
 | Healing actions | Healing engine executing playbooks | `healing_actions` |
@@ -50,7 +50,7 @@ services. None of them is ever loaded from a file.
 
 Traffic per service (tps, from the file): central-ledger 7.5–42.8 (median 24.3),
 quoting-service 5.2–31.4, account-lookup-service 4.3–26.6, ml-api-adapter 4.3–24.9,
-transaction-request-service 1.7–9.6. The highest error ratio anywhere in the file is 0.56%.
+transaction-request-service 1.7–9.6. The highest error ratio anywhere in the file is 0.30%.
 
 ### Regenerate the file
 

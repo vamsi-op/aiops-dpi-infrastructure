@@ -666,7 +666,7 @@ anomaly kinds and root cause hypotheses to Docker operations.
 
 **Six Playbooks:**
 - **restart_on_oom**: Memory/CPU pressure, error bursts, latency spikes, multivariate → container restart
-- **circuit_break_cascade**: Service cascades (topological RCA hypothesis) → restart root service
+- **circuit_break_cascade**: Service cascades (topological RCA hypothesis) → open every caller's circuit breaker on the root (`POST /sim/circuits/{root}`), restart the root unless it is in cooldown; breakers half-open and close on recovery
 - **rollback_bad_deploy**: Change root cause hypothesis → rollback to previous version
 - **scale_out_preemptive**: Traffic surge → increment replicas by 1
 - **scale_in_idle**: Traffic drop → decrement replicas (min 1)
@@ -711,6 +711,31 @@ Invoke-RestMethod http://localhost:8024/actions/<action_id>
 - ✅ Idempotency: Duplicate anomalies do not trigger duplicate actions (tracked in engine)
 - ✅ Failure handling: Failed playbooks record 'failed' status with descriptive message
 - ✅ All actions persisted: Including skipped ones, for full audit trail
+
+### Hardening from live chaos runs
+
+Each item below was a failure observed while running chaos scenarios against the live stack
+with healing enabled, and each has a regression test.
+
+| Observed | Fix |
+|----------|-----|
+| A backlog of old anomalies on restart triggered a restart storm | Anomalies older than `HEALING_MAX_EVENT_AGE_SECONDS` (120 s) are ignored; sub-threshold (non-actionable) ones never act |
+| The healer acted before RCA had named a cause, restarting victims of a cascade | It waits up to 15 s for the RCA incident and also checks incidents open on the anomaly's dependencies |
+| Cascade victims were restarted; breakers were blocked by the root's restart cooldown | The cascade playbook targets the RCA root and opens breakers on its callers under a separate safety key (`<root>:breakers`) |
+| Two engines raced to act on one target; the hourly budget counter leaked | Cooldown is claimed atomically (`SET NX`); the budget probe is always rolled back |
+| Recovery judged on samples taken before or during the restart | The post-action snapshot starts when the action *finishes*; rate signals still inside the 5-minute window after a restart are deferred to SLO auto-resolution |
+| A bad deploy detected 102 s late was restarted instead of rolled back | A deployment of an affected service always outranks the generic "this service is unhealthy" hypothesis |
+
+## Hardening of detection (module 4), from the same runs
+
+- **Persistence.** An anomaly is emitted only after two consecutive anomalous samples, unless
+  the score is ≥ 0.95 *and* one signal is ≥ 4σ.
+- **Evidence gate.** Load gauges alone (CPU, connections, traffic) must move ≥ 3σ; otherwise
+  a user-facing symptom (errors, latency, queue, memory, settlement) must be implicated. The
+  forest had scored CPU 0.40 / 50 connections at 0.96 and restarted healthy services.
+- **Restart windows.** Samples whose 5-minute rate window spans a restart (`resets()`) are
+  tagged by the metrics agent and not scored, so a remediation is not flagged for its own
+  traffic dip.
 
 ---
 
@@ -842,7 +867,7 @@ pass even with WebSocket fan-out completely broken. Both blind spots are now cov
 - Scorecard: time-to-detect, time-to-RCA, time-to-remediate, per experiment
 - A written demo runbook
 
-**Verify**: `.\scripts\demo.ps1` runs a scenario start to finish and prints the scorecard.
+**Verify**: `python scripts\chaos_demo.py` runs the scenarios start to finish and prints the scorecard.
 
 ---
 
