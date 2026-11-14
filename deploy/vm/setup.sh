@@ -84,9 +84,15 @@ fi
 
 info "Python venv for scripts/ (replay_history, check_*)"
 cd "$(dirname "$0")/../.."
-[[ -d .venv ]] || python3 -m venv .venv
-.venv/bin/pip install -q --upgrade pip
-.venv/bin/pip install -q -r requirements-dev.txt
+# Optional: only the helper scripts use it, and `k8s.sh seed` falls back to running inside a
+# platform image. A distribution Python newer than the pinned wheels support (Ubuntu 26.04
+# ships 3.14; psycopg-binary 3.2.3 has no 3.14 wheel) must not abort the whole setup.
+if { [[ -d .venv ]] || python3 -m venv .venv; }    && .venv/bin/pip install -q --upgrade pip    && .venv/bin/pip install -q -r requirements-dev.txt; then
+  :
+else
+  printf '[33m    venv install failed (Python %s) - fine: scripts/k8s.sh seed runs in a container[0m
+'     "$(python3 -c 'import sys; print(sys.version.split()[0])')"
+fi
 
 echo
 info "Done. Log out and back in (so the docker group applies), then run:"

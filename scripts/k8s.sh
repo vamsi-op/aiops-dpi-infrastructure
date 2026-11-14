@@ -231,9 +231,16 @@ case "$cmd" in
   seed)
     # Runs on the VM against TimescaleDB's NodePort (127.0.0.1:5432); the defaults in
     # aiops_common.config already match the cluster's credentials.
-    [[ -x .venv/bin/python ]] || { echo "No .venv - run deploy/vm/setup.sh first." >&2; exit 1; }
     info "Loading the archived 28-day training set (docs/DATA.md) into TimescaleDB"
-    .venv/bin/python scripts/replay_history.py --from-csv ml/datasets/mojaloop_replay_28d.csv
+    if [[ -x .venv/bin/python ]] && .venv/bin/python -c "import aiops_common" 2>/dev/null; then
+      .venv/bin/python scripts/replay_history.py --from-csv ml/datasets/mojaloop_replay_28d.csv
+    else
+      # No usable host venv (e.g. a distribution whose Python is newer than the pinned
+      # wheels support). The simulator image has Python 3.12 and aiops_common; the repo is
+      # mounted for the script and dataset, and host networking reaches 127.0.0.1:5432.
+      warn "    no usable .venv - running the replay inside the aiops/mojaloop-sim image"
+      docker run --rm --network host --user "$(id -u):$(id -g)"         -v "$PWD:/repo:ro" -w /repo aiops/mojaloop-sim:0.1.0         python scripts/replay_history.py --from-csv ml/datasets/mojaloop_replay_28d.csv
+    fi
     info "Retraining the anomaly detector on the loaded history"
     # /train takes a JSON body (days defaults to 28); without one it answers 422.
     curl -fsS -X POST -H 'Content-Type: application/json' -d '{}'       http://127.0.0.1:8021/train >/dev/null && echo "    anomaly-detector: trained"
