@@ -32,7 +32,7 @@ function Write-Info { param([string]$Message) Write-Host "         $Message" -Fo
 # -----------------------------------------------------------------------------
 Write-Section 'Docker'
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
-    Write-Fail 'docker command not found - install Docker Desktop (docs/SETUP.md section 2)'
+    Write-Fail 'docker command not found - install Docker Desktop (docs/SETUP.md section 1)'
     Write-Host "`nStopping early: nothing else can be checked without Docker." -ForegroundColor Yellow
     exit 1
 }

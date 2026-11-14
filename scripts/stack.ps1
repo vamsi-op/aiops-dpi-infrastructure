@@ -44,7 +44,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
 
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
-    throw 'Docker is not installed or not on PATH. See docs/SETUP.md section 2.'
+    throw 'Docker is not installed or not on PATH. See docs/SETUP.md section 1.'
 }
 if (-not (Test-Path '.env')) {
     Write-Host 'No .env found - creating it from .env.example' -ForegroundColor Yellow

@@ -44,10 +44,6 @@ class ServiceCapacity:
     # False when the figures came from the fallback rather than from Prometheus.
     measured: bool
 
-    @property
-    def current_capacity_tps(self) -> float:
-        return self.tps_per_replica * self.current_replicas
-
 
 @dataclass(frozen=True)
 class Recommendation:

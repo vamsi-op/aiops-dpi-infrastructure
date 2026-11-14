@@ -49,12 +49,6 @@ class CorrelateRequest(BaseModel):
     )
 
 
-class ResolveRequest(BaseModel):
-    """Request to manually resolve an incident."""
-
-    incident_id: str = Field(description="Incident ID to resolve")
-
-
 @router.get("/status", tags=["rca"], summary="RCA engine status and metrics")
 async def status(request: Request) -> dict[str, Any]:
     """Return current engine status including window size and unassigned anomalies."""

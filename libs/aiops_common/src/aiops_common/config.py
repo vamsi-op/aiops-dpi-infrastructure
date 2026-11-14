@@ -290,11 +290,6 @@ class Settings(BaseSettings):
 
     @computed_field  # type: ignore[prop-decorator]
     @property
-    def is_local(self) -> bool:
-        return self.env.lower() in {"local", "dev", "development"}
-
-    @computed_field  # type: ignore[prop-decorator]
-    @property
     def env_file_in_use(self) -> str | None:
         """Which `.env` was loaded, if any. Handy in start-up logs."""
         return _ENV_FILE
@@ -310,8 +305,3 @@ def reload_settings() -> Settings:
     """Clear the cache and re-read the environment. Intended for tests only."""
     get_settings.cache_clear()
     return get_settings()
-
-
-def current_service_name(default: str | None = None) -> str:
-    """Best-effort service name for logs and metrics labels."""
-    return os.getenv("AIOPS_SERVICE_NAME") or default or get_settings().service_name

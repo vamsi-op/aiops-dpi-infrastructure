@@ -10,7 +10,6 @@ from aiops_common.log import get_logger
 
 from .engine import HealingEngine
 from .executor import ExecutorInterface
-from .safety import SafetyRails
 
 log = get_logger(__name__)
 
@@ -22,13 +21,6 @@ def _engine(request: Request) -> HealingEngine:
     if engine is None:  # pragma: no cover - only if start-up failed
         raise HTTPException(status_code=503, detail="Healing engine not started")
     return engine
-
-
-def _safety(request: Request) -> SafetyRails:
-    safety: SafetyRails | None = getattr(request.app.state, "safety", None)
-    if safety is None:  # pragma: no cover
-        raise HTTPException(status_code=503, detail="Safety rails not available")
-    return safety
 
 
 def _executor(request: Request) -> ExecutorInterface:

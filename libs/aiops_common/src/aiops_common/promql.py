@@ -163,10 +163,6 @@ class PrometheusClient:
         )
         return [_parse_range(item) for item in data.get("result", [])]
 
-    async def label_values(self, label: str) -> list[str]:
-        data = await self._get(f"/api/v1/label/{label}/values", {})
-        return list(data) if isinstance(data, list) else []
-
     async def is_healthy(self) -> bool:
         try:
             await self.scalar("up")

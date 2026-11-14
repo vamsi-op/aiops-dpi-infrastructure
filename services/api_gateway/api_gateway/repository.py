@@ -733,12 +733,6 @@ class DashboardRepository:
         )
         return [self._clean_chaos(row) for row in rows]
 
-    async def active_chaos_runs(self) -> list[dict[str, Any]]:
-        rows = await self._db.fetch_all(
-            f"SELECT * FROM {TABLE_CHAOS_RUNS} WHERE status = 'running' ORDER BY started_at"
-        )
-        return [self._clean_chaos(row) for row in rows]
-
     @staticmethod
     def _clean_chaos(row: dict[str, Any]) -> dict[str, Any]:
         row["parameters"] = _json(row.get("parameters"), {})

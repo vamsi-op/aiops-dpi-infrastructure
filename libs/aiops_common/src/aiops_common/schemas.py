@@ -226,23 +226,6 @@ class PredictionEvent(AiopsModel):
 
 
 # ---------------------------------------------------------------------------
-# Deployments & change tracking (input to root cause analysis)
-# ---------------------------------------------------------------------------
-class DeploymentEvent(AiopsModel):
-    """A change to a monitored service — the `change` axis of root cause analysis."""
-
-    deployment_id: str = Field(default_factory=lambda: new_id("dep"))
-    occurred_at: datetime = Field(default_factory=utc_now)
-    service: str
-    platform: str = "mojaloop"
-    from_version: str | None = None
-    to_version: str
-    change_type: Literal["deploy", "rollback", "config", "scale"] = "deploy"
-    triggered_by: str = "unknown"
-    notes: str = ""
-
-
-# ---------------------------------------------------------------------------
 # Root cause analysis / incidents
 # ---------------------------------------------------------------------------
 class RootCauseHypothesis(AiopsModel):
