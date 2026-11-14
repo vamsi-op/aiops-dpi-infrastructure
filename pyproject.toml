@@ -63,7 +63,6 @@ ignore = [
 "scripts/check_healing_engine.py" = ["S608", "BLE", "S110", "B007"]
 "scripts/check_rca_engine.py" = ["S608", "BLE", "S110", "B007"]
 "scripts/demo_quick_healing.py" = ["S310", "BLE"]
-"scripts/demo_scale_proof.py" = ["E402", "S603", "S607"]
 
 [tool.ruff.lint.isort]
 known-first-party = [

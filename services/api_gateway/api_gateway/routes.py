@@ -15,9 +15,9 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from aiops_common.config import get_settings, running_in_kubernetes
-from aiops_common.constants import MOJALOOP_DEPENDENCIES, MOJALOOP_SERVICES
 from aiops_common.log import get_logger
 from aiops_common.schemas import new_id, utc_now
+from aiops_common.topology import get_topology
 
 from . import health_rules
 from .health_rules import DEFAULT_THRESHOLDS
@@ -235,11 +235,13 @@ async def service_detail(
 
 @router.get("/topology", summary="Service dependency graph used by root cause analysis")
 async def topology() -> dict[str, Any]:
+    graph = get_topology()
     return {
-        "services": list(MOJALOOP_SERVICES),
+        "name": graph.name,
+        "services": list(graph.services),
         "edges": [
             {"from": service, "to": dependency}
-            for service, dependencies in MOJALOOP_DEPENDENCIES.items()
+            for service, dependencies in graph.dependencies.items()
             for dependency in dependencies
         ],
     }

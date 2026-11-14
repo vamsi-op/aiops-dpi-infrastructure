@@ -65,6 +65,7 @@ spec:
                 name: aiops-db
           env:
             - { name: AIOPS_SERVICE_NAME, value: "metrics-agent" }
+            - { name: AIOPS_TOPOLOGY_FILE, value: "/etc/aiops/topology.json" }
             - { name: SCRAPE_INTERVAL_SECONDS, value: "15" }
           ports:
             - containerPort: 8000
@@ -80,6 +81,14 @@ spec:
           resources:
             requests: { cpu: 50m, memory: 128Mi }
             limits: { cpu: "500m", memory: 256Mi }
+          volumeMounts:
+            - name: topology
+              mountPath: /etc/aiops
+              readOnly: true
+      volumes:
+        - name: topology
+          configMap:
+            name: aiops-topology
 ---
 # Trained Isolation Forests. Survive pod restarts so a restart does not force a retrain.
 apiVersion: v1
@@ -305,6 +314,7 @@ spec:
                 name: aiops-db
           env:
             - { name: AIOPS_SERVICE_NAME, value: "rca-engine" }
+            - { name: AIOPS_TOPOLOGY_FILE, value: "/etc/aiops/topology.json" }
             - { name: RCA_WINDOW_SECONDS, value: "300" }
             - { name: RCA_AUTO_RESOLVE_SECONDS, value: "300" }
           ports:
@@ -321,6 +331,14 @@ spec:
           resources:
             requests: { cpu: 50m, memory: 128Mi }
             limits: { cpu: "500m", memory: 384Mi }
+          volumeMounts:
+            - name: topology
+              mountPath: /etc/aiops
+              readOnly: true
+      volumes:
+        - name: topology
+          configMap:
+            name: aiops-topology
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -423,6 +441,7 @@ spec:
                 name: aiops-db
           env:
             - { name: AIOPS_SERVICE_NAME, value: "healing-engine" }
+            - { name: AIOPS_TOPOLOGY_FILE, value: "/etc/aiops/topology.json" }
           ports:
             - containerPort: 8000
           readinessProbe:
@@ -437,6 +456,14 @@ spec:
           resources:
             requests: { cpu: 50m, memory: 128Mi }
             limits: { cpu: "250m", memory: 256Mi }
+          volumeMounts:
+            - name: topology
+              mountPath: /etc/aiops
+              readOnly: true
+      volumes:
+        - name: topology
+          configMap:
+            name: aiops-topology
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -523,6 +550,7 @@ spec:
                 name: aiops-db
           env:
             - { name: AIOPS_SERVICE_NAME, value: "api-gateway" }
+            - { name: AIOPS_TOPOLOGY_FILE, value: "/etc/aiops/topology.json" }
             - { name: CORS_ORIGINS, value: "http://localhost:3000,http://localhost:5173,http://localhost:4173" }
           ports:
             - containerPort: 8000
@@ -538,6 +566,14 @@ spec:
           resources:
             requests: { cpu: 50m, memory: 128Mi }
             limits: { cpu: "250m", memory: 256Mi }
+          volumeMounts:
+            - name: topology
+              mountPath: /etc/aiops
+              readOnly: true
+      volumes:
+        - name: topology
+          configMap:
+            name: aiops-topology
 ---
 # Operations dashboard (module 8): nginx serving the React build and proxying /api and
 # /ws to the gateway, so the whole UI is one origin. No credentials, no API token.

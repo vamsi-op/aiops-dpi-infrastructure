@@ -4,7 +4,10 @@ import react from '@vitejs/plugin-react';
 // The dev server proxies /api and /ws to the gateway, so the browser only ever talks to
 // one origin. That keeps CORS out of the picture during development and means the same
 // relative URLs work when the built assets are served behind a reverse proxy in Docker.
-const GATEWAY = process.env.VITE_GATEWAY_URL ?? 'http://127.0.0.1:8000';
+// 8080 is where the API gateway is published on the host by both docker-compose.aiops.yml
+// and the kind cluster. Override with VITE_GATEWAY_URL for a gateway run elsewhere (e.g. a
+// local `uvicorn ... --port 8000`).
+const GATEWAY = process.env.VITE_GATEWAY_URL ?? 'http://127.0.0.1:8080';
 
 export default defineConfig({
   plugins: [react()],

@@ -47,7 +47,9 @@ discovery.relabel "containers" {
 	// Postgres and Grafana line produces a parse failure and the real errors are buried.
 	rule {
 		source_labels = ["__meta_docker_container_name"]
-		regex         = "/?(ml-api-adapter|central-ledger|quoting-service|account-lookup-service|transaction-request-service|aiops-api-gateway|aiops-metrics-agent|aiops-anomaly-detector|aiops-traffic-predictor|aiops-rca-engine|aiops-healing-engine|aiops-chaos-agent)"
+		// Compose names the simulators `aiops-dpi-<service>-<n>` (project prefix, replica
+		// suffix); without allowing for both, their logs were filed as infra and never parsed.
+		regex         = "/?(aiops-dpi-)?(ml-api-adapter|central-ledger|quoting-service|account-lookup-service|transaction-request-service|aiops-api-gateway|aiops-metrics-agent|aiops-anomaly-detector|aiops-traffic-predictor|aiops-rca-engine|aiops-healing-engine|aiops-chaos-agent)(-[0-9]+)?"
 		target_label  = "service_group"
 		replacement   = "dpi"
 	}

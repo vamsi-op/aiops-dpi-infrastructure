@@ -398,7 +398,14 @@ class DockerExecutor(ExecutorInterface):
         self,
         service: str,
     ) -> tuple[bool, str]:
-        """Rollback by pulling previous image tag and restarting."""
+        """Compose fallback for `rollback_bad_deploy`: restart the service's containers.
+
+        Docker Compose keeps no deployment history, so there is no previous revision to
+        return to. Under Compose the `bad_deploy` chaos experiment injects its defect into
+        the running process, which a restart does clear - but this is a restart, and the
+        message says so. The real rollback (`kubectl rollout undo` to the previous
+        ReplicaSet) is `KubernetesExecutor.rollback_deployment`, used on the kind cluster.
+        """
         try:
             containers = self.client.containers.list(
                 filters={"label": f"com.docker.compose.service={service}"}
@@ -413,9 +420,12 @@ class DockerExecutor(ExecutorInterface):
                 restarted.append(container.name)
 
             log.info(
-                "docker_executor.rollback_simulated", service=service, containers=len(restarted)
+                "docker_executor.rollback_as_restart", service=service, containers=len(restarted)
             )
-            msg = f"Rolled back {service} ({len(restarted)} container(s) restarted)"
+            msg = (
+                f"Restarted {service} ({len(restarted)} container(s)) to clear the bad deploy; "
+                "Compose has no revision history - on Kubernetes this is a real rollout undo"
+            )
             return True, msg
 
         except DockerException as exc:

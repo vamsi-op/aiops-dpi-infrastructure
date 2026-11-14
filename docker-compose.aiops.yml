@@ -69,10 +69,13 @@ services:
     environment:
       <<: *aiops-env
       AIOPS_SERVICE_NAME: metrics-agent
+      AIOPS_TOPOLOGY_FILE: /app/config/${AIOPS_TOPOLOGY:-topology.mojaloop.json}
       # Matches prometheus.yml's scrape_interval. Collecting faster than Prometheus scrapes
       # would write the same values repeatedly under new timestamps, inventing resolution
       # the data does not have.
       SCRAPE_INTERVAL_SECONDS: ${SCRAPE_INTERVAL_SECONDS:-15}
+    volumes:
+      - ./config:/app/config:ro
     ports:
       - "${METRICS_AGENT_PORT:-8020}:8000"
     depends_on:
@@ -195,8 +198,11 @@ services:
     environment:
       <<: *aiops-env
       AIOPS_SERVICE_NAME: rca-engine
+      AIOPS_TOPOLOGY_FILE: /app/config/${AIOPS_TOPOLOGY:-topology.mojaloop.json}
       RCA_WINDOW_SECONDS: ${RCA_WINDOW_SECONDS:-300}
       RCA_AUTO_RESOLVE_SECONDS: ${RCA_AUTO_RESOLVE_SECONDS:-300}
+    volumes:
+      - ./config:/app/config:ro
     ports:
       - "${RCA_ENGINE_PORT:-8023}:8000"
     depends_on:
@@ -234,6 +240,7 @@ services:
     environment:
       <<: *aiops-env
       AIOPS_SERVICE_NAME: healing-engine
+      AIOPS_TOPOLOGY_FILE: /app/config/${AIOPS_TOPOLOGY:-topology.mojaloop.json}
       HEALING_ENABLED: ${HEALING_ENABLED:-false}
       HEALING_MAX_ACTIONS_PER_HOUR: ${HEALING_MAX_ACTIONS_PER_HOUR:-10}
       HEALING_COOLDOWN_SECONDS: ${HEALING_COOLDOWN_SECONDS:-300}
@@ -248,6 +255,7 @@ services:
     ports:
       - "${HEALING_ENGINE_PORT:-8024}:8000"
     volumes:
+      - ./config:/app/config:ro
       # Mount Docker socket so the engine can restart containers and scale services
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
@@ -284,6 +292,7 @@ services:
     environment:
       <<: *aiops-env
       AIOPS_SERVICE_NAME: api-gateway
+      AIOPS_TOPOLOGY_FILE: /app/config/${AIOPS_TOPOLOGY:-topology.mojaloop.json}
       # CORS origin for the dashboard. In production this would be the dashboard's public URL.
       # For local dev, allow localhost on any port so both `npm run dev` (5173) and a
       # production build preview work without rebuilding the gateway.
@@ -299,6 +308,8 @@ services:
       REPLICA_CPU_LIMIT: ${REPLICA_CPU_LIMIT:-0.40}
       SCALE_MIN_AVAILABLE_RAM_MB: ${SCALE_MIN_AVAILABLE_RAM_MB:-256}
       SCALE_MAX_HOST_CPU_PERCENT: ${SCALE_MAX_HOST_CPU_PERCENT:-85.0}
+    volumes:
+      - ./config:/app/config:ro
     ports:
       - "${API_GATEWAY_PORT:-8080}:8000"
     depends_on:

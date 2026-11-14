@@ -80,7 +80,7 @@ class MetricSample(AiopsModel):
     timestamp: datetime = Field(default_factory=utc_now)
     service: str = Field(description="Monitored DPI service, e.g. `central-ledger`")
     instance: str = Field(default="unknown", description="Pod / container identifier")
-    platform: str = Field(default="mojaloop", description="mojaloop | mosip | beckn")
+    platform: str = Field(default="mojaloop", description="Label of the monitored DPI system (AIOPS_DPI_PLATFORM)")
 
     # Traffic
     tps: float = Field(default=0.0, ge=0, description="Transactions per second")
@@ -108,10 +108,23 @@ class MetricSample(AiopsModel):
 
     labels: dict[str, str] = Field(default_factory=dict)
 
+    # The error ratio as measured upstream (Prometheus `dpi:error_ratio:rate5m`), when the
+    # producer has one. Takes precedence over the count-derived ratio below, because the
+    # counts are whole numbers per window: at 0.15% errors and ~300 transactions per 15 s,
+    # the window holds 0.47 errors, which rounds to 0 and would report a perfect service.
+    # That rounding made every live sample read "zero errors" while the training data never
+    # did, and the anomaly detector flagged the difference continuously.
+    measured_error_ratio: float | None = Field(default=None, ge=0, le=1)
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def error_ratio(self) -> float:
-        """Fraction of requests that failed in this window (0.0–1.0)."""
+        """Fraction of requests that failed in this window (0.0–1.0).
+
+        The measured ratio when the producer supplied one; otherwise derived from counts.
+        """
+        if self.measured_error_ratio is not None:
+            return self.measured_error_ratio
         if self.request_count <= 0:
             return 0.0
         return min(self.error_count / self.request_count, 1.0)

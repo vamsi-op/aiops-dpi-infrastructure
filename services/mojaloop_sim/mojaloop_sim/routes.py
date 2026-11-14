@@ -16,15 +16,17 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Body, HTTPException, Request
+from fastapi.responses import JSONResponse
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 from pydantic import BaseModel, Field
 
 from aiops_common.log import get_logger
 
+from .dependencies import DEFAULT_OPEN_SECONDS
 from .faults import DEFAULT_DURATION_SECONDS, MAX_DURATION_SECONDS, FaultKind
 from .simulator import Simulator
 
@@ -197,6 +199,79 @@ async def scale(request: Request, body: Annotated[ScaleRequest, Body()]) -> dict
         "load_factor": round(state.load_factor, 3),
         "reason": body.reason,
     }
+
+
+# ---------------------------------------------------------------------------
+# Circuit breakers on downstream dependencies
+# ---------------------------------------------------------------------------
+class CircuitRequest(BaseModel):
+    action: Literal["open", "close"]
+    duration_seconds: int = Field(default=DEFAULT_OPEN_SECONDS, ge=5, le=3600)
+    opened_by: str = Field(default="api", max_length=100)
+
+
+@router.get("/sim/circuits", tags=["simulator"], summary="Circuit breakers on dependencies")
+async def circuits(request: Request) -> dict[str, Any]:
+    simulator = _sim(request)
+    return {"service": simulator.service, **simulator.dependencies.snapshot()}
+
+
+@router.post(
+    "/sim/circuits/{dependency}",
+    tags=["simulator"],
+    summary="Open or close the circuit breaker on one dependency",
+)
+async def set_circuit(
+    request: Request, dependency: str, body: Annotated[CircuitRequest, Body()]
+) -> dict[str, Any]:
+    """Trip (or reset) this service's breaker on `dependency`.
+
+    Opened by the healing engine's `circuit_break_cascade` playbook on every caller of the
+    root-cause service: the callers stop waiting on it and fail fast, so the cascade stops
+    spreading. An open breaker half-opens after `duration_seconds` and closes itself once
+    a probe finds the dependency healthy.
+    """
+    simulator = _sim(request)
+    breaker = simulator.dependencies.breakers.get(dependency)
+    if breaker is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"{simulator.service} does not call {dependency!r}; "
+            f"dependencies: {list(simulator.dependencies.breakers)}",
+        )
+    if body.action == "open":
+        breaker.open(seconds=body.duration_seconds, by=body.opened_by)
+    else:
+        breaker.close()
+    log.info(
+        "sim.circuit_changed",
+        monitored_service=simulator.service,
+        dependency=dependency,
+        state=str(breaker.state),
+        by=body.opened_by,
+    )
+    return {"service": simulator.service, **breaker.to_dict()}
+
+
+@router.get(
+    "/dependency/probe",
+    tags=["simulator"],
+    summary="Health probe callers use for their dependency on this service",
+)
+async def dependency_probe(request: Request) -> JSONResponse:
+    """What a caller's DependencyMonitor polls. Deliberately *traced* (unlike /sim*): each
+    probe is a real service-to-service call, so Tempo's service graph has genuine
+    caller -> dependency edges, and the RCA engine can read failed calls on them.
+
+    The call fails (503) with this service's current error ratio, as real calls would. The
+    state is in the body either way, so a failed probe still tells the caller how degraded
+    the dependency is rather than reading as "unreachable".
+    """
+    simulator = _sim(request)
+    snapshot = simulator.snapshot()
+    state = simulator.last_state
+    failed = state is not None and simulator.rng.random() < state.error_ratio
+    return JSONResponse(status_code=503 if failed else 200, content=snapshot)
 
 
 # ---------------------------------------------------------------------------

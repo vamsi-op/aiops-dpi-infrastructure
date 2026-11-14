@@ -123,6 +123,23 @@ class SafetyRails:
             )
             return False, ActionStatus.SKIPPED_BUDGET, budget_reason
 
+        # Claim the target atomically. The cooldown read above and the cooldown write in
+        # `record_action_executed` are seconds apart (the action runs in between), so an
+        # anomaly and the incident it opened - processed concurrently - both passed the read
+        # and both restarted the same service within a second. SET NX lets exactly one win;
+        # `record_action_executed` then replaces the claim with the real cooldown.
+        cooldown_key = f"{HEALING_COOLDOWN_KEY}:{target_service}"
+        claimed = await self.bus.claim_flag(
+            cooldown_key, "in-flight", ttl_seconds=self.settings.cooldown_seconds
+        )
+        if not claimed:
+            log.info("safety.blocked_in_flight", target=target_service)
+            return (
+                False,
+                ActionStatus.SKIPPED_COOLDOWN,
+                f"Another remediation on {target_service} is already in flight",
+            )
+
         # All checks passed
         log.info(
             "safety.checks_passed",
@@ -161,15 +178,18 @@ class SafetyRails:
             ttl_seconds=3600,
         )
 
-        if count > self.settings.max_actions_per_hour:
+        # Undo the probe either way: only an executed action consumes budget
+        # (`record_action_executed` increments). The over-budget branch used to return before
+        # this, so every *blocked* attempt also counted - observed at 45/10 with only 10
+        # actions executed - and the budget could not recover until the hour expired.
+        await self.bus.client.decr(HEALING_BUDGET_KEY)
+        used = count - 1
+
+        if used >= self.settings.max_actions_per_hour:
             return (
                 True,
-                f"Hourly budget exhausted ({count}/{self.settings.max_actions_per_hour})",
+                f"Hourly budget exhausted ({used}/{self.settings.max_actions_per_hour})",
             )
-
-        # Decrement since we're just checking, not executing yet
-        # Actual execution will increment again
-        await self.bus.client.decr(HEALING_BUDGET_KEY)
 
         return False, ""
 

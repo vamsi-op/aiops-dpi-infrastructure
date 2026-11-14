@@ -62,6 +62,8 @@ init_configmaps() {
   info "ConfigMaps (from infra/ and deploy/k8s/config/)"
   kc apply -f deploy/k8s/namespace.yaml
   set_configmap timescaledb-init infra/timescaledb/init
+  # The monitored DPI system's service graph (aiops_common.topology).
+  set_configmap aiops-topology topology.json=config/topology.mojaloop.json
   set_configmap prometheus-config deploy/k8s/config/prometheus.yml
   set_configmap prometheus-rules infra/prometheus/rules
   set_configmap alloy-config deploy/k8s/config/config.alloy

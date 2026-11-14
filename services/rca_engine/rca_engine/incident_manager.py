@@ -19,11 +19,17 @@ from aiops_common.schemas import (
     RootCauseHypothesis,
     utc_now,
 )
+from aiops_common.topology import get_topology
 
 if TYPE_CHECKING:
     from aiops_common.db import Database
 
 log = get_logger(__name__)
+
+
+def transitive_dependencies(services: list[str] | set[str]) -> set[str]:
+    """Every service the given services call, directly or indirectly."""
+    return get_topology().transitive_dependencies(set(services))
 
 # Auto-resolve / continuous recovery window (2 minutes)
 AUTO_RESOLVE_AFTER_SECONDS = 120
@@ -79,9 +85,16 @@ class IncidentManager:
             ORDER BY opened_at DESC
             LIMIT 1
         """
+        # Search with the services *and everything they depend on*. A cascade's victims are
+        # the callers of the failing service, not the failing service itself, so matching on
+        # the anomalous services alone opened a separate incident per victim - each naming
+        # itself as root cause - and healing restarted the victims.
         existing = await self.db.fetch_one(
             find_query,
-            {"platform": self.settings.dpi_platform, "services": affected_services},
+            {
+                "platform": self.settings.dpi_platform,
+                "services": sorted(set(affected_services) | transitive_dependencies(affected_services)),
+            },
         )
 
         if existing:
@@ -103,11 +116,35 @@ class IncidentManager:
                 except Exception:  # noqa: BLE001
                     existing_hypo_raw = []
 
-            merged_hypotheses = (
-                hypotheses
-                if hypotheses
-                else [RootCauseHypothesis.model_validate(h) for h in existing_hypo_raw]
+            existing_hypotheses = [RootCauseHypothesis.model_validate(h) for h in existing_hypo_raw]
+            # Victims joining a cascade: the root is downstream, already in the incident, and
+            # its hypotheses stay. Hypotheses computed from the victims' anomalies alone would
+            # name a victim as the root.
+            # Applies to every later batch from a victim too, not just its first: a victim's
+            # own anomalies alone always produce "only <victim> is anomalous", and letting that
+            # replace the incident's hypotheses renamed the root to the victim.
+            failing_dependencies = set(existing_services) & transitive_dependencies(
+                affected_services
             )
+            if failing_dependencies and existing_hypotheses:
+                merged_hypotheses = existing_hypotheses
+                new_victims = sorted(set(affected_services) - set(existing_services))
+                if new_victims:
+                    merged_hypotheses[0].evidence.append(
+                        f"Cascade: {', '.join(new_victims)} affected through their dependency "
+                        f"on {', '.join(sorted(failing_dependencies))}"
+                    )
+            elif hypotheses and (
+                not existing_hypotheses
+                or hypotheses[0].confidence > existing_hypotheses[0].confidence
+            ):
+                merged_hypotheses = hypotheses
+            else:
+                # Keep the stronger diagnosis. A later batch analysed alone sees less: five
+                # minutes after a bad deploy its CHANGE evidence had decayed to 0.5, and
+                # replacing the incident's 0.94 CHANGE root with "only this service is
+                # affected" (0.90) lost the rollback.
+                merged_hypotheses = existing_hypotheses
 
             summary = self._generate_summary(anomalies, merged_hypotheses)
 
@@ -330,12 +367,17 @@ class IncidentManager:
                 )
                 continue
 
-            # 2. Check remediation / healing actions for this incident or target services
+            # 2. Check remediation / healing actions for this incident or target services.
+            #    Only actions that ran: a `skipped_*` record is the healer *declining* to act
+            #    (cooldown, budget, attempt cap) and says nothing about whether the service
+            #    recovered. Judging by the latest row let 37 skipped_max_attempts records keep a
+            #    recovered incident open indefinitely, every SLO green.
             action_query = """
                 SELECT action_id, status, result_message, parameters, created_at
                 FROM healing_actions
-                WHERE incident_id = :incident_id
-                   OR (target_service = ANY(:services) AND created_at >= :opened_at)
+                WHERE (incident_id = :incident_id
+                       OR (target_service = ANY(:services) AND created_at >= :opened_at))
+                  AND status NOT LIKE 'skipped%'
                 ORDER BY created_at DESC
                 LIMIT 1
             """
@@ -351,14 +393,12 @@ class IncidentManager:
                 log.info("auto_resolve_skipped_action_in_progress", incident_id=incident_id)
                 continue
 
-            # Failed remediation or reached max attempts / requires manual intervention -> keep OPEN
+            # Failed remediation or an explicit escalation to a human -> keep OPEN
             if action_status in (
                 ActionStatus.FAILED,
                 "failed",
                 ActionStatus.REQUIRES_MANUAL_INTERVENTION,
                 "requires_manual_intervention",
-                ActionStatus.SKIPPED_MAX_ATTEMPTS,
-                "skipped_max_attempts",
             ):
                 log.info(
                     "auto_resolve_blocked_failed_remediation",

@@ -434,3 +434,41 @@ def test_seasonality_can_be_disabled() -> None:
     busy = flat.sample(_at(19, 30), FaultEffects.none())
     # Only the random walk should differ, so the two are within noise of each other.
     assert math.isclose(quiet.tps, busy.tps, rel_tol=0.25)
+
+
+# ---------------------------------------------------------------------------
+# Elapsed-time dynamics (history replay steps the model every 60 s / 900 s)
+# ---------------------------------------------------------------------------
+def test_coarse_step_lands_memory_on_its_target_like_live_ticks_do() -> None:
+    """Regression: memory moved 5% per *call*, so a replay calling every 15 minutes left it
+    hours behind load, while the live 1 s tick tracks load within seconds. The detector then
+    flagged every live sample as an unusual memory/CPU/connections combination."""
+    import random as _random
+
+    from mojaloop_sim.profiles import PROFILES as _PROFILES
+    from mojaloop_sim.traffic import FaultEffects as _FaultEffects
+    from mojaloop_sim.traffic import TrafficModel as _TrafficModel
+
+    profile = _PROFILES["central-ledger"]
+    model = _TrafficModel(profile, base_tps=25.0, rng=_random.Random(1))
+    state = model.sample(
+        datetime(2026, 1, 5, 12, tzinfo=UTC), _FaultEffects.none(), elapsed_seconds=900
+    )
+    target = profile.base_memory_ratio + 0.18 * state.load_factor
+    assert state.memory_ratio == pytest.approx(target, abs=1e-6)
+
+
+def test_one_second_step_is_the_default() -> None:
+    import random as _random
+
+    from mojaloop_sim.profiles import PROFILES as _PROFILES
+    from mojaloop_sim.traffic import FaultEffects as _FaultEffects
+    from mojaloop_sim.traffic import TrafficModel as _TrafficModel
+
+    moment = datetime(2026, 1, 5, 12, tzinfo=UTC)
+    a = _TrafficModel(_PROFILES["quoting-service"], base_tps=25.0, rng=_random.Random(3))
+    b = _TrafficModel(_PROFILES["quoting-service"], base_tps=25.0, rng=_random.Random(3))
+    for i in range(50):
+        sa = a.sample(moment, _FaultEffects.none())
+        sb = b.sample(moment, _FaultEffects.none(), elapsed_seconds=1.0)
+        assert sa == sb, i

@@ -440,6 +440,14 @@ class EventBus:
     ) -> None:
         await self.client.set(key, value, ex=ttl_seconds)
 
+    async def claim_flag(self, key: str, value: str = "1", *, ttl_seconds: int) -> bool:
+        """Atomically set `key` only if it is absent (Redis SET NX). True if this caller won.
+
+        For check-then-act races: two workers that both read "no flag" and then both act is
+        exactly the bug a plain get + set cannot prevent.
+        """
+        return bool(await self.client.set(key, value, ex=ttl_seconds, nx=True))
+
     async def get_flag(self, key: str) -> str | None:
         value = await self.client.get(key)
         return str(value) if value is not None else None

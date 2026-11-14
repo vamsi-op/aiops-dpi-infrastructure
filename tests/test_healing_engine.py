@@ -175,8 +175,8 @@ async def test_safety_budget_blocks_when_exhausted(mock_bus, healing_settings):
     assert not allowed, "Actions should be blocked when budget exhausted"
     assert status == ActionStatus.SKIPPED_BUDGET
     assert "budget" in reason.lower()
-    assert "11" in reason
-    assert "10" in reason
+    # The probe returned 11; the message reports actions actually used (10 of 10).
+    assert "(10/10)" in reason
 
 
 @pytest.mark.asyncio
@@ -682,3 +682,96 @@ async def test_actual_and_simulated_replicas_not_mixed(mock_docker_client, heali
     assert result.metadata["execution_mode"] == ExecutionMode.SIMULATED
     assert result.metadata["status"] == ActionStatus.SKIPPED_INSUFFICIENT_CAPACITY
     executor.scaler.scale_out.assert_not_called()
+
+
+async def test_concurrent_checks_on_one_service_let_exactly_one_act(healing_settings):
+    """Regression: an anomaly and the incident it opened were processed concurrently, both
+    read 'no cooldown', and both restarted the same service within a second."""
+    import asyncio
+
+    store: dict[str, str] = {}
+
+    class NxBus:
+        class client:
+            @staticmethod
+            async def get(key):
+                return None
+
+            @staticmethod
+            async def decr(key):
+                return 0
+
+        async def get_flag(self, key):
+            return store.get(key)
+
+        async def claim_flag(self, key, value="1", *, ttl_seconds):
+            await asyncio.sleep(0)  # let the other check interleave
+            if key in store:
+                return False
+            store[key] = value
+            return True
+
+        async def set_flag(self, key, value="1", *, ttl_seconds=None):
+            store[key] = value
+
+        async def incr_with_ttl(self, key, *, ttl_seconds):
+            return 1
+
+    safety = SafetyRails(NxBus(), healing_settings)
+    results = await asyncio.gather(
+        safety.check_all("central-ledger", 0.9, incident_id=None),
+        safety.check_all("central-ledger", 0.9, incident_id="inc_1"),
+    )
+    allowed = [ok for ok, _status, _reason in results]
+    assert allowed.count(True) == 1
+    blocked = next(r for r in results if not r[0])
+    assert blocked[1] == ActionStatus.SKIPPED_COOLDOWN
+    # A different service is not affected by the claim.
+    ok, _, _ = await safety.check_all("quoting-service", 0.9, incident_id=None)
+    assert ok is True
+
+
+async def test_blocked_attempts_do_not_consume_budget(healing_settings):
+    """Regression: each attempt blocked by the budget still incremented the counter
+    (observed 45/10 with 10 executed), so the budget could never recover."""
+    store = {"n": healing_settings.max_actions_per_hour}  # budget exactly used up
+
+    class CountingBus:
+        class client:
+            @staticmethod
+            async def decr(key):
+                store["n"] -= 1
+
+        async def incr_with_ttl(self, key, *, ttl_seconds):
+            store["n"] += 1
+            return store["n"]
+
+    safety = SafetyRails(CountingBus(), healing_settings)
+    for _ in range(5):
+        over, reason = await safety._check_budget()
+        assert over is True
+    assert store["n"] == healing_settings.max_actions_per_hour  # unchanged by blocked checks
+    assert f"({healing_settings.max_actions_per_hour}/" in reason
+
+
+@pytest.mark.asyncio
+async def test_attempt_cap_escalates_once_per_incident() -> None:
+    """Regression: every anomaly after the cap wrote another skipped_max_attempts row (37
+    in five minutes for one incident). The escalation is recorded once."""
+    from healing_engine.engine import HealingEngine
+
+    flags: set[str] = set()
+
+    class Bus:
+        async def claim_flag(self, key: str, value: str, *, ttl_seconds: int) -> bool:
+            if key in flags:
+                return False
+            flags.add(key)
+            return True
+
+    engine = object.__new__(HealingEngine)
+    engine.bus = Bus()
+
+    assert await engine._first_escalation("inc_1") is True
+    assert await engine._first_escalation("inc_1") is False
+    assert await engine._first_escalation("inc_2") is True

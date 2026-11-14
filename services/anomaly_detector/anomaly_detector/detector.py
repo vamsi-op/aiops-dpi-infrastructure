@@ -39,6 +39,24 @@ CONSUMER_GROUP = "anomaly-detector"
 # 15s = fast demo response while preventing spam from baseline noise
 ANOMALY_COOLDOWN_SECONDS = 15
 
+# Persistence: emit only when a service has looked anomalous on this many consecutive
+# samples, unless the score is severe enough to act on at once.
+#
+# Each 15-second sample is scored on its own, and a 2%-contamination model will
+# occasionally score an ordinary sample above its boundary. Measured on live Saturday-night
+# traffic, single-sample decisions flagged 8.9% of samples; requiring two in a row cut that to
+# 1.5% while every injected fault (latency x3, CPU+memory hog) still scored 0.98-1.0 and
+# persists for minutes. The cost is one extra scrape (15 s) of time-to-detect for moderate
+# anomalies; severe ones are not delayed.
+#
+# Skipping persistence also needs one signal to be extreme (IMMEDIATE_SIGMA). The score
+# alone is not enough: a sample with connections and CPU both ~2.1 sigma high scored 0.959,
+# was emitted at once as a queue_backlog (queue depth 0), and the restart it triggered cost
+# its callers five minutes of failed-call alarms.
+PERSISTENCE_SAMPLES = 2
+IMMEDIATE_SCORE = 0.95
+IMMEDIATE_SIGMA = 4.0
+
 INSERT_ANOMALY = f"""
 INSERT INTO {TABLE_ANOMALIES} (
     anomaly_id, detected_at, window_start, service, platform, kind, severity,
@@ -154,6 +172,8 @@ class AnomalyDetector:
         self._block_ms = block_ms
         self._models: dict[str, ServiceModel] = {}
         self._last_anomaly_emitted: dict[str, float] = {}
+        # Consecutive anomalous samples per service (see PERSISTENCE_SAMPLES).
+        self._unusual_streak: dict[str, int] = {}
         self.status = DetectorStatus(threshold=scorer.threshold)
         self._task: asyncio.Task[None] | None = None
         self._stopping = asyncio.Event()
@@ -268,14 +288,36 @@ class AnomalyDetector:
                 )
             return False
 
+        # The service restarted within the last rate window: its rates are distorted for five
+        # minutes (see metrics_agent RESET_QUERY). Not scored, so a just-remediated service is
+        # not flagged for the artefact of its own remediation.
+        if sample.labels.get("restart_in_rate_window") == "1":
+            self._unusual_streak[sample.service] = 0
+            log.debug("detector.skipped_restart_window", monitored_service=sample.service)
+            return True
+
         result = self.scorer.score(sample, model)
         self._metrics.scored.labels(sample.service).inc()
         self._metrics.score.labels(sample.service).set(result.score)
         self.status.samples_scored += 1
         self.status.last_sample_at = sample.timestamp.isoformat()
 
-        if result.anomaly is None:
+        peak_sigma = (
+            max(result.anomaly.feature_deviations.values(), default=0.0)
+            if result.anomaly is not None
+            else 0.0
+        )
+        if not self._passes_persistence(
+            sample.service, result.anomaly is not None, result.score, peak_sigma=peak_sigma
+        ):
+            if result.anomaly is not None:
+                log.debug(
+                    "anomaly.awaiting_persistence",
+                    monitored_service=sample.service,
+                    score=round(result.score, 4),
+                )
             return True
+        assert result.anomaly is not None
 
         now = time.monotonic()
         if self._in_anomaly_cooldown(sample.service, now):
@@ -316,6 +358,19 @@ class AnomalyDetector:
             contributing=result.anomaly.contributing_features[:3],
         )
         return True
+
+    def _passes_persistence(
+        self, service: str, anomalous: bool, score: float, *, peak_sigma: float = 0.0
+    ) -> bool:
+        """Track the service's run of anomalous samples; True when one should be emitted."""
+        if not anomalous:
+            self._unusual_streak[service] = 0
+            return False
+        streak = self._unusual_streak.get(service, 0) + 1
+        self._unusual_streak[service] = streak
+        if streak >= PERSISTENCE_SAMPLES:
+            return True
+        return score >= IMMEDIATE_SCORE and peak_sigma >= IMMEDIATE_SIGMA
 
     def _in_anomaly_cooldown(self, service: str, now: float) -> bool:
         last_emitted = self._last_anomaly_emitted.get(service)

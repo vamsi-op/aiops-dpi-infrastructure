@@ -16,7 +16,7 @@ from aiops_common.log import get_logger
 from aiops_common.schemas import AnomalyEvent, MetricSample
 
 from .classify import IMPLICATION_SIGMA, classify
-from .model import MODEL_NAME, ServiceModel
+from .model import MODEL_NAME, ServiceModel, p99_reliability
 
 log = get_logger(__name__)
 
@@ -30,6 +30,30 @@ log = get_logger(__name__)
 # Compressing logarithmically first keeps the mapping monotone across the whole range:
 # 2σ -> 0.50, 4σ -> 0.76, 10σ -> 0.91, 100σ -> 0.99, 3600σ -> 0.9998.
 DEVIATION_SCALE = 1.9
+
+# Signals a user of the DPI system would feel. A deviation in one of these (in its harmful
+# direction) is evidence on its own; load gauges alone have to be extreme (STRONG_SIGMA).
+SYMPTOM_FEATURES = frozenset(
+    {
+        "error_ratio",
+        "latency_p50_seconds",
+        "latency_p99_seconds",
+        "queue_depth",
+        "memory_utilisation_ratio",
+        "settlement_lag_seconds",
+    }
+)
+STRONG_SIGMA = 3.0
+
+
+def _weak_evidence(deviations: dict[str, float]) -> bool:
+    """True when no symptom is implicated and no signal deviates by STRONG_SIGMA."""
+    for feature, deviation in deviations.items():
+        if abs(deviation) >= STRONG_SIGMA:
+            return False
+        if feature in SYMPTOM_FEATURES and deviation >= IMPLICATION_SIGMA:
+            return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -103,11 +127,19 @@ class Scorer:
 
     def score(self, sample: MetricSample, model: ServiceModel) -> ScoreResult:
         vector = sample.feature_vector(ANOMALY_FEATURES)
-        forest_score, raw = model.score(vector)
+        forest_score, raw = model.score(
+            vector, hour=sample.timestamp.hour, weekday=sample.timestamp.weekday()
+        )
 
         # Deviations are computed unconditionally, because they are half the decision now -
         # not just the explanation attached afterwards.
         deviations = model.baseline.deviations(sample, sample.timestamp)
+        # Same evidence weighting the forest gets (model.p99_reliability): a p99 resting on a
+        # handful of tail samples is not a reliable spike.
+        if "latency_p99_seconds" in deviations:
+            deviations["latency_p99_seconds"] = round(
+                deviations["latency_p99_seconds"] * p99_reliability(sample.tps), 3
+            )
         deviation_score = _deviation_score(deviations)
         normalised = max(forest_score, deviation_score)
 
@@ -125,6 +157,23 @@ class Scorer:
                 raw,
                 None,
                 skipped_reason="below the decision boundary of both detectors",
+                forest_score=forest_score,
+                deviation_score=deviation_score,
+            )
+
+        # Weak evidence: the forest dislikes the combination, but nothing a user would feel is
+        # wrong. Load gauges (CPU, connections, traffic) a few sigma up with errors, latency,
+        # queue, memory and settlement normal is ordinary load wobble - observed on live
+        # traffic as forest scores of 0.95-0.98 for CPU 0.40 and 50 connections, each
+        # classified queue_backlog with queue depth 0 and "healed" by restarting a healthy
+        # service. Recorded nowhere, like any other below-boundary sample.
+        if _weak_evidence(deviations):
+            return ScoreResult(
+                sample.service,
+                normalised,
+                raw,
+                None,
+                skipped_reason="only load gauges moved, none by STRONG_SIGMA",
                 forest_score=forest_score,
                 deviation_score=deviation_score,
             )

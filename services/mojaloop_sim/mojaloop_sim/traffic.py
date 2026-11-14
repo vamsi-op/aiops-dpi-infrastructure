@@ -37,6 +37,12 @@ WEEKDAY_WEIGHTS: tuple[float, ...] = (1.05, 1.08, 1.06, 1.04, 1.10, 0.72, 0.58)
 # waiting time grows sharply as utilisation approaches saturation.
 KNEE = 0.80
 
+# Per-second dynamics of the stateful signals. Expressed per second so a caller that steps
+# the model less often (the history replay) can compound them over the elapsed time.
+WALK_KEEP_PER_SECOND = 0.92  # traffic drift keeps 92% of its deviation from 1.0 each second
+WALK_SHOCK_SD = 0.012  # ... and gains this much noise each second
+MEMORY_PULL_PER_SECOND = 0.05  # memory closes 5% of the gap to its load target each second
+
 
 def daily_multiplier(hour_of_day: float) -> float:
     """Two-peak daily shape: a mid-morning rise and a larger evening peak.
@@ -136,15 +142,31 @@ class TrafficModel:
         return self._profile.tps_per_replica * self._replicas
 
     # -- the model --------------------------------------------------------
-    def _advance_walk(self) -> None:
-        # Ornstein-Uhlenbeck style: pull toward 1.0, then add a small shock.
-        self._walk += (1.0 - self._walk) * 0.08 + self._rng.gauss(0.0, 0.012)
+    def _advance_walk(self, elapsed_seconds: float) -> None:
+        # Ornstein-Uhlenbeck style: pull toward 1.0, then add a small shock. Per second the
+        # deviation keeps 92% and gains N(0, 0.012); over `elapsed_seconds` that compounds to
+        # keep = 0.92^dt with the matching variance, so a coarse step lands where `dt`
+        # one-second steps would have (in distribution). dt=1 is exactly the original update.
+        keep = WALK_KEEP_PER_SECOND**elapsed_seconds
+        shock_sd = WALK_SHOCK_SD * math.sqrt((1.0 - keep**2) / (1.0 - WALK_KEEP_PER_SECOND**2))
+        self._walk = 1.0 + (self._walk - 1.0) * keep + self._rng.gauss(0.0, shock_sd)
         self._walk = max(0.88, min(1.12, self._walk))
 
-    def sample(self, moment: datetime, faults: FaultEffects) -> ServiceState:
-        """Compute the current state, with any active fault effects applied."""
+    def sample(
+        self, moment: datetime, faults: FaultEffects, *, elapsed_seconds: float = 1.0
+    ) -> ServiceState:
+        """Compute the current state, with any active fault effects applied.
+
+        `elapsed_seconds` is the time since the previous call. The live simulator ticks every
+        second and leaves it at 1. `scripts/replay_history.py` calls once per 60 s or 900 s
+        and must pass the step: the stateful parts (traffic drift, memory) are per-second
+        dynamics, and stepping them once per call made memory lag load by hours in the
+        training data while tracking it within seconds live - a gap the anomaly detector
+        then flagged on every live sample.
+        """
         profile = self._profile
-        self._advance_walk()
+        elapsed_seconds = max(1.0, elapsed_seconds)
+        self._advance_walk(elapsed_seconds)
 
         # --- traffic ---
         season = seasonal_multiplier(moment) if self._seasonality else 0.70
@@ -180,7 +202,10 @@ class TrafficModel:
         # Memory tracks load loosely and drifts. A memory fault adds a monotonic climb,
         # which is the signature module 4 must catch as `memory_pressure`.
         target_memory = profile.base_memory_ratio + 0.18 * load
-        self._memory += (target_memory - self._memory) * 0.05
+        # 5% of the gap per second, compounded over the elapsed time (dt=1: exactly 5%).
+        self._memory += (target_memory - self._memory) * (
+            1.0 - (1.0 - MEMORY_PULL_PER_SECOND) ** elapsed_seconds
+        )
         self._memory += faults.memory_growth_per_tick
         self._memory = max(0.05, min(1.0, self._memory))
 

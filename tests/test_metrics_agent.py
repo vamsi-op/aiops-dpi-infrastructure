@@ -159,7 +159,7 @@ def test_collector_reads_recording_rules_not_raw_counters() -> None:
 
 def test_anomaly_features_are_all_collected_or_derived() -> None:
     """Module 4 cannot train on a feature nobody populates."""
-    derived = {"error_ratio"}  # computed from request_count / error_count
+    derived = {"error_ratio"}  # from ERROR_RATIO_QUERY via MetricSample.measured_error_ratio
     for feature in ANOMALY_FEATURES:
         assert feature in GAUGE_QUERIES or feature in derived, feature
 
@@ -285,11 +285,7 @@ async def test_counts_are_derived_from_tps_over_the_interval() -> None:
 
 
 async def test_stored_error_ratio_agrees_with_the_recorded_one() -> None:
-    """Counts and ratio must not contradict each other.
-
-    `MetricSample.error_ratio` is computed from the counts, so `error_count` is derived from
-    the recorded ratio to make the two agree by construction rather than by coincidence.
-    """
+    """The stored ratio is the recorded one, and the counts agree with it when they can."""
     prometheus = FakePrometheus(full_values(tps=20.0, error_ratio=0.10))
     result = await make_collector(prometheus, interval=15).collect()
 
@@ -297,6 +293,25 @@ async def test_stored_error_ratio_agrees_with_the_recorded_one() -> None:
     assert sample.request_count == 300
     assert sample.error_count == 30
     assert sample.error_ratio == pytest.approx(0.10, abs=1e-9)
+
+
+async def test_low_error_ratio_survives_whole_number_counts() -> None:
+    """Regression: 0.15% errors at ~20 tps is 0.45 errors per 15 s window.
+
+    The count rounds to 0. When the ratio was derived from the counts, every low-error
+    service read as error-free on every sample, the training data (which never rounds that
+    way) did not, and the anomaly detector flagged the difference continuously.
+    """
+    prometheus = FakePrometheus(full_values(tps=20.0, error_ratio=0.0015))
+    result = await make_collector(prometheus, interval=15).collect()
+
+    sample = result.samples[0]
+    assert sample.error_count == 0  # the coarse count is still whole
+    assert sample.error_ratio == pytest.approx(0.0015)  # but the scored ratio is measured
+    # And it survives the trip over the event bus to the detector.
+    reread = MetricSample.model_validate(sample.model_dump(mode="json"))
+    assert reread.error_ratio == pytest.approx(0.0015)
+    assert reread.feature_vector(("error_ratio",)) == [pytest.approx(0.0015)]
 
 
 async def test_error_count_never_exceeds_request_count() -> None:
@@ -584,3 +599,46 @@ async def test_backfill_survives_a_failing_instant() -> None:
     # Some points are lost, but the range completes rather than aborting partway.
     assert result.rows_written > 0
     assert result.collected_points < result.requested_points
+
+
+async def test_service_whose_rate_window_is_still_filling_is_skipped() -> None:
+    """Regression: after a stack restart rate5m ramps from ~0 to the real value over five
+    minutes; stored, that read as an 18-sigma traffic drop on every service at once."""
+    from metrics_agent.collector import WINDOW_COVERAGE_QUERY
+
+    values = full_values()
+    values[WINDOW_COVERAGE_QUERY] = {"central-ledger": 20.0, "quoting-service": 4.0}
+    result = await make_collector(FakePrometheus(values), interval=15).collect()
+
+    assert [s.service for s in result.samples] == ["central-ledger"]
+    assert result.services_incomplete == ["quoting-service"]
+    assert result.services_down == []
+
+
+async def test_unknown_window_coverage_does_not_block_collection() -> None:
+    # The coverage query returning nothing (e.g. a renamed counter) must not silence the agent.
+    result = await make_collector(FakePrometheus(full_values()), interval=15).collect()
+    assert len(result.samples) == 2
+
+
+async def test_missing_core_gauge_skips_the_row_instead_of_writing_zero() -> None:
+    """Regression: right after a simulator restart its gauges had no value yet; the 0.0
+    default was stored and read as a -20 sigma CPU/memory/connections collapse."""
+    values = full_values()
+    values[GAUGE_QUERIES["memory_utilisation_ratio"]] = {"central-ledger": 0.5}
+    result = await make_collector(FakePrometheus(values)).collect()
+    assert [s.service for s in result.samples] == ["central-ledger"]
+    assert result.services_incomplete == ["quoting-service"]
+
+
+async def test_restart_inside_rate_window_is_tagged_not_dropped() -> None:
+    """Rows are kept (SLO checks need them) but tagged so the detector skips the artefact."""
+    from metrics_agent.collector import RESET_QUERY, RESTART_IN_WINDOW_LABEL
+
+    values = full_values()
+    values[RESET_QUERY] = {"central-ledger": 0.0, "quoting-service": 2.0}
+    result = await make_collector(FakePrometheus(values)).collect()
+    by_service = {s.service: s for s in result.samples}
+    assert set(by_service) == set(SERVICES)
+    assert by_service["quoting-service"].labels.get(RESTART_IN_WINDOW_LABEL) == "1"
+    assert RESTART_IN_WINDOW_LABEL not in by_service["central-ledger"].labels

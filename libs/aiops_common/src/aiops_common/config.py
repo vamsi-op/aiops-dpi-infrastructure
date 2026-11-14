@@ -21,7 +21,9 @@ from pydantic import Field, computed_field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LogFormat = Literal["json", "console"]
-DpiPlatform = Literal["mojaloop", "mosip", "beckn"]
+# Free-form label for the monitored DPI system; its services and dependencies come from the
+# topology file (aiops_common.topology), so no platform is special-cased.
+DpiPlatform = str
 
 
 def running_in_kubernetes() -> bool:
@@ -233,6 +235,9 @@ class HealingSettings(BaseSettings):
     # How long a restart, scale or rollback waits for the Deployment rollout to finish
     # before reporting failure. A rollout that never completes is a failed remediation.
     k8s_rollout_timeout_seconds: int = Field(default=90, alias="K8S_ROLLOUT_TIMEOUT_SECONDS")
+    # Anomalies older than this are ignored rather than remediated: after downtime the
+    # engine receives the whole stream backlog, and acting on it caused a restart storm.
+    max_event_age_seconds: int = Field(default=120, alias="HEALING_MAX_EVENT_AGE_SECONDS")
     # Minimum confidence from the RCA engine before an action is allowed to run.
     min_confidence: float = Field(default=0.7, alias="HEALING_MIN_CONFIDENCE")
 

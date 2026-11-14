@@ -29,6 +29,7 @@ class MetricSnapshot:
         *,
         window_minutes: int = 5,
         window_seconds: int | None = None,
+        since: datetime | None = None,
     ) -> dict[str, float]:
         """Capture recent metric values for a service.
 
@@ -42,7 +43,11 @@ class MetricSnapshot:
         Returns:
             Dictionary of feature -> average value
         """
-        if window_seconds is not None:
+        if since is not None:
+            # Only samples taken after `since` (e.g. the remediation). A fixed look-back
+            # window captured mostly pre-action data and judged the action by the fault.
+            cutoff = since
+        elif window_seconds is not None:
             cutoff = datetime.now(UTC) - timedelta(seconds=window_seconds)
         else:
             cutoff = datetime.now(UTC) - timedelta(minutes=window_minutes)
@@ -58,7 +63,10 @@ class MetricSnapshot:
                 AVG(memory_utilisation_ratio) as avg_memory,
                 AVG(queue_depth) as avg_queue_depth,
                 AVG(active_connections) as avg_connections,
-                AVG(settlement_lag_seconds) as avg_settlement_lag
+                AVG(settlement_lag_seconds) as avg_settlement_lag,
+                COUNT(*) as samples,
+                bool_and(COALESCE(labels->>'restart_in_rate_window', '') = '1')
+                    as all_in_restart_window
             FROM service_metrics
             WHERE service = :service
             AND timestamp >= :cutoff
@@ -66,7 +74,7 @@ class MetricSnapshot:
 
         row = await self.db.fetch_one(query, {"service": service, "cutoff": cutoff})
 
-        if not row:
+        if not row or not row.get("samples", 1):
             log.warning(
                 "snapshot.no_metrics",
                 service=service,
@@ -86,6 +94,15 @@ class MetricSnapshot:
             "active_connections": float(row["avg_connections"] or 0.0),
             "settlement_lag_seconds": float(row["avg_settlement_lag"] or 0.0),
         }
+        if row.get("all_in_restart_window"):
+            # Every sample is inside the 5-minute window after a restart: the rate-based
+            # signals still describe the pre-restart window (observed: a rollback judged
+            # "failed" on the bad deploy's own 1.5% errors). Leave them out; the instant
+            # gauges (CPU, memory, queue, connections) are current. Rate-based SLOs are
+            # judged by the SLO-window auto-resolve.
+            for rate_based in ("tps", "error_ratio", "latency_p50_seconds", "latency_p99_seconds"):
+                snapshot.pop(rate_based, None)
+            snapshot["rate_signals_deferred"] = 1.0
 
         log.info(
             "snapshot.captured",

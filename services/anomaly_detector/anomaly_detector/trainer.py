@@ -186,6 +186,9 @@ class Trainer:
             version=version,
             contamination=self._contamination,
             data_sources=sources,
+            # Seasonal: the forest judges each sample against its hour's normal (model.fit).
+            hours=[row["timestamp"].hour for row in rows],
+            weekdays=[row["timestamp"].weekday() for row in rows],
         )
         artifact = model_module.save(fitted, self._artifact_dir)
         duration = time.perf_counter() - started

@@ -86,6 +86,9 @@ function Initialize-ConfigMaps {
     Write-Host '==> ConfigMaps (from infra/ and deploy/k8s/config/)' -ForegroundColor Cyan
     Invoke-Kubectl @('apply', '-f', 'deploy/k8s/namespace.yaml')
     Set-ConfigMap 'timescaledb-init' @('infra/timescaledb/init')
+    # The monitored DPI system's service graph (aiops_common.topology). Swap the file to
+    # point the platform at another DPI system.
+    Set-ConfigMap 'aiops-topology' @('topology.json=config/topology.mojaloop.json')
     Set-ConfigMap 'prometheus-config' @('deploy/k8s/config/prometheus.yml')
     Set-ConfigMap 'prometheus-rules' @('infra/prometheus/rules')
     Set-ConfigMap 'alloy-config' @('deploy/k8s/config/config.alloy')

@@ -18,10 +18,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Final
 
-from aiops_common.constants import MOJALOOP_SERVICES
 from aiops_common.log import get_logger
 from aiops_common.promql import PrometheusClient
 from aiops_common.schemas import MetricSample, utc_now
+from aiops_common.topology import get_topology
 
 log = get_logger(__name__)
 
@@ -66,6 +66,40 @@ REPLICAS_QUERY: Final[str] = "dpi:replicas"
 # added to the scrape config starts being collected without a code change, and a service
 # that is genuinely gone stops producing rows instead of producing zeros.
 DISCOVERY_QUERY: Final[str] = 'up{job="mojaloop"}'
+
+# How much of the 5-minute rate window each service's counters actually cover: the number
+# of raw samples Prometheus holds for the most complete transaction series.
+#
+# After Prometheus or a service (re)starts, `rate(...[5m])` exists but is computed over a
+# window that is mostly empty, and it under-reads badly: measured after a full stack restart,
+# central-ledger's tps climbed in a straight line from 0.9 to its real 9.7 over exactly five
+# minutes. Stored and scored, that ramp reads as a 18-sigma traffic drop on every service at
+# once, and the detector raised `traffic_drop` every 30 s until the window filled.
+WINDOW_COVERAGE_QUERY: Final[str] = (
+    "max by (service) (count_over_time(dpi_transaction_total[5m]))"
+)
+RATE_WINDOW_SECONDS: Final[int] = 300
+
+# Whether a service's counters reset (the process restarted) inside the rate window. For
+# the five minutes after a restart, rate() under-reads by ~15% - observed 7.45 -> 6.40 tps
+# for exactly 300 s after each restart of quoting-service - which the detector correctly
+# reads as a traffic drop on a perfectly healthy, just-remediated service. Rows are still
+# stored (SLO checks and recovery verification need them) but tagged, and the detector does
+# not score tagged rows.
+# [6m], one minute wider than the rate window: at exactly five minutes Prometheus's resets()
+# flickered 1 -> 0 -> 1 with scrape alignment, and the single untagged sample was flagged.
+RESET_QUERY: Final[str] = "max by (service) (resets(dpi_transaction_total[6m]))"
+RESTART_IN_WINDOW_LABEL: Final[str] = "restart_in_rate_window"
+
+# Gauges every DPI service exports; a row is only written when all of them have a value.
+CORE_FIELDS: Final[tuple[str, ...]] = (
+    "cpu_utilisation_ratio",
+    "memory_utilisation_ratio",
+    "active_connections",
+)
+# Share of the window's expected samples required before a rate is trusted. 0.9 (18 of 20)
+# still let through readings ~10% low at the tail of the ramp; 0.95 is 19 of 20.
+MIN_WINDOW_COVERAGE: Final[float] = 0.95
 
 
 @dataclass(frozen=True)
@@ -136,6 +170,9 @@ class MetricsCollector:
         replicas = await self._by_service(REPLICAS_QUERY, moment)
         if not replicas:
             missing.append(REPLICAS_QUERY)
+        coverage = await self._by_service(WINDOW_COVERAGE_QUERY, moment)
+        resets = await self._by_service(RESET_QUERY, moment)
+        needed = MIN_WINDOW_COVERAGE * RATE_WINDOW_SECONDS / max(1, self._interval_seconds)
 
         samples: list[MetricSample] = []
         incomplete: list[str] = []
@@ -154,10 +191,34 @@ class MetricsCollector:
             if service not in values["tps"]:
                 incomplete.append(service)
                 continue
+            # A rate over a mostly-empty window (just after a restart) is not a measurement.
+            # Unknown coverage (query returned nothing) is not treated as partial.
+            if service in coverage and coverage[service] < needed:
+                log.info(
+                    "collect.rate_window_warming_up",
+                    monitored_service=service,
+                    samples_in_window=int(coverage[service]),
+                    needed=round(needed),
+                )
+                incomplete.append(service)
+                continue
+
+            # Core gauges every service exports. If one has no value for this service (seen
+            # right after a simulator restart, before its series were scraped), writing the
+            # 0.0 default records CPU, memory and connections as zero - a -20 sigma reading
+            # the detector duly flagged on every service. Skip the row instead, as for tps.
+            # Service-specific signals (settlement lag, quote/verification latency) stay
+            # optional.
+            absent = [f for f in CORE_FIELDS if service not in values[f]]
+            if absent:
+                log.info("collect.core_gauges_absent", monitored_service=service, absent=absent)
+                incomplete.append(service)
+                continue
 
             fields = {field: values[field].get(service, 0.0) for field in GAUGE_QUERIES}
+            error_ratio = max(0.0, min(ratios.get(service, 0.0), 1.0))
             request_count, error_count = self._counts_for(
-                tps=fields["tps"], error_ratio=ratios.get(service, 0.0)
+                tps=fields["tps"], error_ratio=error_ratio
             )
             samples.append(
                 MetricSample(
@@ -167,10 +228,14 @@ class MetricsCollector:
                     platform=self._platform,
                     request_count=request_count,
                     error_count=error_count,
+                    # The ratio Prometheus measured, not one recomputed from the rounded
+                    # counts above - see MetricSample.measured_error_ratio.
+                    measured_error_ratio=error_ratio,
                     replicas=int(round(replicas.get(service, 1.0))) or 1,
                     labels={
                         "source": AGENT_SOURCE,
                         "collector": "promql",
+                        **({RESTART_IN_WINDOW_LABEL: "1"} if resets.get(service, 0) > 0 else {}),
                     },
                     **fields,
                 )
@@ -264,10 +329,12 @@ class MetricsCollector:
         API-request denominator would produce a stored `error_ratio` that disagrees with
         `dpi:error_ratio:rate5m` for no good reason.
 
-        Rounding to whole counts costs a little precision at low error rates - 0.7 errors
-        becomes 1 - because the columns are `bigint`. The alternative was storing a
-        measured ratio alongside counts it does not match, and one number that is slightly
-        coarse beats two numbers that contradict each other.
+        The counts are whole numbers (the columns are `bigint`), so at low error rates they
+        are coarse: 0.47 expected errors in a window rounds to 0. They are kept for volume
+        reporting only. The stored and scored `error_ratio` is the measured ratio, passed
+        separately as `MetricSample.measured_error_ratio` - deriving it from these counts
+        made every low-error service read as error-free, which the anomaly detector then
+        flagged on every sample.
         """
         requests = max(0, round(tps * self._interval_seconds))
         errors = max(0, round(requests * max(0.0, min(error_ratio, 1.0))))
@@ -276,4 +343,4 @@ class MetricsCollector:
 
 def known_services() -> tuple[str, ...]:
     """The services we expect to find. Used only for reporting, never for collection."""
-    return MOJALOOP_SERVICES
+    return get_topology().services
