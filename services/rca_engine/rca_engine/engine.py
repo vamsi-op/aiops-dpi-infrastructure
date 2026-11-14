@@ -174,7 +174,7 @@ class RCAEngine:
                             event_id=event.event_id,
                             exc_info=True,
                         )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - supervisor: any failure restarts the consumer
                 if not self._running:
                     break
                 log.warning("rca_engine.consumer_restarting", error=str(exc))

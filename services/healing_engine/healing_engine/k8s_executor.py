@@ -100,7 +100,9 @@ class KubernetesExecutor(ExecutorInterface):
     def _now() -> str:
         return datetime.now(UTC).isoformat()
 
-    async def wait_for_rollout(self, service: str, timeout_seconds: float | None = None) -> bool:
+    async def wait_for_rollout(
+        self, service: str, timeout_seconds: float | None = None
+    ) -> bool:
         """Poll until the Deployment's rollout has converged, like `kubectl rollout status`."""
         timeout = timeout_seconds or self.settings.k8s_rollout_timeout_seconds
         deadline = time.monotonic() + timeout
@@ -245,11 +247,18 @@ class KubernetesExecutor(ExecutorInterface):
                     False,
                     f"Deployment '{service}' already at maximum replicas ({max_replicas}). "
                     "Scaling capped.",
-                    meta(ActionStatus.SKIPPED_MAX_REPLICAS, ExecutionMode.SIMULATED, current, target),
+                    meta(
+                        ActionStatus.SKIPPED_MAX_REPLICAS,
+                        ExecutionMode.SIMULATED,
+                        current,
+                        target,
+                    ),
                 )
             try:
                 pods = await self._call(
-                    self.core.list_namespaced_pod, self.namespace, label_selector=WORKLOAD_SELECTOR
+                    self.core.list_namespaced_pod,
+                    self.namespace,
+                    label_selector=WORKLOAD_SELECTOR,
                 )
                 running = [p for p in pods.items if p.status.phase in ("Running", "Pending")]
                 if len(running) >= settings.global_max_containers:
@@ -257,7 +266,12 @@ class KubernetesExecutor(ExecutorInterface):
                         False,
                         f"Global workload pod limit ({settings.global_max_containers}) reached "
                         f"({len(running)} pods). Cannot scale out '{service}'.",
-                        meta(ActionStatus.SKIPPED_GLOBAL_LIMIT, ExecutionMode.SIMULATED, current, target),
+                        meta(
+                            ActionStatus.SKIPPED_GLOBAL_LIMIT,
+                            ExecutionMode.SIMULATED,
+                            current,
+                            target,
+                        ),
                     )
             except Exception as exc:  # noqa: BLE001
                 log.warning("k8s_executor.global_limit_check_failed", error=str(exc))
@@ -379,12 +393,17 @@ class KubernetesExecutor(ExecutorInterface):
                     f"{k}={v}" for k, v in (dep.spec.selector.match_labels or {}).items()
                 )
                 replica_sets = await self._call(
-                    self.apps.list_namespaced_replica_set, self.namespace, label_selector=selector
+                    self.apps.list_namespaced_replica_set,
+                    self.namespace,
+                    label_selector=selector,
                 )
                 owned = [
                     rs
                     for rs in replica_sets.items
-                    if any(ref.uid == dep.metadata.uid for ref in rs.metadata.owner_references or [])
+                    if any(
+                        ref.uid == dep.metadata.uid
+                        for ref in rs.metadata.owner_references or []
+                    )
                 ]
 
                 def revision(rs: Any) -> int:

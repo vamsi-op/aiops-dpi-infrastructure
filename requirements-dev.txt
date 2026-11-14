@@ -21,3 +21,8 @@ rich==13.9.2
 
 # Kubernetes client (module 10): healing executor and gateway chaos on kind
 kubernetes==33.1.0
+
+# Service runtime dependencies the tests import. Without them CI could not collect the
+# detector, healing-engine and executor tests (ModuleNotFoundError: joblib / docker).
+-r services/anomaly_detector/requirements-ml.txt
+docker==7.1.0

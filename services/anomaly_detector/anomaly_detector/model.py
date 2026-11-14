@@ -141,7 +141,9 @@ class ServiceModel:
             if not self.one_sided:
                 return deviations
             deviations = harmful_direction(deviations)
-            return weight_by_evidence(deviations, vector) if self.evidence_weighted else deviations
+            return (
+                weight_by_evidence(deviations, vector) if self.evidence_weighted else deviations
+            )
         return vector
 
     def raw_score(
@@ -203,17 +205,19 @@ def fit(
     if not vectors:
         raise ValueError(f"{service}: no training vectors")
     seasonal = hours is not None
-    if seasonal:
-        if len(hours) != len(vectors):  # type: ignore[arg-type]
-            raise ValueError(f"{service}: {len(vectors)} vectors but {len(hours)} hours")  # type: ignore[arg-type]
-        days: Sequence[int | None] = weekdays if weekdays is not None else [None] * len(hours)  # type: ignore[arg-type]
+    if hours is not None:
+        if len(hours) != len(vectors):
+            raise ValueError(f"{service}: {len(vectors)} vectors but {len(hours)} hours")
+        days: list[int | None] = (
+            list(weekdays) if weekdays is not None else [None for _ in range(len(hours))]
+        )
         if len(days) != len(vectors):
             raise ValueError(f"{service}: {len(vectors)} vectors but {len(days)} weekdays")
         vectors = [
             weight_by_evidence(
                 harmful_direction(baseline.deviation_vector(vector, hour, weekday)), vector
             )
-            for vector, hour, weekday in zip(vectors, hours, days, strict=True)  # type: ignore[arg-type]
+            for vector, hour, weekday in zip(vectors, hours, days, strict=True)
         ]
     matrix = np.asarray(vectors, dtype=float)
     if matrix.ndim != 2 or matrix.shape[0] == 0:

@@ -29,13 +29,13 @@ log = get_logger(__name__)
 
 QUERY_TIMEOUT_SECONDS = 3.0
 
-LOG_QUERY = (
-    'sum by (service) (count_over_time({{service_group="dpi", level=~"warning|error"}}[{window}s]))'
-)
+LOG_QUERY = 'sum by (service) (count_over_time({{service_group="dpi", level=~"warning|error"}}[{window}s]))'
 FAILED_EDGE_QUERY = (
     "sum by (client, server) (increase(traces_service_graph_request_failed_total[{window}s]))"
 )
-TOTAL_EDGE_QUERY = "sum by (client, server) (increase(traces_service_graph_request_total[{window}s]))"
+TOTAL_EDGE_QUERY = (
+    "sum by (client, server) (increase(traces_service_graph_request_total[{window}s]))"
+)
 
 
 @dataclass

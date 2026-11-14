@@ -30,7 +30,9 @@ SERVICES = {
 
 @pytest.fixture(scope="module")
 def replay():
-    spec = importlib.util.spec_from_file_location("replay_history", ROOT / "scripts/replay_history.py")
+    spec = importlib.util.spec_from_file_location(
+        "replay_history", ROOT / "scripts/replay_history.py"
+    )
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     sys.modules["replay_history"] = module
@@ -88,7 +90,11 @@ def test_week_shift_preserves_weekday_and_hour(replay, gap_days):
     assert shift % timedelta(weeks=1) == timedelta(0)
     assert moved <= target
     assert target - moved < timedelta(weeks=1)
-    assert (moved.weekday(), moved.hour, moved.minute) == (last.weekday(), last.hour, last.minute)
+    assert (moved.weekday(), moved.hour, moved.minute) == (
+        last.weekday(),
+        last.hour,
+        last.minute,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -124,13 +130,16 @@ def test_histogram_quantile_edges(replay):
 def test_replay_rows_use_measured_error_ratio_not_rounded_counts(replay):
     end = datetime(2026, 1, 5, 12, 0, tzinfo=UTC)
     rows = list(
-        replay.generate_rows(days=1, end=end, base_tps=25.0, seasonality=True, platform="mojaloop")
+        replay.generate_rows(
+            days=1, end=end, base_tps=25.0, seasonality=True, platform="mojaloop"
+        )
     )
     # The live agent now stores the measured ratio, so replay must too: no row may have its
     # ratio collapsed to the error_count / request_count quantisation.
     assert all(r["error_ratio"] > 0 for r in rows)
     assert any(
-        r["request_count"] and r["error_ratio"] != round(r["error_count"] / r["request_count"], 6)
+        r["request_count"]
+        and r["error_ratio"] != round(r["error_count"] / r["request_count"], 6)
         for r in rows
     )
 
@@ -196,7 +205,10 @@ def test_gauges_are_instantaneous_while_tps_is_averaged(replay):
     assert rows, "expected coarse-tier rows"
     # connections = 6 * instantaneous_tps / replicas + 4 * replicas; with tps averaged over
     # the window the identity no longer holds exactly.
-    off = [abs(r["active_connections"] - (6 * r["tps"] / r["replicas"] + 4 * r["replicas"])) for r in rows]
+    off = [
+        abs(r["active_connections"] - (6 * r["tps"] / r["replicas"] + 4 * r["replicas"]))
+        for r in rows
+    ]
     assert max(off) > 0.5
 
 

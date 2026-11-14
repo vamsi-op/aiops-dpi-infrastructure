@@ -31,7 +31,9 @@ DEPS = tuple(MOJALOOP_DEPENDENCIES[CALLER])  # central-ledger, account-lookup-se
 ROOT = "central-ledger"
 
 
-def _payload(service: str, *, load: float = 0.5, extra_latency: float = 0.0, error: float | None = None):
+def _payload(
+    service: str, *, load: float = 0.5, extra_latency: float = 0.0, error: float | None = None
+):
     profile = get_profile(service)
     p50 = profile.base_latency_seconds * (1 + 0.35 * load) + extra_latency
     return {
@@ -80,7 +82,9 @@ def test_never_seen_dependency_is_ignored_but_a_lost_one_is_down() -> None:
     monitor.observe(ROOT, None, NOW)
     monitor.observe(ROOT, None, NOW)  # third miss in a row: down
     effects = monitor.effects()
-    assert effects.extra_latency_seconds == pytest.approx(UNREACHABLE_LATENCY_SECONDS / len(DEPS))
+    assert effects.extra_latency_seconds == pytest.approx(
+        UNREACHABLE_LATENCY_SECONDS / len(DEPS)
+    )
     assert effects.extra_error_ratio == pytest.approx(1 / len(DEPS))
 
 
@@ -145,7 +149,10 @@ async def test_playbook_opens_breakers_on_every_caller_then_restarts_root() -> N
     callers = sorted(s for s, deps in MOJALOOP_DEPENDENCIES.items() if ROOT in deps)
     assert ok is True
     assert sorted(url.split("//")[1].split(":")[0] for url, _ in posts) == callers
-    assert all(url.endswith(f"/sim/circuits/{ROOT}") and body["action"] == "open" for url, body in posts)
+    assert all(
+        url.endswith(f"/sim/circuits/{ROOT}") and body["action"] == "open"
+        for url, body in posts
+    )
     executor.restart_container.assert_awaited_once_with(ROOT)
     assert "breaker" in message.lower()
 
@@ -177,7 +184,9 @@ async def test_engine_runs_the_cascade_playbook_on_the_root_not_the_victim(monke
     executor.service_healthy = AsyncMock(return_value=True)
     playbooks = MagicMock()
     playbooks.execute = AsyncMock(return_value=(True, "ok"))
-    engine = HealingEngine(db, MagicMock(publish=AsyncMock()), executor, safety, snapshot, playbooks)
+    engine = HealingEngine(
+        db, MagicMock(publish=AsyncMock()), executor, safety, snapshot, playbooks
+    )
 
     victim = AnomalyEvent(
         service="quoting-service",
@@ -280,8 +289,12 @@ def test_cascade_victim_gets_breaker_even_when_root_is_a_chaos_event() -> None:
     assert params["downstream_target"] == "account-lookup-service"
 
     # The root itself still gets its own remediation, not a breaker.
-    root = victim.model_copy(update={"service": "account-lookup-service", "kind": AnomalyKind.MEMORY_PRESSURE})
-    playbook, _ = PlaybookRegistry.select_playbook(root, incident, snapshot={"memory_utilisation_ratio": 0.95})
+    root = victim.model_copy(
+        update={"service": "account-lookup-service", "kind": AnomalyKind.MEMORY_PRESSURE}
+    )
+    playbook, _ = PlaybookRegistry.select_playbook(
+        root, incident, snapshot={"memory_utilisation_ratio": 0.95}
+    )
     assert playbook == PlaybookName.RESTART_ON_OOM
 
 
@@ -330,7 +343,9 @@ async def test_engine_ignores_non_actionable_anomalies() -> None:
     playbooks.execute = AsyncMock(return_value=(True, "ok"))
     snapshot = MagicMock()
     snapshot.capture = AsyncMock(return_value={})
-    engine = HealingEngine(MagicMock(), MagicMock(), MagicMock(), MagicMock(), snapshot, playbooks)
+    engine = HealingEngine(
+        MagicMock(), MagicMock(), MagicMock(), MagicMock(), snapshot, playbooks
+    )
     blip = AnomalyEvent(
         service="quoting-service",
         severity=Severity.INFO,
@@ -399,7 +414,9 @@ async def test_breakers_are_not_blocked_by_the_roots_restart_cooldown(monkeypatc
     executor.service_healthy = AsyncMock(return_value=True)
     playbooks = MagicMock()
     playbooks.execute = AsyncMock(return_value=(True, "ok"))
-    engine = HealingEngine(db, MagicMock(publish=AsyncMock()), executor, safety, snapshot, playbooks)
+    engine = HealingEngine(
+        db, MagicMock(publish=AsyncMock()), executor, safety, snapshot, playbooks
+    )
 
     incident = Incident(
         title="cascade",
@@ -445,9 +462,9 @@ async def test_playbook_skips_root_restart_when_told() -> None:
 
             return R()
 
-    ok, message = await PlaybookExecutor(executor, http_client_factory=FakeClient)._circuit_break_cascade(
-        ROOT, restart_root=False
-    )
+    ok, message = await PlaybookExecutor(
+        executor, http_client_factory=FakeClient
+    )._circuit_break_cascade(ROOT, restart_root=False)
     assert ok is True
     executor.restart_container.assert_not_awaited()
     assert "not restarted again" in message
@@ -478,14 +495,20 @@ async def test_breaker_only_action_is_not_judged_by_the_roots_stale_p99(monkeypa
     executor.get_replica_count = AsyncMock(return_value=1)
     executor.service_healthy = AsyncMock(return_value=True)
     playbooks = MagicMock()
-    playbooks.execute = AsyncMock(return_value=(True, "Opened circuit breaker on central-ledger"))
-    engine = HealingEngine(db, MagicMock(publish=AsyncMock()), executor, safety, snapshot, playbooks)
+    playbooks.execute = AsyncMock(
+        return_value=(True, "Opened circuit breaker on central-ledger")
+    )
+    engine = HealingEngine(
+        db, MagicMock(publish=AsyncMock()), executor, safety, snapshot, playbooks
+    )
     incident = Incident(
         title="cascade",
         severity=Severity.CRITICAL,
         affected_services=["central-ledger", "quoting-service"],
         hypotheses=[
-            RootCauseHypothesis(category=RootCauseCategory.SERVICE, target=ROOT, confidence=0.9, summary="x")
+            RootCauseHypothesis(
+                category=RootCauseCategory.SERVICE, target=ROOT, confidence=0.9, summary="x"
+            )
         ],
     )
     victim = AnomalyEvent(
@@ -547,7 +570,9 @@ async def test_stale_first_reading_is_rechecked_before_failing(monkeypatch) -> N
     safety.check_all = AsyncMock(return_value=(True, "proposed", ""))
     safety.record_action_executed = AsyncMock()
     snapshot = MagicMock()
-    snapshot.capture = AsyncMock(side_effect=[{"queue_depth": 3.0}, {"queue_depth": 60.0}, {"queue_depth": 0.0}])
+    snapshot.capture = AsyncMock(
+        side_effect=[{"queue_depth": 3.0}, {"queue_depth": 60.0}, {"queue_depth": 0.0}]
+    )
     snapshot.verify_recovery = MagicMock(
         side_effect=lambda **kw: (
             (kw["after"]["queue_depth"] <= 5.0),
@@ -560,7 +585,9 @@ async def test_stale_first_reading_is_rechecked_before_failing(monkeypatch) -> N
     executor.service_healthy = AsyncMock(return_value=True)
     playbooks = MagicMock()
     playbooks.execute = AsyncMock(return_value=(True, "Rolled back ml-api-adapter"))
-    engine = HealingEngine(db, MagicMock(publish=AsyncMock()), executor, safety, snapshot, playbooks)
+    engine = HealingEngine(
+        db, MagicMock(publish=AsyncMock()), executor, safety, snapshot, playbooks
+    )
     incident = Incident(
         title="bad deploy",
         severity=Severity.CRITICAL,

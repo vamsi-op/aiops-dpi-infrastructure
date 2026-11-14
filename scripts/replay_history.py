@@ -290,16 +290,16 @@ def observed_latencies(
     """
     if not states:
         raise ValueError("observed_latencies needs at least one state")
-    observations = round(
-        math.fsum(observations_in_window(s.tps) for s in states) / len(states)
-    )
+    observations = round(math.fsum(observations_in_window(s.tps) for s in states) / len(states))
 
     def quantiles(medians: list[float], shape: float, qs: tuple[float, ...]) -> list[float]:
         expected = bucket_cdf(medians, shape)
         cdf = sample_cdf(expected, observations, rng) if rng is not None else expected
         return [quantile_from_cdf(q, cdf) for q in qs]
 
-    p50, p95, p99 = quantiles([s.latency_p50_seconds for s in states], sigma, (0.50, 0.95, 0.99))
+    p50, p95, p99 = quantiles(
+        [s.latency_p50_seconds for s in states], sigma, (0.50, 0.95, 0.99)
+    )
     out = {
         "latency_p50_seconds": p50,
         "latency_p95_seconds": p95,
@@ -448,7 +448,9 @@ def generate_rows(
                 while at <= moment:
                     if previous is None or at > previous:
                         elapsed = (at - previous).total_seconds() if previous else 1.0
-                        window.append((at, model.sample(at, no_faults, elapsed_seconds=elapsed)))
+                        window.append(
+                            (at, model.sample(at, no_faults, elapsed_seconds=elapsed))
+                        )
                         previous = at
                     at += sub_step
                 last_call[name] = previous

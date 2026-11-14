@@ -100,7 +100,12 @@ class MetricSnapshot:
             # "failed" on the bad deploy's own 1.5% errors). Leave them out; the instant
             # gauges (CPU, memory, queue, connections) are current. Rate-based SLOs are
             # judged by the SLO-window auto-resolve.
-            for rate_based in ("tps", "error_ratio", "latency_p50_seconds", "latency_p99_seconds"):
+            for rate_based in (
+                "tps",
+                "error_ratio",
+                "latency_p50_seconds",
+                "latency_p99_seconds",
+            ):
                 snapshot.pop(rate_based, None)
             snapshot["rate_signals_deferred"] = 1.0
 

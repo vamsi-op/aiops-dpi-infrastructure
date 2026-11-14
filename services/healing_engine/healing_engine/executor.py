@@ -420,7 +420,9 @@ class DockerExecutor(ExecutorInterface):
                 restarted.append(container.name)
 
             log.info(
-                "docker_executor.rollback_as_restart", service=service, containers=len(restarted)
+                "docker_executor.rollback_as_restart",
+                service=service,
+                containers=len(restarted),
             )
             msg = (
                 f"Restarted {service} ({len(restarted)} container(s)) to clear the bad deploy; "
