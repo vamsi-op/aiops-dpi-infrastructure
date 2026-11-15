@@ -97,6 +97,15 @@ The flow from there:
 | Latency on central-ledger | 52 s | 52 s | 64 s | central-ledger (0.90) | rolling restart | none |
 | Bad deploy of ml-api-adapter | 35 s | 36 s | 48 s | the deployment (0.94) | real `rollout undo` | none |
 
+From the dashboard's Chaos page (15 Nov 2026), the remaining experiments:
+
+| Button | Detect | Remediate | Root cause | Action | Side effects |
+|---|---|---|---|---|---|
+| CPU hog (account-lookup-service) | 46 s | 58 s | account-lookup-service (0.95) | rolling restart | none |
+| Error injection (central-ledger) | 40 s | 41 s | central-ledger (0.90), not its three callers | restart, then breakers on both direct callers | none |
+| Traffic spike (central-ledger, 3×) | 65 s | 78 s | central-ledger (0.90) | **scale-out 1 → 2 pods**; the new pod takes its share | none |
+| Kill service (central-ledger) | 5 s | — | `service_restart` incident | none: Kubernetes restarted the pod | none |
+
 In the latency run the root was restarted 12 s after detection, before any caller had been
 flagged, so the incident never became a cascade and no breakers were needed. Under Compose,
 where the callers alarmed first, the same fault opened the callers' breakers.

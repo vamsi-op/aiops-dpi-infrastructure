@@ -34,14 +34,16 @@ workload.
 ## Verified end to end
 
 `scripts/chaos_demo.py` injects each fault through the API gateway and measures the platform's
-response. All three scenarios pass on Docker Compose and on Kubernetes, with no action taken on
-any service that was not faulted.
+response; the dashboard's Chaos page runs the same experiments. Every scenario passes, with no
+action taken on any service that was not faulted.
 
 | Scenario | Fault | Detect | Remediate | Diagnosed root cause | Action |
 |---|---|---|---|---|---|
 | Resource exhaustion | memory leak in `account-lookup-service` | 64 s | 76 s | the leaking service | rolling restart |
 | Dependency failure | latency in `central-ledger` | 52 s | 64 s | `central-ledger`, not its callers | restart; circuit breakers on callers |
 | Bad deployment | defective release of `ml-api-adapter` | 35 s | 48 s | the deployment (CHANGE, 0.94) | `rollout undo` to the previous revision |
+| Traffic surge | 3× load on `central-ledger` | 65 s | 78 s | the service (traffic surge) | scale-out 1 → 2 pods |
+| Process crash | `central-ledger` killed | 5 s | — | unexpected restart | none needed: reported as an incident; Kubernetes already restarted it |
 
 *Kubernetes (kind) timings. Detection time includes the metrics sampling interval (15 s) and the
 two-sample persistence requirement.*

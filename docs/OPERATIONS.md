@@ -13,7 +13,7 @@ lifecycle, and how to run and read chaos experiments.
 | `circuit_break_cascade` | Open the breakers of every caller of the failing dependency, then restart the dependency | Same breakers, then a rolling restart | A failure spreading from a dependency to its callers |
 | `restart_on_oom` | Restart the container | Rolling restart of the Deployment | Memory or CPU exhaustion, latency spikes and error bursts confined to one service |
 | `clear_queue_backlog` | Restart to drain the queue; escalates to scale-out if a restart did not help | Same, via the Kubernetes API | Queue backlog, settlement delay |
-| `scale_out_preemptive` | Add one replica (bounded by host headroom) | Scale the Deployment by one, raising an HPA's floor if one owns it | Traffic ≥ 3σ above normal for the hour, traffic at ≥ 80 % of live capacity, or a forecast peak above capacity |
+| `scale_out_preemptive` | Add one replica (bounded by host headroom) | Scale the Deployment by one, raising an HPA's floor if one owns it; the new pod takes its share of the traffic | A traffic surge (see below), or a forecast peak above capacity |
 | `scale_in_idle` | Remove one replica, never below the minimum | Same | Sustained low traffic |
 
 ### How a playbook is chosen
@@ -25,14 +25,28 @@ diagnosis before falling back to the symptom:
 2. **Another service is the root**, or a dependency of this service is part of the incident →
    `circuit_break_cascade` on the deepest affected dependency. The anomalous caller is a victim
    and is never restarted.
-3. Otherwise, from the service's own telemetry: a traffic surge (TPS ≥ 3σ above normal for the
-   hour, or ≥ 80 % of live capacity read from Prometheus) → scale out, whatever symptom the
-   anomaly is named after; queue backlog → `clear_queue_backlog` (scale out if an earlier restart
-   failed); CPU or memory exhaustion → `restart_on_oom`; errors or latency → restart.
+3. Otherwise, from the service's own telemetry: a **traffic surge** → scale out, whatever symptom
+   the anomaly is named after; queue backlog → `clear_queue_backlog` (scale out if an earlier
+   restart failed); CPU or memory exhaustion → `restart_on_oom`; errors or latency → restart.
+
+A surge is recognised by any of:
+
+| Signal | Why |
+|---|---|
+| TPS ≥ 3σ above normal for the hour and weekday | sustained surge |
+| Live TPS (`irate`, the last two scrapes) ≥ 1.4 × the anomaly's 5-minute TPS | sudden jump; caught before the 5-minute rate moves |
+| Connections ≥ 3σ up, queue empty, no latency or error symptom | more callers arriving: a surge in its first minute, usually classified `queue_backlog` |
+| Live TPS ≥ 80 % of the live capacity Prometheus reports | near capacity |
+
+Live TPS and capacity are read from Prometheus at decision time (`snapshot.live_load`), and every
+decision logs its inputs as `playbook.traffic_check`. A restart is never the answer to a surge: it
+only removes capacity while the service starts.
 
 A `service_restart` anomaly — a process that exited and was restarted by Docker or Kubernetes
 with no healing action or deployment to explain it — is never acted on. It opens an incident so
-an operator learns of the crash; restarting the service again would only add downtime.
+an operator learns of the crash; restarting the service again would only add downtime. The
+detector waits 90 s before deciding a restart is unexplained, because the healer records its own
+actions only after verifying them.
 
 Only actionable anomalies (score ≥ the threshold) that are less than
 `HEALING_MAX_EVENT_AGE_SECONDS` old are considered.

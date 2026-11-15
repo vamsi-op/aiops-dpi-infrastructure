@@ -87,9 +87,19 @@ scripts/k8s.sh down && scripts/k8s.sh up --public && scripts/k8s.sh seed
 
 ```bash
 git pull
+scripts/k8s.sh config            # only if infra/ or deploy/k8s/config/ changed (Prometheus rules, scrape config)
+kubectl --context kind-aiops apply -k deploy/k8s    # only if deploy/k8s/*.yaml changed
 scripts/k8s.sh images            # rebuild, load, rolling restart
-kubectl --context kind-aiops apply -k deploy/k8s    # only if manifests changed
+scripts/k8s.sh healing           # applying the manifests resets healing to dry-run
 ```
+
+Re-applying the manifests restores `HEALING_ENABLED=false` from the shared ConfigMap, so turn
+healing back on afterwards. The simulators restart with new images: allow about 10 minutes
+(pod start-up plus the metrics warm-up) before running a chaos experiment.
+
+**Sized for 2 vCPUs.** CPU requests are kept small so the whole platform schedules on an
+`m7i-flex.large`; actual use is about a third of a core. If pods stay `Pending`, check
+`kubectl --context kind-aiops -n aiops describe pod <name>` for "Insufficient cpu".
 
 **Private tools** (Prometheus, the gateway's `/docs`, the AIOps services) go through an
 SSH tunnel instead of being exposed:
