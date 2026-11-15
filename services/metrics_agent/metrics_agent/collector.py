@@ -52,7 +52,7 @@ GAUGE_QUERIES: Final[dict[str, str]] = {
     "cpu_utilisation_ratio": "dpi:cpu:avg",
     "memory_utilisation_ratio": "dpi:memory:max",
     "queue_depth": "dpi:queue_depth:sum",
-    "active_connections": "dpi:connections:sum",
+    "active_connections": "dpi:connections:avg",
     "settlement_lag_seconds": "dpi:settlement_lag:max",
     "quote_latency_seconds": "dpi:quote_latency_p95:5m",
     "verification_latency_seconds": "dpi:verification_latency_p95:5m",
@@ -75,8 +75,14 @@ DISCOVERY_QUERY: Final[str] = 'up{job="mojaloop"}'
 # central-ledger's tps climbed in a straight line from 0.9 to its real 9.7 over exactly five
 # minutes. Stored and scored, that ramp reads as a 18-sigma traffic drop on every service at
 # once, and the detector raised `traffic_drop` every 30 s until the window filled.
+#
+# Measured for the service as a whole: the number of 15 s steps in the window at which *any*
+# of its pods had data. Per pod (max of one series), a service was skipped for five minutes
+# after every Kubernetes rolling restart - the replacement pod's series is new - leaving no
+# telemetry to verify the restart by. Summed across pods instead, two pods side by side
+# reached "full" after half the window, and the half-filled rate read as a traffic drop.
 WINDOW_COVERAGE_QUERY: Final[str] = (
-    "max by (service) (count_over_time(dpi_transaction_total[5m]))"
+    "count_over_time(sum by (service) (dpi_transaction_total)[5m:15s])"
 )
 RATE_WINDOW_SECONDS: Final[int] = 300
 
@@ -90,6 +96,13 @@ RATE_WINDOW_SECONDS: Final[int] = 300
 # flickered 1 -> 0 -> 1 with scrape alignment, and the single untagged sample was flagged.
 RESET_QUERY: Final[str] = "max by (service) (resets(dpi_transaction_total[6m]))"
 RESTART_IN_WINDOW_LABEL: Final[str] = "restart_in_rate_window"
+# Seconds since the service's newest process started. Catches what resets() cannot: a restart
+# Prometheus did not witness (it restarted too - a VM or cluster restart, where the first
+# samples after warm-up read as a -3 sigma traffic drop) and a Kubernetes rolling restart,
+# whose new pods are new series rather than a reset of an old one. 420 s = the 5-minute rate
+# window plus scrape and warm-up margin.
+PROCESS_AGE_QUERY: Final[str] = "min by (service) (time() - dpi_process_start_time_seconds)"
+RECENT_START_SECONDS: Final[float] = 420.0
 # Same, for a service whose dependency (direct or transitive, per the topology) restarted:
 # its rate window still holds the calls that failed while the dependency was down. Observed
 # after every remediation restart: the callers alarmed on errors and p99 for the full five
@@ -177,6 +190,12 @@ class MetricsCollector:
             missing.append(REPLICAS_QUERY)
         coverage = await self._by_service(WINDOW_COVERAGE_QUERY, moment)
         resets = await self._by_service(RESET_QUERY, moment)
+        process_age = await self._by_service(PROCESS_AGE_QUERY, moment)
+
+        def restarted(name: str) -> bool:
+            age = process_age.get(name)
+            return resets.get(name, 0) > 0 or (age is not None and age < RECENT_START_SECONDS)
+
         topology = get_topology()
         needed = MIN_WINDOW_COVERAGE * RATE_WINDOW_SECONDS / max(1, self._interval_seconds)
 
@@ -241,13 +260,11 @@ class MetricsCollector:
                     labels={
                         "source": AGENT_SOURCE,
                         "collector": "promql",
-                        **(
-                            {RESTART_IN_WINDOW_LABEL: "1"} if resets.get(service, 0) > 0 else {}
-                        ),
+                        **({RESTART_IN_WINDOW_LABEL: "1"} if restarted(service) else {}),
                         **(
                             {DEPENDENCY_RESTART_LABEL: "1"}
                             if any(
-                                resets.get(dependency, 0) > 0
+                                restarted(dependency)
                                 for dependency in topology.transitive_dependencies(service)
                             )
                             else {}

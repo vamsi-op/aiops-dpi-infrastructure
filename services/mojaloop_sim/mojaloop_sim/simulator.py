@@ -23,6 +23,7 @@ from aiops_common.schemas import utc_now
 from .dependencies import DependencyMonitor, combine
 from .faults import FaultKind, FaultRegistry
 from .metrics import SimulatorMetrics
+from .peers import PeerCounter
 from .profiles import ServiceProfile, get_profile
 from .traffic import ServiceState, TrafficModel
 
@@ -68,6 +69,9 @@ class Simulator:
             self.service, MOJALOOP_DEPENDENCIES.get(self.service, ())
         )
         self.metrics = SimulatorMetrics(self.profile, rng=rng)
+        # Pods sharing this service's traffic (see peers.py). Disabled unless SIM_PEERS_HOST
+        # is set, so a single process keeps modelling the whole service.
+        self.peers = PeerCounter(self.model.set_peers)
 
         self.last_state: ServiceState | None = None
         self.started_at = utc_now()
@@ -81,6 +85,7 @@ class Simulator:
             self._stopping.clear()
             self._task = asyncio.create_task(self._run(), name=f"sim-{self.service}")
             self.dependencies.start()
+            self.peers.start()
             log.info(
                 "sim.started",
                 monitored_service=self.service,
@@ -92,6 +97,7 @@ class Simulator:
     async def stop(self) -> None:
         self._stopping.set()
         await self.dependencies.stop()
+        await self.peers.stop()
         if self._task is not None:
             self._task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -191,6 +197,7 @@ class Simulator:
             "replicas": self.model.replicas,
             "capacity_tps": round(self.model.capacity_tps, 2),
             "traffic_share": self.profile.traffic_share,
+            "peers": self.model.peers,
             "state": None
             if state is None
             else {

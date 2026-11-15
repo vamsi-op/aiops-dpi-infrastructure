@@ -24,7 +24,15 @@ from typing import Any
 from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
 
 from aiops_common.bus import Event, EventBus
-from aiops_common.constants import TABLE_ANOMALIES, Stream
+from aiops_common.constants import (
+    ANOMALY_FEATURES,
+    TABLE_ACTIONS,
+    TABLE_ANOMALIES,
+    TABLE_DEPLOYMENTS,
+    AnomalyKind,
+    Severity,
+    Stream,
+)
 from aiops_common.db import Database
 from aiops_common.log import get_logger
 from aiops_common.schemas import AnomalyEvent, MetricSample, utc_now
@@ -56,6 +64,23 @@ ANOMALY_COOLDOWN_SECONDS = 15
 PERSISTENCE_SAMPLES = 2
 IMMEDIATE_SCORE = 0.95
 IMMEDIATE_SIGMA = 4.0
+
+# Restart reporting (see AnomalyDetector._report_restart). Above the actionable threshold so the
+# RCA engine opens an incident; the healing engine never acts on this kind.
+RESTART_SCORE = 0.9
+RESTART_EXPLAINED_MINUTES = 10
+RESTART_REPORT_DELAY_SECONDS = 90.0
+EXPLAINED_RESTART_QUERY = f"""
+SELECT 1 FROM {TABLE_ACTIONS}
+WHERE target_service = :service
+  AND created_at > now() - make_interval(mins => :minutes)
+  AND status NOT LIKE 'skipped%'
+UNION ALL
+SELECT 1 FROM {TABLE_DEPLOYMENTS}
+WHERE service = :service
+  AND occurred_at > now() - make_interval(mins => :minutes)
+LIMIT 1
+"""
 
 INSERT_ANOMALY = f"""
 INSERT INTO {TABLE_ANOMALIES} (
@@ -193,6 +218,10 @@ class AnomalyDetector:
         self._last_anomaly_emitted: dict[str, float] = {}
         # Consecutive anomalous samples per service (see PERSISTENCE_SAMPLES).
         self._unusual_streak: dict[str, int] = {}
+        # Whether the previous sample carried the restart tag; None until the first sample,
+        # so a detector that starts mid-window does not report a restart it never saw happen.
+        self._restart_tagged: dict[str, bool] = {}
+        self._pending_reports: set[asyncio.Task[None]] = set()
         self.status = DetectorStatus(threshold=scorer.threshold)
         self._task: asyncio.Task[None] | None = None
         self._stopping = asyncio.Event()
@@ -307,6 +336,14 @@ class AnomalyDetector:
                 )
             return False
 
+        # A restart nobody ordered is a crash, even when the orchestrator brought the service
+        # straight back. The tag appearing is the moment it happened (see _report_restart).
+        tagged = sample.labels.get("restart_in_rate_window") == "1"
+        previously_tagged = self._restart_tagged.get(sample.service)
+        self._restart_tagged[sample.service] = tagged
+        if tagged and previously_tagged is False:
+            self._schedule_restart_report(sample)
+
         # The service (or a dependency) restarted within the last rate window: its *rate*
         # signals are distorted for five minutes (see metrics_agent RESET_QUERY) - a remediated
         # service still shows the fault's errors, and callers still count calls that failed
@@ -401,6 +438,77 @@ class AnomalyDetector:
     def _in_anomaly_cooldown(self, service: str, now: float) -> bool:
         last_emitted = self._last_anomaly_emitted.get(service)
         return last_emitted is not None and now - last_emitted < ANOMALY_COOLDOWN_SECONDS
+
+    async def _restart_explained(self, service: str) -> bool:
+        """True if a healing action or a deployment of the service accounts for a restart."""
+        row = await self._db.fetch_one(
+            EXPLAINED_RESTART_QUERY, {"service": service, "minutes": RESTART_EXPLAINED_MINUTES}
+        )
+        return bool(row)
+
+    def _schedule_restart_report(self, sample: MetricSample) -> None:
+        """Report after RESTART_REPORT_DELAY_SECONDS, not at once.
+
+        The healing engine records an action only once it has completed and been verified
+        (~40 s after a restart begins). Checking immediately missed that record, and the
+        healer's own rolling restart was reported as a crash.
+        """
+
+        async def later() -> None:
+            await asyncio.sleep(RESTART_REPORT_DELAY_SECONDS)
+            await self._report_restart(sample)
+
+        task = asyncio.create_task(later(), name=f"restart-report-{sample.service}")
+        self._pending_reports.add(task)
+        task.add_done_callback(self._pending_reports.discard)
+
+    async def _report_restart(self, sample: MetricSample) -> None:
+        """Report a restart that no healing action or deployment explains.
+
+        Observed: a killed central-ledger was restarted by Kubernetes in five seconds and the
+        platform saw nothing - its rate signals are deliberately set aside after a restart, and
+        the gauges were healthy again. An operator still needs to know the process died: a
+        service that crash-loops every few minutes would otherwise be invisible. The anomaly
+        opens an incident; the healing engine leaves it alone, because the orchestrator has
+        already restarted the process.
+        """
+        try:
+            if await self._restart_explained(sample.service):
+                log.info("detector.restart_expected", monitored_service=sample.service)
+                return
+        except Exception as exc:  # noqa: BLE001 - report rather than miss a crash
+            log.warning("detector.restart_check_failed", error=str(exc))
+        anomaly = AnomalyEvent(
+            detected_at=sample.timestamp,
+            window_start=sample.timestamp,
+            service=sample.service,
+            platform=sample.platform,
+            kind=AnomalyKind.SERVICE_RESTART,
+            severity=Severity.WARNING,
+            score=RESTART_SCORE,
+            threshold=self.scorer.threshold,
+            contributing_features=[],
+            feature_snapshot={
+                feature: round(float(getattr(sample, feature, 0.0) or 0.0), 6)
+                for feature in ANOMALY_FEATURES
+            },
+            model_name="restart-detector",
+            model_version="1",
+            description=(
+                f"{sample.service}: process restarted unexpectedly - no healing action or "
+                "deployment explains it. The orchestrator has already restarted it; check the "
+                "service's logs for why it exited."
+            ),
+        )
+        await self._persist(anomaly)
+        await self._publish(anomaly)
+        self.status.anomalies_detected += 1
+        self.status.anomalies_actionable += 1
+        self.status.last_anomaly_at = anomaly.detected_at.isoformat()
+        self._metrics.anomalies.labels(
+            sample.service, str(anomaly.kind), str(anomaly.severity)
+        ).inc()
+        log.warning("anomaly.service_restart", monitored_service=sample.service)
 
     async def _persist(self, anomaly: AnomalyEvent) -> None:
         await self._db.execute(

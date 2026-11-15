@@ -51,6 +51,10 @@ real DPI deployment so the platform has realistic, controllable traffic.
   traced `/dependency/probe`. Their failures propagate to callers, and each caller has a
   closed / open / half-open breaker per dependency.
 - **Fault injection** for chaos experiments.
+- **Load sharing.** Each process models the whole service; when scaled out, every pod takes
+  `1/peers` of the traffic, the pod count coming from DNS (`SIM_PEERS_HOST`: a headless
+  `<service>-peers` Service on Kubernetes, the service name under Compose). Prometheus scrapes
+  every pod and the recording rules sum across them.
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -72,7 +76,9 @@ Turns Prometheus series into one normalised `MetricSample` per service every 15 
 - Skips a service until its 5-minute rate window is at least 95 % covered, so a just-started
   service never reports a misleading partial rate.
 - Tags samples whose rate window spans a restart of the service or of one of its dependencies
-  (`restart_in_rate_window`, `dependency_restart_in_rate_window`).
+  (`restart_in_rate_window`, `dependency_restart_in_rate_window`): a counter reset, or a process
+  younger than 7 minutes (`dpi_process_start_time_seconds`), which also covers restarts
+  Prometheus did not witness and Kubernetes rolling restarts.
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -99,6 +105,9 @@ Scores every sample and publishes anomalies with an explanation.
 - **Classification** into a kind (`memory_pressure`, `cpu_saturation`, `latency_spike`,
   `error_burst`, `queue_backlog`, `settlement_delay`, `traffic_surge`, `traffic_drop`,
   `multivariate`) and a severity, with the contributing features named.
+- **Crash reporting.** When the restart tag first appears for a service and no healing action or
+  deployment explains it, a `service_restart` anomaly is raised: the orchestrator already
+  restarted the process, but the crash is still something an operator must see.
 - **Reads** `aiops.metrics`; **writes** `anomalies` and `aiops.anomalies`; models are stored in
   `ml/artifacts/`, and each training run is recorded in `model_runs`.
 

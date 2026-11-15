@@ -6,10 +6,10 @@
 # decides the job. Job names, `service` and `tier` labels are identical to Compose, so the
 # recording rules, alerts and Grafana dashboards are shared unchanged.
 #
-# Why `role: service` and not `role: pod`: each simulated Mojaloop service models its whole
-# replica set internally (capacity = tps_per_replica * replicas). Scraping the Service
-# address keeps the Compose semantics - one view of the service per scrape - instead of
-# summing N copies of the same simulated traffic when the healing engine scales out.
+# The simulated Mojaloop services are scraped per pod (`role: endpoints`): after a
+# scale-out each pod serves its share of the traffic (mojaloop_sim/peers.py) and the
+# recording rules sum across pods. Scraping the Service address instead reached one random
+# pod per scrape, so counters jumped between pods and every rate was wrong.
 
 global:
   scrape_interval: 15s
@@ -37,12 +37,14 @@ scrape_configs:
     honor_labels: true
     metrics_path: /metrics
     kubernetes_sd_configs:
-      - role: service
+      - role: endpoints
         namespaces:
           names: [aiops]
     relabel_configs:
-      # role: service yields one target per port; only the HTTP port serves /metrics.
-      - source_labels: [__meta_kubernetes_service_port_name]
+      # One target per pod behind the Service; only the HTTP port serves /metrics. The
+      # headless `<service>-peers` Services carry no scrape annotation, so pods are not
+      # scraped twice.
+      - source_labels: [__meta_kubernetes_endpoint_port_name]
         regex: http
         action: keep
       - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scrape]
@@ -55,8 +57,9 @@ scrape_configs:
         target_label: service
       - source_labels: [__meta_kubernetes_service_label_aiops_dpi_tier]
         target_label: tier
-      # Short `name:8000` instance, matching the Compose target names.
-      - source_labels: [__meta_kubernetes_service_name]
+      # The pod name: one series per pod, stable across container restarts (so resets()
+      # still sees a crashed process restart).
+      - source_labels: [__meta_kubernetes_pod_name]
         replacement: "$1:8000"
         target_label: instance
 

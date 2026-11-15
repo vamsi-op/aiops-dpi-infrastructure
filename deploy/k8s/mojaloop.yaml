@@ -70,6 +70,7 @@ spec:
           imagePullPolicy: IfNotPresent
           env:
             - { name: SIM_SERVICE, value: ml-api-adapter }
+            - { name: SIM_PEERS_HOST, value: ml-api-adapter-peers }
             - { name: AIOPS_SERVICE_NAME, value: ml-api-adapter }
             - { name: SIM_VERSION, value: v1.0.4 }
           envFrom:
@@ -141,6 +142,7 @@ spec:
           imagePullPolicy: IfNotPresent
           env:
             - { name: SIM_SERVICE, value: central-ledger }
+            - { name: SIM_PEERS_HOST, value: central-ledger-peers }
             - { name: AIOPS_SERVICE_NAME, value: central-ledger }
             - { name: SIM_VERSION, value: v1.0.4 }
           envFrom:
@@ -212,6 +214,7 @@ spec:
           imagePullPolicy: IfNotPresent
           env:
             - { name: SIM_SERVICE, value: quoting-service }
+            - { name: SIM_PEERS_HOST, value: quoting-service-peers }
             - { name: AIOPS_SERVICE_NAME, value: quoting-service }
             - { name: SIM_VERSION, value: v1.0.4 }
           envFrom:
@@ -283,6 +286,7 @@ spec:
           imagePullPolicy: IfNotPresent
           env:
             - { name: SIM_SERVICE, value: account-lookup-service }
+            - { name: SIM_PEERS_HOST, value: account-lookup-service-peers }
             - { name: AIOPS_SERVICE_NAME, value: account-lookup-service }
             - { name: SIM_VERSION, value: v1.0.4 }
           envFrom:
@@ -354,6 +358,7 @@ spec:
           imagePullPolicy: IfNotPresent
           env:
             - { name: SIM_SERVICE, value: transaction-request-service }
+            - { name: SIM_PEERS_HOST, value: transaction-request-service-peers }
             - { name: AIOPS_SERVICE_NAME, value: transaction-request-service }
             - { name: SIM_VERSION, value: v1.0.4 }
           envFrom:
@@ -367,3 +372,93 @@ spec:
           resources:
             requests: { cpu: 25m, memory: 96Mi }
             limits: { cpu: 400m, memory: 192Mi }
+---
+# Headless: resolves to one address per ready ml-api-adapter pod, so each simulator takes its share of
+# the traffic after a scale-out (mojaloop_sim/peers.py).
+apiVersion: v1
+kind: Service
+metadata:
+  name: ml-api-adapter-peers
+  namespace: aiops
+  labels:
+    app.kubernetes.io/name: ml-api-adapter
+    app.kubernetes.io/part-of: mojaloop
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: ml-api-adapter
+  ports:
+    - name: http
+      port: 8000
+---
+# Headless: resolves to one address per ready central-ledger pod, so each simulator takes its share of
+# the traffic after a scale-out (mojaloop_sim/peers.py).
+apiVersion: v1
+kind: Service
+metadata:
+  name: central-ledger-peers
+  namespace: aiops
+  labels:
+    app.kubernetes.io/name: central-ledger
+    app.kubernetes.io/part-of: mojaloop
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: central-ledger
+  ports:
+    - name: http
+      port: 8000
+---
+# Headless: resolves to one address per ready quoting-service pod, so each simulator takes its share of
+# the traffic after a scale-out (mojaloop_sim/peers.py).
+apiVersion: v1
+kind: Service
+metadata:
+  name: quoting-service-peers
+  namespace: aiops
+  labels:
+    app.kubernetes.io/name: quoting-service
+    app.kubernetes.io/part-of: mojaloop
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: quoting-service
+  ports:
+    - name: http
+      port: 8000
+---
+# Headless: resolves to one address per ready account-lookup-service pod, so each simulator takes its share of
+# the traffic after a scale-out (mojaloop_sim/peers.py).
+apiVersion: v1
+kind: Service
+metadata:
+  name: account-lookup-service-peers
+  namespace: aiops
+  labels:
+    app.kubernetes.io/name: account-lookup-service
+    app.kubernetes.io/part-of: mojaloop
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: account-lookup-service
+  ports:
+    - name: http
+      port: 8000
+---
+# Headless: resolves to one address per ready transaction-request-service pod, so each simulator takes its share of
+# the traffic after a scale-out (mojaloop_sim/peers.py).
+apiVersion: v1
+kind: Service
+metadata:
+  name: transaction-request-service-peers
+  namespace: aiops
+  labels:
+    app.kubernetes.io/name: transaction-request-service
+    app.kubernetes.io/part-of: mojaloop
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: transaction-request-service
+  ports:
+    - name: http
+      port: 8000

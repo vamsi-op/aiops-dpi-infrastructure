@@ -32,6 +32,7 @@ from aiops_common.config import get_settings
 from aiops_common.constants import AiopsService
 from aiops_common.db import Database
 from aiops_common.log import get_logger
+from aiops_common.promql import PrometheusClient
 from aiops_common.service import build_app
 from aiops_common.tracing import configure_tracing, shutdown_tracing
 
@@ -49,11 +50,14 @@ settings = get_settings()
 
 database = Database()
 bus = EventBus(source=SERVICE_NAME)
+# Live TPS and capacity for scaling decisions (snapshot.live_load).
+prometheus = PrometheusClient()
 
 
 async def _startup() -> None:
     await database.connect()
     await bus.connect()
+    await prometheus.connect()
 
     engine: HealingEngine = app.state.engine
     await engine.start()
@@ -63,6 +67,7 @@ async def _shutdown() -> None:
     engine: HealingEngine = app.state.engine
     await engine.stop()
     await bus.close()
+    await prometheus.close()
     await database.close()
     shutdown_tracing()
 
@@ -83,7 +88,7 @@ app: FastAPI = build_app(
 # Initialize healing components
 executor = build_executor(settings)
 safety = SafetyRails(bus, settings.healing)
-snapshot = MetricSnapshot(database)
+snapshot = MetricSnapshot(database, prometheus)
 playbook_executor = PlaybookExecutor(executor)
 
 engine = HealingEngine(

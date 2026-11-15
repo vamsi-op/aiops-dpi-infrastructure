@@ -115,6 +115,11 @@ class TrafficModel:
         self._rng = rng or random.Random()
 
         self._replicas = profile.replicas
+        # Pods serving this service, this one included. Each simulator process models the
+        # whole service, so with several pods each takes 1/peers of the traffic - as pods
+        # behind a load balancer do. Without it a scale-out *added* the full load once per
+        # pod (Prometheus sums rates across pods) and looked like a bigger traffic spike.
+        self._peers = 1
         # Mean-reverting multiplier: drifts slowly, pulled back toward 1.0. Gives traffic
         # believable persistence without letting it wander far enough to swamp the
         # seasonal signal a forecaster needs.
@@ -140,6 +145,15 @@ class TrafficModel:
     @property
     def capacity_tps(self) -> float:
         return self._profile.tps_per_replica * self._replicas
+
+    @property
+    def peers(self) -> int:
+        return self._peers
+
+    def set_peers(self, peers: int) -> int:
+        """Number of pods sharing this service's traffic (see `_peers`)."""
+        self._peers = max(1, min(int(peers), 50))
+        return self._peers
 
     # -- the model --------------------------------------------------------
     def _advance_walk(self, elapsed_seconds: float) -> None:
@@ -172,7 +186,7 @@ class TrafficModel:
         season = seasonal_multiplier(moment) if self._seasonality else 0.70
         tps = self._base_tps * profile.traffic_share * season * self._walk
         tps *= faults.traffic_multiplier
-        tps = max(0.0, tps)
+        tps = max(0.0, tps) / self._peers
 
         capacity = self.capacity_tps
         load = tps / capacity if capacity > 0 else 0.0
