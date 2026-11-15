@@ -52,7 +52,7 @@ GAUGE_QUERIES: Final[dict[str, str]] = {
     "cpu_utilisation_ratio": "dpi:cpu:avg",
     "memory_utilisation_ratio": "dpi:memory:max",
     "queue_depth": "dpi:queue_depth:sum",
-    "active_connections": "dpi:connections:sum",
+    "active_connections": "dpi:connections:avg",
     "settlement_lag_seconds": "dpi:settlement_lag:max",
     "quote_latency_seconds": "dpi:quote_latency_p95:5m",
     "verification_latency_seconds": "dpi:verification_latency_p95:5m",
@@ -75,8 +75,14 @@ DISCOVERY_QUERY: Final[str] = 'up{job="mojaloop"}'
 # central-ledger's tps climbed in a straight line from 0.9 to its real 9.7 over exactly five
 # minutes. Stored and scored, that ramp reads as a 18-sigma traffic drop on every service at
 # once, and the detector raised `traffic_drop` every 30 s until the window filled.
+#
+# Measured for the service as a whole: the number of 15 s steps in the window at which *any*
+# of its pods had data. Per pod (max of one series), a service was skipped for five minutes
+# after every Kubernetes rolling restart - the replacement pod's series is new - leaving no
+# telemetry to verify the restart by. Summed across pods instead, two pods side by side
+# reached "full" after half the window, and the half-filled rate read as a traffic drop.
 WINDOW_COVERAGE_QUERY: Final[str] = (
-    "max by (service) (count_over_time(dpi_transaction_total[5m]))"
+    "count_over_time(sum by (service) (dpi_transaction_total)[5m:15s])"
 )
 RATE_WINDOW_SECONDS: Final[int] = 300
 

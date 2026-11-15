@@ -20,8 +20,10 @@ log = get_logger(__name__)
 
 # Live load for the scaling decision. The stored snapshot is a 5-minute average and has no
 # capacity, so a traffic spike read as "TPS 8.75, load = CPU 0.33" and was restarted instead
-# of scaled out. A 1-minute rate reacts within the minute; capacity is what the pods export.
-LIVE_TPS_QUERY = 'sum by (service) (rate(dpi_transaction_total{{service="{service}"}}[1m]))'
+# of scaled out. irate (the last two 15 s scrapes), not a 1-minute rate: a surge is detected
+# while still ramping, and a 1-minute rate lagged it to 1.4-1.6x - right on the decision
+# threshold, so two decisions a second apart disagreed. Capacity is what the pods export.
+LIVE_TPS_QUERY = 'sum by (service) (irate(dpi_transaction_total{{service="{service}"}}[1m]))'
 LIVE_CAPACITY_QUERY = 'dpi:capacity_tps{{service="{service}"}}'
 
 

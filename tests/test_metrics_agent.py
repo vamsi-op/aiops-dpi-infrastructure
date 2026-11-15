@@ -683,3 +683,15 @@ async def test_recently_started_process_is_tagged_without_a_counter_reset() -> N
     assert RESTART_IN_WINDOW_LABEL not in by_service["quoting-service"].labels
     # quoting-service calls central-ledger
     assert by_service["quoting-service"].labels.get(DEPENDENCY_RESTART_LABEL) == "1"
+
+
+def test_window_coverage_is_measured_for_the_service_not_per_pod() -> None:
+    """Regressions both ways: per pod, a service was skipped for five minutes after every
+    rolling restart (new pod, new series); summed across pods, two pods reached "full" after
+    half the window and the half-filled rate read as a traffic drop. Coverage counts the
+    steps at which the service as a whole had data."""
+    from metrics_agent.collector import WINDOW_COVERAGE_QUERY
+
+    assert WINDOW_COVERAGE_QUERY == (
+        "count_over_time(sum by (service) (dpi_transaction_total)[5m:15s])"
+    )

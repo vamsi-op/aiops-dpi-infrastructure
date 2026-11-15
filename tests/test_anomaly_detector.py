@@ -966,14 +966,19 @@ def test_load_gauges_alone_are_weak_evidence() -> None:
 
 
 @pytest.mark.parametrize(("explained", "reported"), [(False, True), (True, False)])
-async def test_unexplained_restart_is_reported_once(explained: bool, reported: bool) -> None:
+async def test_unexplained_restart_is_reported_once(
+    explained: bool, reported: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Regression: Kubernetes restarted a killed central-ledger in five seconds and the
     platform saw nothing. A restart no healing action or deployment explains is reported,
     once, when the restart tag first appears - not on the first sample after start-up."""
+    import asyncio
     from unittest.mock import AsyncMock, MagicMock
 
+    import anomaly_detector.detector as detector_module
     from aiops_common.constants import AnomalyKind
 
+    monkeypatch.setattr(detector_module, "RESTART_REPORT_DELAY_SECONDS", 0.0)
     model, _ = fitted_model()
     detector = AnomalyDetector(None, None, Scorer(THRESHOLD), MagicMock())
     detector._models[SERVICE] = model
@@ -993,6 +998,7 @@ async def test_unexplained_restart_is_reported_once(explained: bool, reported: b
     await feed(tagged=False)
     await feed(tagged=True)  # the restart
     await feed(tagged=True)  # still inside the window: not reported again
+    await asyncio.gather(*list(detector._pending_reports))  # the delayed report
 
     restarts = [
         call.args[0]

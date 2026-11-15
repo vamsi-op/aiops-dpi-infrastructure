@@ -69,6 +69,7 @@ IMMEDIATE_SIGMA = 4.0
 # RCA engine opens an incident; the healing engine never acts on this kind.
 RESTART_SCORE = 0.9
 RESTART_EXPLAINED_MINUTES = 10
+RESTART_REPORT_DELAY_SECONDS = 90.0
 EXPLAINED_RESTART_QUERY = f"""
 SELECT 1 FROM {TABLE_ACTIONS}
 WHERE target_service = :service
@@ -220,6 +221,7 @@ class AnomalyDetector:
         # Whether the previous sample carried the restart tag; None until the first sample,
         # so a detector that starts mid-window does not report a restart it never saw happen.
         self._restart_tagged: dict[str, bool] = {}
+        self._pending_reports: set[asyncio.Task[None]] = set()
         self.status = DetectorStatus(threshold=scorer.threshold)
         self._task: asyncio.Task[None] | None = None
         self._stopping = asyncio.Event()
@@ -340,7 +342,7 @@ class AnomalyDetector:
         previously_tagged = self._restart_tagged.get(sample.service)
         self._restart_tagged[sample.service] = tagged
         if tagged and previously_tagged is False:
-            await self._report_restart(sample)
+            self._schedule_restart_report(sample)
 
         # The service (or a dependency) restarted within the last rate window: its *rate*
         # signals are distorted for five minutes (see metrics_agent RESET_QUERY) - a remediated
@@ -443,6 +445,22 @@ class AnomalyDetector:
             EXPLAINED_RESTART_QUERY, {"service": service, "minutes": RESTART_EXPLAINED_MINUTES}
         )
         return bool(row)
+
+    def _schedule_restart_report(self, sample: MetricSample) -> None:
+        """Report after RESTART_REPORT_DELAY_SECONDS, not at once.
+
+        The healing engine records an action only once it has completed and been verified
+        (~40 s after a restart begins). Checking immediately missed that record, and the
+        healer's own rolling restart was reported as a crash.
+        """
+
+        async def later() -> None:
+            await asyncio.sleep(RESTART_REPORT_DELAY_SECONDS)
+            await self._report_restart(sample)
+
+        task = asyncio.create_task(later(), name=f"restart-report-{sample.service}")
+        self._pending_reports.add(task)
+        task.add_done_callback(self._pending_reports.discard)
 
     async def _report_restart(self, sample: MetricSample) -> None:
         """Report a restart that no healing action or deployment explains.

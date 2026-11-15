@@ -72,7 +72,7 @@ RECORDING_RULES = [
     "dpi:cpu:avg",
     "dpi:memory:max",
     "dpi:queue_depth:sum",
-    "dpi:connections:sum",
+    "dpi:connections:avg",
     "dpi:replicas",
     "dpi:capacity_tps",
     "dpi:load_factor",

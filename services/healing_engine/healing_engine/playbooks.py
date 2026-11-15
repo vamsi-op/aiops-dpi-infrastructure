@@ -191,9 +191,48 @@ class PlaybookRegistry:
         # the queue first, so the anomaly arrives as queue_backlog, and restarting a service
         # that is short of capacity only removes capacity for a while.
         tps_sigma = float((anomaly.feature_deviations or {}).get("tps", 0.0))
+        # A sudden jump: the live (instantaneous) rate (snapshot.live_load) against the 5-minute rate
+        # the anomaly was scored on. A surge is caught on its gauges (connections) within a
+        # minute, before the 5-minute rate has moved - observed: 3x load at detection read as
+        # 10.05 TPS, -0.04 sigma, while the 1-minute rate was ~30. Faults that do not change
+        # traffic (memory, CPU, errors, a bad deploy) keep this ratio near 1.
+        recent_tps = float((anomaly.feature_snapshot or {}).get("tps", 0.0))
+        traffic_jump = recent_tps > 0 and tps >= TRAFFIC_JUMP_RATIO * recent_tps
+        # More concurrent clients, nothing queued, nothing slow or failing: callers arriving
+        # faster - a surge in its first minute, before any rate has moved. The classifier
+        # names it queue_backlog (connections map there), and a restart would drop every one
+        # of those clients. Decided from the anomaly alone, so it does not depend on whether a
+        # scrape landed between two decisions - observed: the same anomaly handled twice, a
+        # second apart, restarted on the first reading and chose scale-out on the second.
+        deviations = anomaly.feature_deviations or {}
+        observed = anomaly.feature_snapshot or {}
+        arrival_surge = (
+            kind == AnomalyKind.QUEUE_BACKLOG
+            and float(observed.get("queue_depth", 0.0)) < 1.0
+            and float(deviations.get("active_connections", 0.0)) >= TRAFFIC_SURGE_SIGMA
+            and all(
+                float(deviations.get(symptom, 0.0)) < TRAFFIC_SURGE_SIGMA
+                for symptom in ("error_ratio", "latency_p50_seconds", "latency_p99_seconds")
+            )
+        )
+        log.info(
+            "playbook.traffic_check",
+            service=anomaly.service,
+            kind=str(kind),
+            live_tps=round(tps, 2),
+            recent_tps=round(recent_tps, 2),
+            capacity_tps=round(capacity, 1),
+            tps_sigma=round(tps_sigma, 2),
+            connections_sigma=deviations.get("active_connections"),
+            queue_depth=observed.get("queue_depth"),
+            traffic_jump=traffic_jump,
+            arrival_surge=arrival_surge,
+        )
         is_traffic_overload = (
             kind == AnomalyKind.TRAFFIC_SURGE
             or tps_sigma >= TRAFFIC_SURGE_SIGMA
+            or traffic_jump
+            or arrival_surge
             or (capacity > 0 and tps >= 0.80 * capacity)
             or (load_factor >= 0.82 and queue_depth > 0)
         )
@@ -290,6 +329,11 @@ def _all_dependencies(service: str) -> set[str]:
 # Traffic this many sigma above its baseline for the hour is a surge whatever the anomaly is
 # named after (see select_playbook, case A).
 TRAFFIC_SURGE_SIGMA = 3.0
+# Live 1-minute TPS this many times the anomaly's 5-minute TPS is a sudden surge (case A).
+# A surge is detected early on its gauges, while it is still ramping: measured 1.5x at
+# detection for a 3x spike (14.96 vs 9.96). Ordinary traffic stays under ~1.27x (the random
+# walk is bounded at +/-12%), so 1.4 separates the two.
+TRAFFIC_JUMP_RATIO = 1.4
 
 # How long `circuit_break_cascade` keeps callers' breakers open before they half-open and
 # probe the root cause. Long enough for a restart and its recovery window.

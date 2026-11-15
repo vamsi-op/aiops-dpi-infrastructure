@@ -813,3 +813,56 @@ async def test_live_load_near_capacity_scales_out():
         anomaly, snapshot={"tps": 52.0, "capacity_tps": 60.0, "queue_depth": 30.0}
     )
     assert playbook == PlaybookName.SCALE_OUT_PREEMPTIVE
+
+
+@pytest.mark.asyncio
+async def test_sudden_traffic_jump_scales_out_before_the_5_minute_rate_moves():
+    """Regression: a 3x spike was caught on its connections gauge within a minute, while the
+    5-minute TPS still read baseline (-0.04 sigma); the service was restarted. The live
+    1-minute rate against the anomaly's 5-minute rate shows the jump."""
+    anomaly = AnomalyEvent(
+        anomaly_id="anom-jump",
+        detected_at=datetime.now(UTC),
+        service="central-ledger",
+        severity=Severity.CRITICAL,
+        score=1.0,
+        contributing_features=["active_connections"],
+        kind=AnomalyKind.QUEUE_BACKLOG,
+        feature_snapshot={"tps": 10.05, "queue_depth": 0.0},
+        # Connections below 3 sigma, so only the live-rate jump can call this a surge.
+        feature_deviations={"tps": -0.04, "active_connections": 2.0},
+    )
+    surge, _ = PlaybookRegistry.select_playbook(  # measured live: 14.96 vs 9.96 at detection
+        anomaly, snapshot={"tps": 14.96, "capacity_tps": 60.0, "queue_depth": 0.0}
+    )
+    steady, _ = PlaybookRegistry.select_playbook(
+        anomaly, snapshot={"tps": 10.4, "capacity_tps": 60.0, "queue_depth": 0.0}
+    )
+    assert surge == PlaybookName.SCALE_OUT_PREEMPTIVE
+    assert steady != PlaybookName.SCALE_OUT_PREEMPTIVE
+
+
+@pytest.mark.asyncio
+async def test_more_clients_with_an_empty_queue_is_a_surge_not_a_backlog():
+    """Regression: a 3x spike, caught on connections (+4.2 sigma, queue 0) before any rate
+    moved, was handled twice a second apart - restarted on the first reading. Decided from the
+    anomaly alone it scales out; with latency or errors involved it does not."""
+    surge = AnomalyEvent(
+        anomaly_id="anom-arrivals",
+        detected_at=datetime.now(UTC),
+        service="central-ledger",
+        severity=Severity.CRITICAL,
+        score=0.98,
+        contributing_features=["active_connections"],
+        kind=AnomalyKind.QUEUE_BACKLOG,
+        feature_snapshot={"tps": 11.0, "queue_depth": 0.0},
+        feature_deviations={"tps": 1.87, "active_connections": 4.24},
+    )
+    playbook, _ = PlaybookRegistry.select_playbook(surge, snapshot={"tps": 11.5})
+    assert playbook == PlaybookName.SCALE_OUT_PREEMPTIVE
+
+    slow = surge.model_copy(
+        update={"feature_deviations": {"active_connections": 4.24, "latency_p99_seconds": 9.0}}
+    )
+    playbook, _ = PlaybookRegistry.select_playbook(slow, snapshot={"tps": 11.5})
+    assert playbook != PlaybookName.SCALE_OUT_PREEMPTIVE

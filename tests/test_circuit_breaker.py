@@ -642,3 +642,41 @@ async def test_healing_never_acts_on_a_reported_restart() -> None:
     )
     await engine._process_anomaly(restart, None)
     playbooks.execute.assert_not_awaited()
+
+
+async def test_incident_path_decides_on_the_complete_anomaly() -> None:
+    """Regression: _fetch_anomaly selected seven columns, so the incident path's copy had no
+    evidence; it decided first and restarted a traffic surge that the full copy scaled out."""
+    from unittest.mock import MagicMock
+
+    from healing_engine.engine import HealingEngine
+
+    row = {
+        "anomaly_id": "anom-1",
+        "detected_at": datetime.now(UTC),
+        "window_start": None,
+        "service": "central-ledger",
+        "platform": "mojaloop",
+        "kind": "queue_backlog",
+        "severity": "critical",
+        "score": 0.99,
+        "raw_score": 0.2,
+        "threshold": 0.65,
+        "contributing_features": ["active_connections"],
+        "feature_snapshot": '{"tps": 11.65, "queue_depth": 0.0}',
+        "feature_deviations": '{"active_connections": 7.15, "tps": 3.16}',
+        "model_name": "isolation-forest",
+        "model_version": "1",
+        "description": "",
+        "incident_id": "inc-1",
+    }
+    db = MagicMock()
+    db.fetch_one = AsyncMock(return_value=row)
+    engine = HealingEngine(db, MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock())
+
+    anomaly = await engine._fetch_anomaly("anom-1")
+
+    assert anomaly is not None
+    assert anomaly.feature_deviations["active_connections"] == 7.15
+    assert anomaly.feature_snapshot["queue_depth"] == 0.0
+    assert anomaly.threshold == 0.65

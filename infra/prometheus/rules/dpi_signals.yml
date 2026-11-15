@@ -69,8 +69,12 @@ groups:
       - record: dpi:queue_depth:sum
         expr: sum by (service, platform) (dpi_queue_depth)
 
-      - record: dpi:connections:sum
-        expr: sum by (service, platform) (dpi_active_connections)
+      # Per pod, not summed: every pod holds its own pool of idle connections, so a sum
+      # rose by a whole pool with each scale-out - observed +16 sigma (68 vs ~31) at normal
+      # traffic after scaling to two pods, a recurring anomaly that kept the incident open.
+      # Connections per pod is also the saturation signal that matters.
+      - record: dpi:connections:avg
+        expr: avg by (service, platform) (dpi_active_connections)
 
       # sum, not max: each pod models its own replica set and capacity (mojaloop_sim/peers.py),
       # so a scale-out adds capacity. capacity / replicas stays the per-replica figure.
