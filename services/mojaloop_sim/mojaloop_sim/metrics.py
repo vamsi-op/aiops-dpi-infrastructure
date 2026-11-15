@@ -20,6 +20,7 @@ Two design notes:
 from __future__ import annotations
 
 import random
+import time
 
 from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
 
@@ -179,6 +180,13 @@ class SimulatorMetrics:
             common,
             registry=self.registry,
         )
+        self.process_start = Gauge(
+            DpiMetric.PROCESS_START_TIME_SECONDS,
+            "Unix time this simulator process started",
+            common,
+            registry=self.registry,
+        )
+        self.process_start.labels(profile.name).set(time.time())
         self.capacity_tps = Gauge(
             DpiMetric.CAPACITY_TPS,
             "Transactions per second this service can serve at its current replica count",

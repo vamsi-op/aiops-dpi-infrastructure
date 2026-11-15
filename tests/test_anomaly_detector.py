@@ -963,3 +963,42 @@ def test_load_gauges_alone_are_weak_evidence() -> None:
     # ...and so is an extreme load gauge (CPU hog, traffic surge or collapse).
     assert not _weak_evidence({**observed, "cpu_utilisation_ratio": 6.0})
     assert not _weak_evidence({**observed, "tps": -4.0})
+
+
+@pytest.mark.parametrize(("explained", "reported"), [(False, True), (True, False)])
+async def test_unexplained_restart_is_reported_once(explained: bool, reported: bool) -> None:
+    """Regression: Kubernetes restarted a killed central-ledger in five seconds and the
+    platform saw nothing. A restart no healing action or deployment explains is reported,
+    once, when the restart tag first appears - not on the first sample after start-up."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from aiops_common.constants import AnomalyKind
+
+    model, _ = fitted_model()
+    detector = AnomalyDetector(None, None, Scorer(THRESHOLD), MagicMock())
+    detector._models[SERVICE] = model
+    detector._restart_explained = AsyncMock(return_value=explained)  # type: ignore[method-assign]
+    detector._persist = AsyncMock()  # type: ignore[method-assign]
+    detector._publish = AsyncMock()  # type: ignore[method-assign]
+
+    async def feed(tagged: bool) -> None:
+        labels = {"restart_in_rate_window": "1"} if tagged else {}
+
+        class Msg:
+            data = sample().model_copy(update={"labels": labels}).model_dump(mode="json")
+
+        await detector._handle(Msg())
+
+    await feed(tagged=True)  # first sample after start-up: already tagged, not a new restart
+    await feed(tagged=False)
+    await feed(tagged=True)  # the restart
+    await feed(tagged=True)  # still inside the window: not reported again
+
+    restarts = [
+        call.args[0]
+        for call in detector._persist.await_args_list
+        if call.args[0].kind == AnomalyKind.SERVICE_RESTART
+    ]
+    assert len(restarts) == (1 if reported else 0)
+    if reported:
+        assert restarts[0].is_actionable  # so RCA opens an incident

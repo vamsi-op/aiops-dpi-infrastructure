@@ -67,6 +67,10 @@ MOJALOOP_DEPENDENCIES: Final[dict[str, tuple[str, ...]]] = {
 class DpiMetric(StrEnum):
     """Business-level signals that generic infrastructure monitoring misses."""
 
+    # When the serving process started (Unix seconds). Lets the metrics agent recognise a
+    # fresh process even when Prometheus restarted too and saw no counter reset.
+    PROCESS_START_TIME_SECONDS = "dpi_process_start_time_seconds"
+
     # Payments (Mojaloop)
     TRANSACTION_DURATION_SECONDS = "dpi_transaction_duration_seconds"
     TRANSACTION_TOTAL = "dpi_transaction_total"
@@ -149,6 +153,9 @@ class AnomalyKind(StrEnum):
     QUEUE_BACKLOG = "queue_backlog"
     SETTLEMENT_DELAY = "settlement_delay"
     MULTIVARIATE = "multivariate"
+    # The service's process restarted with no healing action or deployment to explain it -
+    # a crash the orchestrator already recovered. Reported, never acted on.
+    SERVICE_RESTART = "service_restart"
 
 
 class RootCauseCategory(StrEnum):

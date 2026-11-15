@@ -101,6 +101,7 @@ services:
     environment:
       <<: *sim-env
       SIM_SERVICE: ml-api-adapter
+      SIM_PEERS_HOST: ml-api-adapter
       AIOPS_SERVICE_NAME: ml-api-adapter
     ports:
       - "${SIM_ML_API_ADAPTER_PORT:-8011}:8000"
@@ -111,6 +112,7 @@ services:
     environment:
       <<: *sim-env
       SIM_SERVICE: central-ledger
+      SIM_PEERS_HOST: central-ledger
       AIOPS_SERVICE_NAME: central-ledger
     ports:
       - "${SIM_CENTRAL_LEDGER_PORT:-8012}:8000"
@@ -121,6 +123,7 @@ services:
     environment:
       <<: *sim-env
       SIM_SERVICE: quoting-service
+      SIM_PEERS_HOST: quoting-service
       AIOPS_SERVICE_NAME: quoting-service
     ports:
       - "${SIM_QUOTING_SERVICE_PORT:-8013}:8000"
@@ -131,6 +134,7 @@ services:
     environment:
       <<: *sim-env
       SIM_SERVICE: account-lookup-service
+      SIM_PEERS_HOST: account-lookup-service
       AIOPS_SERVICE_NAME: account-lookup-service
     ports:
       - "${SIM_ACCOUNT_LOOKUP_PORT:-8014}:8000"
@@ -141,6 +145,7 @@ services:
     environment:
       <<: *sim-env
       SIM_SERVICE: transaction-request-service
+      SIM_PEERS_HOST: transaction-request-service
       AIOPS_SERVICE_NAME: transaction-request-service
     ports:
       - "${SIM_TRANSACTION_REQUEST_PORT:-8015}:8000"

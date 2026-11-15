@@ -13,15 +13,43 @@ from typing import Any
 from aiops_common.constants import ANOMALY_FEATURES
 from aiops_common.db import Database
 from aiops_common.log import get_logger
+from aiops_common.promql import PrometheusClient
 
 log = get_logger(__name__)
+
+
+# Live load for the scaling decision. The stored snapshot is a 5-minute average and has no
+# capacity, so a traffic spike read as "TPS 8.75, load = CPU 0.33" and was restarted instead
+# of scaled out. A 1-minute rate reacts within the minute; capacity is what the pods export.
+LIVE_TPS_QUERY = 'sum by (service) (rate(dpi_transaction_total{{service="{service}"}}[1m]))'
+LIVE_CAPACITY_QUERY = 'dpi:capacity_tps{{service="{service}"}}'
 
 
 class MetricSnapshot:
     """Captures service metrics before and after healing actions."""
 
-    def __init__(self, db: Database) -> None:
+    def __init__(self, db: Database, prometheus: PrometheusClient | None = None) -> None:
         self.db = db
+        self.prometheus = prometheus
+
+    async def live_load(self, service: str) -> dict[str, float]:
+        """Current TPS (1-minute rate) and capacity from Prometheus; {} if unavailable."""
+        if self.prometheus is None:
+            return {}
+        try:
+            tps = await self.prometheus.scalar(LIVE_TPS_QUERY.format(service=service), -1.0)
+            capacity = await self.prometheus.scalar(
+                LIVE_CAPACITY_QUERY.format(service=service), -1.0
+            )
+        except Exception as exc:  # noqa: BLE001 - the decision falls back to the snapshot
+            log.warning("snapshot.live_load_failed", service=service, error=str(exc))
+            return {}
+        live: dict[str, float] = {}
+        if tps >= 0:
+            live["tps"] = tps
+        if capacity > 0:
+            live["capacity_tps"] = capacity
+        return live
 
     async def capture(
         self,

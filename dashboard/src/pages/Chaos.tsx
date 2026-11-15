@@ -18,48 +18,50 @@ import { Async, Badge, Card, Kpi, Notice } from '../components/primitives';
 import { formatDateTime, formatDuration, formatNumber, formatRelative } from '../lib/format';
 import type { Tone } from '../lib/status';
 
+const EXPERIMENT_SECONDS = 300;
+
 const EXPERIMENTS: { id: string; name: string; description: string; expects: string }[] = [
   {
     id: 'kill_service',
     name: 'Kill service',
-    description: 'Terminate a container outright.',
-    expects: 'Traffic drop anomaly, then a restart playbook.',
+    description: 'Kill the service process.',
+    expects: 'The orchestrator restarts it within seconds; the platform reports the unexpected restart as an incident and takes no action of its own.',
   },
   {
     id: 'memory_hog',
     name: 'Memory hog',
     description: 'Allocate memory until the limit is near.',
-    expects: 'Memory pressure anomaly, then restart before OOM.',
+    expects: 'Memory pressure anomaly, then a restart before the OOM kill.',
   },
   {
     id: 'cpu_hog',
     name: 'CPU hog',
     description: 'Saturate CPU cores.',
-    expects: 'CPU saturation anomaly with latency knock-on.',
+    expects: 'CPU saturation anomaly, then a restart.',
   },
   {
     id: 'network_latency',
     name: 'Network latency',
-    description: 'Inject delay on a dependency path.',
-    expects: 'Latency spike that RCA should trace upstream.',
+    description: 'Add delay to every request.',
+    expects: 'Latency spike; RCA blames this service, not its callers, and it is restarted.',
   },
   {
     id: 'error_injection',
     name: 'Error injection',
     description: 'Force a percentage of responses to fail.',
-    expects: 'Error burst anomaly, circuit breaker if it cascades.',
+    expects: 'Error burst; if callers are affected, their circuit breakers open while the service is restarted.',
   },
   {
     id: 'traffic_spike',
     name: 'Traffic spike',
     description: 'Multiply the offered load.',
-    expects: 'Traffic surge anomaly, pre-emptive scale-out.',
+    expects: 'Traffic surge, then scale-out by one replica; the new pod takes its share of the load.',
   },
   {
     id: 'bad_deploy',
     name: 'Bad deploy',
-    description: 'Record a deployment then degrade the service.',
-    expects: 'Change-correlated RCA, then automatic rollback.',
+    description: 'Release a defective version (a real rollout on Kubernetes).',
+    expects: 'RCA blames the deployment, then an automatic rollback to the previous revision.',
   },
 ];
 
@@ -104,7 +106,9 @@ export function ChaosPage({ onSelectIncident }: { onSelectIncident: (id: string)
       await fetch('/api/chaos', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ experiment }),
+        // Five minutes, like scripts/chaos_demo.py: rates are measured over a 5-minute window,
+        // so a 60-second fault (the gateway's default) barely moved them.
+        body: JSON.stringify({ experiment, duration_seconds: EXPERIMENT_SECONDS }),
       }).then(async (response) => {
         const body = (await response.json().catch(() => ({}))) as { detail?: string };
         if (!response.ok) throw new Error(body.detail ?? `Request failed with ${response.status}`);

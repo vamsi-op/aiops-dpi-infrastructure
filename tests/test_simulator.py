@@ -472,3 +472,42 @@ def test_one_second_step_is_the_default() -> None:
         sa = a.sample(moment, _FaultEffects.none())
         sb = b.sample(moment, _FaultEffects.none(), elapsed_seconds=1.0)
         assert sa == sb, i
+
+
+def test_pods_share_traffic_after_a_scale_out() -> None:
+    """Regression: each pod generated the service's full traffic, and Prometheus sums rates
+    across pods, so a scale-out looked like a doubled traffic spike instead of relief."""
+    at = datetime(2026, 11, 11, 19, 30, tzinfo=UTC)
+    one = TrafficModel(get_profile("central-ledger"), base_tps=25.0, rng=random.Random(7))
+    two = TrafficModel(get_profile("central-ledger"), base_tps=25.0, rng=random.Random(7))
+    two.set_peers(2)
+    alone = one.sample(at, FaultEffects.none())
+    shared = two.sample(at, FaultEffects.none())
+
+    assert shared.tps == pytest.approx(alone.tps / 2)
+    assert shared.load_factor < alone.load_factor  # each pod is under less pressure
+
+
+async def test_peer_counter_counts_distinct_addresses(monkeypatch) -> None:
+    import asyncio
+    import socket
+
+    from mojaloop_sim.peers import PeerCounter
+
+    applied: list[int] = []
+    counter = PeerCounter(lambda n: applied.append(n) or n, host="central-ledger-peers")
+
+    async def resolve(host, port, family=0, **_kw):
+        return [
+            (socket.AF_INET, 1, 6, "", (ip, 0)) for ip in ("10.0.0.1", "10.0.0.2", "10.0.0.1")
+        ]
+
+    monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", resolve)
+    assert await counter.count_once() == 2
+
+    async def broken(*_a, **_kw):
+        raise OSError("dns down")
+
+    monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", broken)
+    assert await counter.count_once() == 2  # keeps the last known count on a DNS failure
+    assert PeerCounter(lambda n: n, host="").enabled is False

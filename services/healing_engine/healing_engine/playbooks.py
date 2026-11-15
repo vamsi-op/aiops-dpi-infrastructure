@@ -186,9 +186,14 @@ class PlaybookRegistry:
         kind = parameters["anomaly_kind"]
 
         # Case A: Traffic Overload
-        # When incoming traffic nears or exceeds replica capacity (load_factor >= 0.80)
+        # Traffic near capacity, or far above normal for this hour. The second matters
+        # because a surge is usually *named* after its most visible symptom: 3x load fills
+        # the queue first, so the anomaly arrives as queue_backlog, and restarting a service
+        # that is short of capacity only removes capacity for a while.
+        tps_sigma = float((anomaly.feature_deviations or {}).get("tps", 0.0))
         is_traffic_overload = (
             kind == AnomalyKind.TRAFFIC_SURGE
+            or tps_sigma >= TRAFFIC_SURGE_SIGMA
             or (capacity > 0 and tps >= 0.80 * capacity)
             or (load_factor >= 0.82 and queue_depth > 0)
         )
@@ -281,6 +286,10 @@ def _all_dependencies(service: str) -> set[str]:
     """Every service `service` calls, directly or indirectly."""
     return get_topology().transitive_dependencies(service)
 
+
+# Traffic this many sigma above its baseline for the hour is a surge whatever the anomaly is
+# named after (see select_playbook, case A).
+TRAFFIC_SURGE_SIGMA = 3.0
 
 # How long `circuit_break_cascade` keeps callers' breakers open before they half-open and
 # probe the root cause. Long enough for a restart and its recovery window.

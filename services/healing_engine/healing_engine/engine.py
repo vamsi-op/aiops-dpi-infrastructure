@@ -27,6 +27,7 @@ from aiops_common.constants import (
     TABLE_INCIDENTS,
     ActionStatus,
     AiopsService,
+    AnomalyKind,
     PlaybookName,
 )
 from aiops_common.db import Database
@@ -403,6 +404,11 @@ class HealingEngine:
         # incident a fixed 0.90 confidence ("this service is the one affected"), and that was
         # used as the action confidence - so an info-level 0.52 blip got a service restarted.
         # Confidence about *which* service is not evidence that anything is wrong with it.
+        # A crash the orchestrator already recovered (detector._report_restart): reported as an
+        # incident for a human, never acted on - restarting it again would only add downtime.
+        if anomaly.kind == AnomalyKind.SERVICE_RESTART:
+            log.info("healing_engine.service_restart_reported_only", service=anomaly.service)
+            return
         if not anomaly.is_actionable:
             log.debug(
                 "healing_engine.non_actionable_anomaly_ignored",
@@ -443,12 +449,17 @@ class HealingEngine:
 
         # Capture telemetry snapshot before playbook selection so decision is telemetry-aware
         before_snapshot = await self.snapshot.capture(anomaly.service)
+        # Live TPS and capacity override the 5-minute averages for the decision itself.
+        decision_snapshot = {
+            **before_snapshot,
+            **await self.snapshot.live_load(anomaly.service),
+        }
 
         # Select playbook based on root cause, live telemetry, and action history
         playbook, parameters = PlaybookRegistry.select_playbook(
             anomaly,
             incident,
-            snapshot=before_snapshot,
+            snapshot=decision_snapshot,
             previous_actions=previous_actions,
         )
 

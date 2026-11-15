@@ -775,3 +775,41 @@ async def test_attempt_cap_escalates_once_per_incident() -> None:
     assert await engine._first_escalation("inc_1") is True
     assert await engine._first_escalation("inc_1") is False
     assert await engine._first_escalation("inc_2") is True
+
+
+@pytest.mark.asyncio
+async def test_traffic_surge_named_after_its_queue_scales_out():
+    """Regression: 3x traffic arrived as queue_backlog and was restarted - which only removes
+    capacity for a while. Traffic far above normal for the hour is a surge whatever the
+    anomaly is named after."""
+    anomaly = AnomalyEvent(
+        anomaly_id="anom-surge",
+        detected_at=datetime.now(UTC),
+        service="central-ledger",
+        severity=Severity.CRITICAL,
+        score=0.99,
+        contributing_features=["queue_depth", "tps"],
+        kind=AnomalyKind.QUEUE_BACKLOG,
+        feature_deviations={"queue_depth": 40.0, "tps": 4.2},
+    )
+    playbook, params = PlaybookRegistry.select_playbook(anomaly)
+    assert playbook == PlaybookName.SCALE_OUT_PREEMPTIVE
+    assert params["root_cause"] == "traffic_overload"
+
+
+@pytest.mark.asyncio
+async def test_live_load_near_capacity_scales_out():
+    """The decision uses live TPS and capacity (snapshot.live_load), not a 5-minute average."""
+    anomaly = AnomalyEvent(
+        anomaly_id="anom-load",
+        detected_at=datetime.now(UTC),
+        service="central-ledger",
+        severity=Severity.WARNING,
+        score=0.8,
+        contributing_features=["queue_depth"],
+        kind=AnomalyKind.QUEUE_BACKLOG,
+    )
+    playbook, _ = PlaybookRegistry.select_playbook(
+        anomaly, snapshot={"tps": 52.0, "capacity_tps": 60.0, "queue_depth": 30.0}
+    )
+    assert playbook == PlaybookName.SCALE_OUT_PREEMPTIVE

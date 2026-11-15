@@ -13,7 +13,7 @@ lifecycle, and how to run and read chaos experiments.
 | `circuit_break_cascade` | Open the breakers of every caller of the failing dependency, then restart the dependency | Same breakers, then a rolling restart | A failure spreading from a dependency to its callers |
 | `restart_on_oom` | Restart the container | Rolling restart of the Deployment | Memory or CPU exhaustion, latency spikes and error bursts confined to one service |
 | `clear_queue_backlog` | Restart to drain the queue; escalates to scale-out if a restart did not help | Same, via the Kubernetes API | Queue backlog, settlement delay |
-| `scale_out_preemptive` | Add one replica (bounded by host headroom) | Scale the Deployment by one, raising an HPA's floor if one owns it | Traffic at ≥ 80 % of capacity, or a forecast peak above capacity |
+| `scale_out_preemptive` | Add one replica (bounded by host headroom) | Scale the Deployment by one, raising an HPA's floor if one owns it | Traffic ≥ 3σ above normal for the hour, traffic at ≥ 80 % of live capacity, or a forecast peak above capacity |
 | `scale_in_idle` | Remove one replica, never below the minimum | Same | Sustained low traffic |
 
 ### How a playbook is chosen
@@ -25,9 +25,14 @@ diagnosis before falling back to the symptom:
 2. **Another service is the root**, or a dependency of this service is part of the incident →
    `circuit_break_cascade` on the deepest affected dependency. The anomalous caller is a victim
    and is never restarted.
-3. Otherwise, from the service's own telemetry: traffic near capacity → scale out; queue backlog →
-   `clear_queue_backlog` (scale out if an earlier restart failed); CPU or memory exhaustion →
-   `restart_on_oom`; errors or latency → restart.
+3. Otherwise, from the service's own telemetry: a traffic surge (TPS ≥ 3σ above normal for the
+   hour, or ≥ 80 % of live capacity read from Prometheus) → scale out, whatever symptom the
+   anomaly is named after; queue backlog → `clear_queue_backlog` (scale out if an earlier restart
+   failed); CPU or memory exhaustion → `restart_on_oom`; errors or latency → restart.
+
+A `service_restart` anomaly — a process that exited and was restarted by Docker or Kubernetes
+with no healing action or deployment to explain it — is never acted on. It opens an incident so
+an operator learns of the crash; restarting the service again would only add downtime.
 
 Only actionable anomalies (score ≥ the threshold) that are less than
 `HEALING_MAX_EVENT_AGE_SECONDS` old are considered.
@@ -86,7 +91,8 @@ open ──(healing action succeeds)──► mitigating ──(SLOs met for 120
 ## 4. Chaos experiments
 
 Experiments are started through the gateway (`POST /api/chaos`) or from the dashboard's Chaos
-page, and are recorded in `chaos_runs` with time to detect and time to remediate.
+page (each button runs its fault for 5 minutes on a fixed default target), and are recorded in
+`chaos_runs` with time to detect and time to remediate.
 
 | Experiment | Effect |
 |---|---|
@@ -94,9 +100,9 @@ page, and are recorded in `chaos_runs` with time to detect and time to remediate
 | `cpu_hog` | CPU saturation, with a latency knock-on |
 | `network_latency` | Added latency on every request; propagates to callers |
 | `error_injection` | A fraction of requests fail |
-| `traffic_spike` | Load several times normal |
+| `traffic_spike` | Load several times normal; triggers a scale-out. Scaled-out pods share the load (`mojaloop_sim/peers.py`). |
 | `queue_backlog`, `settlement_delay` | Backlog and settlement lag build up |
-| `kill_service` | The service stops responding |
+| `kill_service` | The process exits; Docker or Kubernetes restarts it within seconds. Reported as a `service_restart` incident. |
 | `bad_deploy` | A defective release. On Kubernetes, a real rollout of a new revision with the defect. |
 
 ```powershell

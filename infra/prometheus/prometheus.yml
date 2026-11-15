@@ -41,30 +41,33 @@ scrape_configs:
   # label of its own) still picks up the target label. Result: `service` means the same
   # thing in every query, including `up{service="central-ledger"}`.
   # -------------------------------------------------------------------------
+  # Every container of each service, found through Docker DNS (the service name resolves to
+  # all replicas carrying the alias). A static `name:8000` target reached one random replica
+  # per scrape after a scale-out, so counters jumped between containers.
   - job_name: mojaloop
     honor_labels: true
     metrics_path: /metrics
-    static_configs:
-      - targets: ["ml-api-adapter:8000"]
-        labels:
-          service: ml-api-adapter
-          tier: edge
-      - targets: ["central-ledger:8000"]
-        labels:
-          service: central-ledger
-          tier: core
-      - targets: ["quoting-service:8000"]
-        labels:
-          service: quoting-service
-          tier: core
-      - targets: ["account-lookup-service:8000"]
-        labels:
-          service: account-lookup-service
-          tier: core
-      - targets: ["transaction-request-service:8000"]
-        labels:
-          service: transaction-request-service
-          tier: edge
+    dns_sd_configs:
+      - names:
+          - ml-api-adapter
+          - central-ledger
+          - quoting-service
+          - account-lookup-service
+          - transaction-request-service
+        type: A
+        port: 8000
+        refresh_interval: 15s
+    relabel_configs:
+      - source_labels: [__meta_dns_name]
+        target_label: service
+      - source_labels: [__meta_dns_name]
+        regex: ml-api-adapter
+        replacement: edge
+        target_label: tier
+      - source_labels: [__meta_dns_name]
+        regex: central-ledger|quoting-service|account-lookup-service|transaction-request-service
+        replacement: core
+        target_label: tier
 
   # -------------------------------------------------------------------------
   # The AIOps services monitor themselves. An AIOps platform that fails silently is

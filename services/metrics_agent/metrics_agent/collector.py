@@ -90,6 +90,13 @@ RATE_WINDOW_SECONDS: Final[int] = 300
 # flickered 1 -> 0 -> 1 with scrape alignment, and the single untagged sample was flagged.
 RESET_QUERY: Final[str] = "max by (service) (resets(dpi_transaction_total[6m]))"
 RESTART_IN_WINDOW_LABEL: Final[str] = "restart_in_rate_window"
+# Seconds since the service's newest process started. Catches what resets() cannot: a restart
+# Prometheus did not witness (it restarted too - a VM or cluster restart, where the first
+# samples after warm-up read as a -3 sigma traffic drop) and a Kubernetes rolling restart,
+# whose new pods are new series rather than a reset of an old one. 420 s = the 5-minute rate
+# window plus scrape and warm-up margin.
+PROCESS_AGE_QUERY: Final[str] = "min by (service) (time() - dpi_process_start_time_seconds)"
+RECENT_START_SECONDS: Final[float] = 420.0
 # Same, for a service whose dependency (direct or transitive, per the topology) restarted:
 # its rate window still holds the calls that failed while the dependency was down. Observed
 # after every remediation restart: the callers alarmed on errors and p99 for the full five
@@ -177,6 +184,12 @@ class MetricsCollector:
             missing.append(REPLICAS_QUERY)
         coverage = await self._by_service(WINDOW_COVERAGE_QUERY, moment)
         resets = await self._by_service(RESET_QUERY, moment)
+        process_age = await self._by_service(PROCESS_AGE_QUERY, moment)
+
+        def restarted(name: str) -> bool:
+            age = process_age.get(name)
+            return resets.get(name, 0) > 0 or (age is not None and age < RECENT_START_SECONDS)
+
         topology = get_topology()
         needed = MIN_WINDOW_COVERAGE * RATE_WINDOW_SECONDS / max(1, self._interval_seconds)
 
@@ -241,13 +254,11 @@ class MetricsCollector:
                     labels={
                         "source": AGENT_SOURCE,
                         "collector": "promql",
-                        **(
-                            {RESTART_IN_WINDOW_LABEL: "1"} if resets.get(service, 0) > 0 else {}
-                        ),
+                        **({RESTART_IN_WINDOW_LABEL: "1"} if restarted(service) else {}),
                         **(
                             {DEPENDENCY_RESTART_LABEL: "1"}
                             if any(
-                                resets.get(dependency, 0) > 0
+                                restarted(dependency)
                                 for dependency in topology.transitive_dependencies(service)
                             )
                             else {}

@@ -586,7 +586,8 @@ async def test_backfill_survives_a_failing_instant() -> None:
 
         async def instant(self, query: str, at: datetime | None = None) -> list[dict[str, Any]]:
             self.calls += 1
-            if self.calls % 17 == 0:
+            # Not a multiple of the queries per cycle, or every point would fail.
+            if self.calls % 23 == 0:
                 raise RuntimeError("transient query failure")
             return await super().instant(query, at)
 
@@ -661,3 +662,24 @@ async def test_callers_of_a_restarted_dependency_are_tagged() -> None:
     assert by_service["quoting-service"].labels.get(DEPENDENCY_RESTART_LABEL) == "1"
     assert RESTART_IN_WINDOW_LABEL not in by_service["quoting-service"].labels
     assert DEPENDENCY_RESTART_LABEL not in by_service["central-ledger"].labels
+
+
+async def test_recently_started_process_is_tagged_without_a_counter_reset() -> None:
+    """Regression: after a VM/cluster restart Prometheus restarted too and saw no reset, so
+    the first samples were scored on rates still filling and read as a -3 sigma traffic drop.
+    A process younger than the rate window is tagged whatever resets() says."""
+    from metrics_agent.collector import (
+        DEPENDENCY_RESTART_LABEL,
+        PROCESS_AGE_QUERY,
+        RESTART_IN_WINDOW_LABEL,
+    )
+
+    values = full_values()
+    values[PROCESS_AGE_QUERY] = {"central-ledger": 90.0, "quoting-service": 3600.0}
+    by_service = {
+        s.service: s for s in (await make_collector(FakePrometheus(values)).collect()).samples
+    }
+    assert by_service["central-ledger"].labels.get(RESTART_IN_WINDOW_LABEL) == "1"
+    assert RESTART_IN_WINDOW_LABEL not in by_service["quoting-service"].labels
+    # quoting-service calls central-ledger
+    assert by_service["quoting-service"].labels.get(DEPENDENCY_RESTART_LABEL) == "1"

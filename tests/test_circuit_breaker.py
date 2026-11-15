@@ -177,6 +177,7 @@ async def test_engine_runs_the_cascade_playbook_on_the_root_not_the_victim(monke
     safety._check_cooldown = AsyncMock(return_value=(False, ""))
     safety.record_action_executed = AsyncMock()
     snapshot = MagicMock()
+    snapshot.live_load = AsyncMock(return_value={})
     snapshot.capture = AsyncMock(return_value={})
     snapshot.verify_recovery = MagicMock(return_value=(True, "recovered", {}))
     executor = MagicMock()
@@ -233,6 +234,7 @@ async def test_engine_ignores_stale_anomalies() -> None:
     playbooks = MagicMock()
     playbooks.execute = AsyncMock(return_value=(True, "ok"))
     snapshot = MagicMock()
+    snapshot.live_load = AsyncMock(return_value={})
     snapshot.capture = AsyncMock(return_value={})
     engine = HealingEngine(db, MagicMock(), MagicMock(), MagicMock(), snapshot, playbooks)
 
@@ -342,6 +344,7 @@ async def test_engine_ignores_non_actionable_anomalies() -> None:
     playbooks = MagicMock()
     playbooks.execute = AsyncMock(return_value=(True, "ok"))
     snapshot = MagicMock()
+    snapshot.live_load = AsyncMock(return_value={})
     snapshot.capture = AsyncMock(return_value={})
     engine = HealingEngine(
         MagicMock(), MagicMock(), MagicMock(), MagicMock(), snapshot, playbooks
@@ -407,6 +410,7 @@ async def test_breakers_are_not_blocked_by_the_roots_restart_cooldown(monkeypatc
     safety.check_all = AsyncMock(return_value=(True, "proposed", ""))
     safety.record_action_executed = AsyncMock()
     snapshot = MagicMock()
+    snapshot.live_load = AsyncMock(return_value={})
     snapshot.capture = AsyncMock(return_value={})
     snapshot.verify_recovery = MagicMock(return_value=(True, "ok", {}))
     executor = MagicMock()
@@ -489,6 +493,7 @@ async def test_breaker_only_action_is_not_judged_by_the_roots_stale_p99(monkeypa
     safety.check_all = AsyncMock(return_value=(True, "proposed", ""))
     safety.record_action_executed = AsyncMock()
     snapshot = MagicMock()
+    snapshot.live_load = AsyncMock(return_value={})
     snapshot.capture = AsyncMock(return_value={})
     snapshot.verify_recovery = MagicMock(return_value=(False, "p99=0.274s", {}))
     executor = MagicMock()
@@ -570,6 +575,7 @@ async def test_stale_first_reading_is_rechecked_before_failing(monkeypatch) -> N
     safety.check_all = AsyncMock(return_value=(True, "proposed", ""))
     safety.record_action_executed = AsyncMock()
     snapshot = MagicMock()
+    snapshot.live_load = AsyncMock(return_value={})
     snapshot.capture = AsyncMock(
         side_effect=[{"queue_depth": 3.0}, {"queue_depth": 60.0}, {"queue_depth": 0.0}]
     )
@@ -612,3 +618,27 @@ async def test_stale_first_reading_is_rechecked_before_failing(monkeypatch) -> N
 
     assert safety.record_action_executed.await_args.kwargs["success"] is True
     assert snapshot.verify_recovery.call_count == 2
+
+
+async def test_healing_never_acts_on_a_reported_restart() -> None:
+    """The orchestrator already restarted the process; restarting it again only adds downtime."""
+    from unittest.mock import MagicMock
+
+    from aiops_common.constants import AnomalyKind, Severity
+    from aiops_common.schemas import AnomalyEvent
+    from healing_engine.engine import HealingEngine
+
+    playbooks = MagicMock()
+    playbooks.execute = AsyncMock()
+    engine = HealingEngine(
+        MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock(), playbooks
+    )
+    restart = AnomalyEvent(
+        service="central-ledger",
+        severity=Severity.WARNING,
+        score=0.9,
+        kind=AnomalyKind.SERVICE_RESTART,
+        detected_at=datetime.now(UTC),
+    )
+    await engine._process_anomaly(restart, None)
+    playbooks.execute.assert_not_awaited()

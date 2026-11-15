@@ -72,11 +72,13 @@ groups:
       - record: dpi:connections:sum
         expr: sum by (service, platform) (dpi_active_connections)
 
+      # sum, not max: each pod models its own replica set and capacity (mojaloop_sim/peers.py),
+      # so a scale-out adds capacity. capacity / replicas stays the per-replica figure.
       - record: dpi:replicas
-        expr: max by (service, platform) (dpi_replicas)
+        expr: sum by (service, platform) (dpi_replicas)
 
       - record: dpi:capacity_tps
-        expr: max by (service, platform) (dpi_capacity_tps)
+        expr: sum by (service, platform) (dpi_capacity_tps)
 
       # Offered load over capacity. Module 5 uses this to decide whether a forecast peak
       # actually needs more replicas, rather than scaling on raw traffic.
