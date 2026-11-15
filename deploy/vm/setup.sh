@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-time bootstrap for a fresh Ubuntu 24.04 x86_64 VM (see docs/DEPLOY_VM.md).
+# One-time bootstrap for a fresh Ubuntu 24.04 x86_64 VM; then run scripts/k8s.sh up --public.
 #
 #   git clone <repo> aiops && cd aiops
 #   bash deploy/vm/setup.sh

@@ -50,8 +50,8 @@ ports as Compose: gateway `:8080`, Grafana `:3000`, Prometheus `:9090`, Timescal
 `:5432`, simulators `:8011-8015`, AIOps services `:8020-8024`. Every
 `scripts\check_*.py` works against the cluster unchanged.
 
-**Deploying to a cloud VM:** see [DEPLOY_VM.md](DEPLOY_VM.md). On Linux, `scripts/k8s.sh`
-is the bash twin of `k8s.ps1`.
+On Linux, `scripts/k8s.sh` is the bash twin of `k8s.ps1`; `deploy/vm/setup.sh` prepares a fresh
+Ubuntu VM and `scripts/k8s.sh up --public` deploys there behind a dashboard login.
 
 Healing starts in **dry-run**, as it does under Compose:
 

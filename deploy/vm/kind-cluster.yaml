@@ -1,4 +1,4 @@
-# kind cluster for a single cloud VM (see docs/DEPLOY_VM.md).
+# kind cluster for a single cloud VM (scripts/k8s.sh up --public).
 #
 # Same cluster as deploy/k8s/kind-cluster.yaml, but only two ports face the internet:
 #   80    dashboard (nginx, password-protected by `scripts/k8s.sh up --public`)

@@ -121,7 +121,6 @@ To run on Kubernetes instead: `.\scripts\k8s.ps1 up` — see [docs/KUBERNETES.md
 | [Operations](docs/OPERATIONS.md) | Self-healing, safety rails, chaos experiments, incident lifecycle |
 | [Data](docs/DATA.md) | Where the training data comes from and how it is generated |
 | [Kubernetes](docs/KUBERNETES.md) | Running on kind; Kubernetes-native healing |
-| [VM deployment](docs/DEPLOY_VM.md) | Deploying to a single cloud VM |
 | [Contributing](CONTRIBUTING.md) | Development workflow and conventions |
 
 ## Repository layout

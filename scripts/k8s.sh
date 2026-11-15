@@ -10,7 +10,7 @@
 #   scripts/k8s.sh credentials     print the dashboard / Grafana logins (public mode)
 #   scripts/k8s.sh down            delete the cluster
 #
-# --public is for a VM on the internet (docs/DEPLOY_VM.md). It is remembered, so later
+# --public is for a VM on the internet (dashboard login, private APIs). It is remembered, so later
 # commands keep the VM locked down without repeating the flag. It:
 #   * creates the cluster from deploy/vm/kind-cluster.yaml: only :80 (dashboard) and
 #     :3000 (Grafana) listen publicly, everything else on 127.0.0.1
