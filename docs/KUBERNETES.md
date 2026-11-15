@@ -50,8 +50,8 @@ ports as Compose: gateway `:8080`, Grafana `:3000`, Prometheus `:9090`, Timescal
 `:5432`, simulators `:8011-8015`, AIOps services `:8020-8024`. Every
 `scripts\check_*.py` works against the cluster unchanged.
 
-**Deploying to a cloud VM:** see [DEPLOY_VM.md](DEPLOY_VM.md). On Linux, `scripts/k8s.sh`
-is the bash twin of `k8s.ps1`.
+On Linux, `scripts/k8s.sh` is the bash twin of `k8s.ps1`; `deploy/vm/setup.sh` prepares a fresh
+Ubuntu VM and `scripts/k8s.sh up --public` deploys there behind a dashboard login.
 
 Healing starts in **dry-run**, as it does under Compose:
 
@@ -96,6 +96,15 @@ The flow from there:
 | OOM: memory hog on account-lookup-service | 64 s | 64 s | 76 s | account-lookup-service (0.90) | rolling restart | none |
 | Latency on central-ledger | 52 s | 52 s | 64 s | central-ledger (0.90) | rolling restart | none |
 | Bad deploy of ml-api-adapter | 35 s | 36 s | 48 s | the deployment (0.94) | real `rollout undo` | none |
+
+From the dashboard's Chaos page (15 Nov 2026), the remaining experiments:
+
+| Button | Detect | Remediate | Root cause | Action | Side effects |
+|---|---|---|---|---|---|
+| CPU hog (account-lookup-service) | 46 s | 58 s | account-lookup-service (0.95) | rolling restart | none |
+| Error injection (central-ledger) | 40 s | 41 s | central-ledger (0.90), not its three callers | restart, then breakers on both direct callers | none |
+| Traffic spike (central-ledger, 3×) | 65 s | 78 s | central-ledger (0.90) | **scale-out 1 → 2 pods**; the new pod takes its share | none |
+| Kill service (central-ledger) | 5 s | — | `service_restart` incident | none: Kubernetes restarted the pod | none |
 
 In the latency run the root was restarted 12 s after detection, before any caller had been
 flagged, so the incident never became a cascade and no breakers were needed. Under Compose,

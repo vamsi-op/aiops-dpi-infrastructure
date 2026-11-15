@@ -74,7 +74,11 @@ Turns Prometheus series into one normalised `MetricSample` per service every 15 
   `up`.
 - **Writes** `service_metrics` and publishes to `aiops.metrics`.
 - Skips a service until its 5-minute rate window is at least 95 % covered, so a just-started
-  service never reports a misleading partial rate.
+  service never reports a misleading partial rate. Coverage is added up across pods, so a
+  rolling restart (old pod, then its replacement) does not blind the agent.
+- Gauges are aggregated per service: queue depth summed, CPU averaged, memory the maximum, and
+  connections **averaged per pod** (each pod holds its own idle pool, so a sum would jump with
+  every scale-out).
 - Tags samples whose rate window spans a restart of the service or of one of its dependencies
   (`restart_in_rate_window`, `dependency_restart_in_rate_window`): a counter reset, or a process
   younger than 7 minutes (`dpi_process_start_time_seconds`), which also covers restarts
@@ -176,7 +180,10 @@ Selects and executes remediation, behind safety rails. See [OPERATIONS.md](OPERA
 the playbooks and rails.
 
 - **Reads** `aiops.anomalies`, `aiops.incidents` and `aiops.predictions`; waits for the RCA
-  incident before acting on an anomaly.
+  incident before acting on an anomaly. Anomalies reloaded for an incident carry their full
+  evidence (`feature_snapshot`, `feature_deviations`).
+- **Decides on live load.** At decision time it reads the service's instantaneous TPS and capacity
+  from Prometheus, so a traffic surge is scaled out rather than restarted.
 - **Executors.** Docker SDK under Compose; the Kubernetes API in a cluster (rolling restart,
   scaling that respects an HPA, `rollout undo` to the previous ReplicaSet). Selected by
   `HEALING_EXECUTOR` (`auto` picks Kubernetes inside a pod).

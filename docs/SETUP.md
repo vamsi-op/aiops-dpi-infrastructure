@@ -1,8 +1,7 @@
 # Setup
 
 How to install the prerequisites, run the platform on Docker Compose, load training data and
-open the dashboard. For Kubernetes see [KUBERNETES.md](KUBERNETES.md); for a cloud VM see
-[DEPLOY_VM.md](DEPLOY_VM.md).
+open the dashboard. For Kubernetes see [KUBERNETES.md](KUBERNETES.md).
 
 ---
 
